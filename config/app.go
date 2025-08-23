@@ -25,6 +25,7 @@ import (
 	"github.com/goravel/framework/validation"
 	"github.com/goravel/gin"
 	"github.com/goravel/postgres"
+	"github.com/goravel/sqlite"
 
 	"goravel/app/providers"
 )
@@ -94,6 +95,7 @@ func init() {
 			&log.ServiceProvider{},
 			&console.ServiceProvider{},
 			&postgres.ServiceProvider{},
+			&sqlite.ServiceProvider{},
 			&database.ServiceProvider{},
 			&cache.ServiceProvider{},
 			&http.ServiceProvider{},
