@@ -17,6 +17,7 @@ func (s *SystemSettingsSeeder) Signature() string {
 // Run executes the seeder logic.
 func (s *SystemSettingsSeeder) Run() error {
 	// 插入管理员账号配置
+	hashedAdminPassword, _ := facades.Hash().Make("admin123")
 	adminSettings := []map[string]interface{}{
 		{
 			"setting_key":   "panel_title",
@@ -32,7 +33,7 @@ func (s *SystemSettingsSeeder) Run() error {
 		},
 		{
 			"setting_key":   "admin_password_hash",
-			"setting_value": "$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi",
+			"setting_value": hashedAdminPassword,
 			"setting_type":  "string",
 			"description":   "管理员密码哈希",
 		},
@@ -110,7 +111,7 @@ func (s *SystemSettingsSeeder) Run() error {
 		// 添加时间戳字段
 		setting["created_at"] = now
 		setting["updated_at"] = now
-		
+
 		err := facades.Orm().Query().Table("system_settings").Create(setting)
 		if err != nil {
 			return err
