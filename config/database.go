@@ -3,33 +3,25 @@ package config
 import (
 	"github.com/goravel/framework/contracts/database/driver"
 	"github.com/goravel/framework/facades"
-	postgresfacades "github.com/goravel/postgres/facades"
+	sqlitefacades "github.com/goravel/sqlite/facades"
 )
 
 func init() {
 	config := facades.Config()
 	config.Add("database", map[string]any{
 		// Default database connection name
-		"default": config.Env("DB_CONNECTION", "postgres"),
-
+		"default": config.Env("DB_CONNECTION"),
 		// Database connections
 		"connections": map[string]any{
-			"postgres": map[string]any{
-				"host":     config.Env("DB_HOST", "127.0.0.1"),
-				"port":     config.Env("DB_PORT", 5432),
+			"sqlite": map[string]any{
 				"database": config.Env("DB_DATABASE", "forge"),
-				"username": config.Env("DB_USERNAME", ""),
-				"password": config.Env("DB_PASSWORD", ""),
-				"sslmode":  "disable",
 				"prefix":   "",
 				"singular": false,
-				"schema":   config.Env("DB_SCHEMA", "public"),
 				"via": func() (driver.Driver, error) {
-					return postgresfacades.Postgres("postgres")
+					return sqlitefacades.Sqlite("sqlite")
 				},
 			},
 		},
-
 		// Pool configuration
 		"pool": map[string]any{
 			// Sets the maximum number of connections in the idle
@@ -63,11 +55,9 @@ func init() {
 			// Unit: Second
 			"conn_max_lifetime": 3600,
 		},
-
 		// Sets the threshold for slow queries in milliseconds, the slow query will be logged.
 		// Unit: Millisecond
 		"slow_threshold": 200,
-
 		// Migration Repository Table
 		//
 		// This table keeps track of all the migrations that have already run for
