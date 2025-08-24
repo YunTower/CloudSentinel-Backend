@@ -10,47 +10,11 @@ import (
 	"github.com/goravel/framework/facades"
 )
 
-// 用户信息辅助函数，减少控制器重复代码
 type UserInfo struct {
-	ID             string
-	Type           string
-	Guard          string
+	ID              string
+	Type            string
+	Guard           string
 	IsAuthenticated bool
-}
-
-// getUserInfo 从上下文获取用户信息，简化处理
-func getUserInfo(ctx http.Context) *UserInfo {
-	userID, _ := ctx.Value("user_id").(string)
-	userType, _ := ctx.Value("user_type").(string)
-	guard, _ := ctx.Value("guard").(string)
-	isAuthenticated, _ := ctx.Value("is_authenticated").(bool)
-	
-	fmt.Printf("Debug - user_id: %v, user_type: %v, guard: %v, is_authenticated: %v\n", 
-		userID, userType, guard, isAuthenticated)
-	
-	return &UserInfo{
-		ID:             userID,
-		Type:           userType,
-		Guard:          guard,
-		IsAuthenticated: isAuthenticated,
-	}
-}
-
-// requireAuth 要求用户必须认证，统一错误处理
-func requireAuth(ctx http.Context) (*UserInfo, http.Response) {
-	// 检查是否已认证
-	isAuthenticated, ok := ctx.Value("is_authenticated").(bool)
-	fmt.Printf("Debug - is_authenticated: %v, ok: %v\n", isAuthenticated, ok)
-	
-	if !ok || !isAuthenticated {
-		return nil, ctx.Response().Status(401).Json(http.Json{
-			"status":  false,
-			"message": "用户未认证",
-		})
-	}
-	
-	userInfo := getUserInfo(ctx)
-	return userInfo, nil
 }
 
 type AuthController struct {
@@ -61,9 +25,44 @@ type AuthController struct {
 }
 
 func NewAuthController() *AuthController {
-	return &AuthController{
-		// Inject services
+	return &AuthController{}
+}
+
+// getUserInfo 从上下文获取用户信息，简化处理
+func getUserInfo(ctx http.Context) *UserInfo {
+	userID, _ := ctx.Value("user_id").(string)
+	userType, _ := ctx.Value("user_type").(string)
+	guard, _ := ctx.Value("guard").(string)
+	isAuthenticated, _ := ctx.Value("is_authenticated").(bool)
+
+	fmt.Printf("Debug - user_id: %v, user_type: %v, guard: %v, is_authenticated: %v\n",
+		userID, userType, guard, isAuthenticated)
+
+	return &UserInfo{
+		ID:              userID,
+		Type:            userType,
+		Guard:           guard,
+		IsAuthenticated: isAuthenticated,
 	}
+}
+
+// requireAuth 要求用户必须认证，统一错误处理
+func requireAuth(ctx http.Context) (*UserInfo, http.Response) {
+	// 检查是否已认证
+	isAuthenticated, ok := ctx.Value("is_authenticated").(bool)
+	fmt.Printf("Debug - is_authenticated: %v, ok: %v\n", isAuthenticated, ok)
+
+	if !ok || !isAuthenticated {
+		return nil, ctx.Response().Status(401).Json(http.Json{
+			"status":  false,
+			"message": "用户未认证",
+			"code":    "UNAUTHENTICATED",
+			"error":   "User not authenticated",
+		})
+	}
+
+	userInfo := getUserInfo(ctx)
+	return userInfo, nil
 }
 
 func (r *AuthController) Login(ctx http.Context) http.Response {
@@ -105,6 +104,8 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 			return ctx.Response().Status(500).Json(http.Json{
 				"status":  false,
 				"message": "用户名配置不存在",
+				"code":    "CONFIG_ERROR",
+				"error":   "Admin username not configured",
 			})
 		}
 		fmt.Println("查询到的用户名:", userName)
@@ -269,14 +270,16 @@ func (r *AuthController) Refresh(ctx http.Context) http.Response {
 			return ctx.Response().Status(401).Json(http.Json{
 				"status":  false,
 				"message": "Token已过期",
-				"error":   "Token has expired",
+				"code":    "TOKEN_EXPIRED",
+				"error":   "Token has expired, please login again",
 			})
 		}
 
 		return ctx.Response().Status(401).Json(http.Json{
 			"status":  false,
 			"message": "Token无效",
-			"error":   err.Error(),
+			"code":    "TOKEN_INVALID",
+			"error":   "Invalid token format or signature",
 		})
 	}
 

@@ -39,9 +39,22 @@ func Auth() http.Middleware {
 		// 解析 Token
 		payload, err := facades.Auth(ctx).Parse(token)
 		if err != nil {
+			// 检查是否是 Token 过期错误
+			if err.Error() == "token has expired" || err.Error() == "token expired" {
+				ctx.Response().Status(401).Json(http.Json{
+					"status":  false,
+					"message": "Token已过期",
+					"code":    "TOKEN_EXPIRED",
+					"error":   "Access token has expired",
+				})
+				return
+			}
+			
 			ctx.Response().Status(401).Json(http.Json{
 				"status":  false,
-				"message": "Token无效或已过期",
+				"message": "Token无效",
+				"code":    "TOKEN_INVALID",
+				"error":   "Invalid access token",
 			})
 			return
 		}
@@ -71,16 +84,28 @@ func SimpleAuth() http.Middleware {
 		if err != nil {
 			ctx.Response().Status(401).Json(http.Json{
 				"status":  false,
-				"message": "用户未认证",
+				"message": "缺少认证令牌",
+				"code":    "TOKEN_MISSING",
 			})
 			return
 		}
 
 		payload, err := facades.Auth(ctx).Parse(token)
 		if err != nil {
+			// 检查是否是 Token 过期错误
+			if err.Error() == "token has expired" || err.Error() == "token expired" {
+				ctx.Response().Status(401).Json(http.Json{
+					"status":  false,
+					"message": "Token已过期",
+					"code":    "TOKEN_EXPIRED",
+				})
+				return
+			}
+			
 			ctx.Response().Status(401).Json(http.Json{
 				"status":  false,
-				"message": "用户未认证",
+				"message": "Token无效",
+				"code":    "TOKEN_INVALID",
 			})
 			return
 		}
@@ -109,16 +134,28 @@ func AdminAuth() http.Middleware {
 		if err != nil {
 			ctx.Response().Status(401).Json(http.Json{
 				"status":  false,
-				"message": "用户未认证",
+				"message": "缺少认证令牌",
+				"code":    "TOKEN_MISSING",
 			})
 			return
 		}
 
 		payload, err := facades.Auth(ctx).Parse(token)
 		if err != nil {
+			// 检查是否是 Token 过期错误
+			if err.Error() == "token has expired" || err.Error() == "token expired" {
+				ctx.Response().Status(401).Json(http.Json{
+					"status":  false,
+					"message": "Token已过期",
+					"code":    "TOKEN_EXPIRED",
+				})
+				return
+			}
+			
 			ctx.Response().Status(401).Json(http.Json{
 				"status":  false,
-				"message": "用户未认证",
+				"message": "Token无效",
+				"code":    "TOKEN_INVALID",
 			})
 			return
 		}
@@ -128,6 +165,8 @@ func AdminAuth() http.Middleware {
 			ctx.Response().Status(403).Json(http.Json{
 				"status":  false,
 				"message": "权限不足",
+				"code":    "INSUFFICIENT_PERMISSIONS",
+				"error":   "Admin access required",
 			})
 			return
 		}
