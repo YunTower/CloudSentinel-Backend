@@ -10,6 +10,13 @@ import (
 	"github.com/goravel/framework/facades"
 )
 
+type UserInfo struct {
+	ID              string
+	Type            string
+	Guard           string
+	IsAuthenticated bool
+}
+
 type AuthController struct {
 	Type     string `form:"type" json:"type"`
 	Password string `form:"password" json:"password"`
@@ -18,9 +25,44 @@ type AuthController struct {
 }
 
 func NewAuthController() *AuthController {
-	return &AuthController{
-		// Inject services
+	return &AuthController{}
+}
+
+// getUserInfo 从上下文获取用户信息，简化处理
+func getUserInfo(ctx http.Context) *UserInfo {
+	userID, _ := ctx.Value("user_id").(string)
+	userType, _ := ctx.Value("user_type").(string)
+	guard, _ := ctx.Value("guard").(string)
+	isAuthenticated, _ := ctx.Value("is_authenticated").(bool)
+
+	fmt.Printf("Debug - user_id: %v, user_type: %v, guard: %v, is_authenticated: %v\n",
+		userID, userType, guard, isAuthenticated)
+
+	return &UserInfo{
+		ID:              userID,
+		Type:            userType,
+		Guard:           guard,
+		IsAuthenticated: isAuthenticated,
 	}
+}
+
+// requireAuth 要求用户必须认证，统一错误处理
+func requireAuth(ctx http.Context) (*UserInfo, http.Response) {
+	// 检查是否已认证
+	isAuthenticated, ok := ctx.Value("is_authenticated").(bool)
+	fmt.Printf("Debug - is_authenticated: %v, ok: %v\n", isAuthenticated, ok)
+
+	if !ok || !isAuthenticated {
+		return nil, ctx.Response().Status(401).Json(http.Json{
+			"status":  false,
+			"message": "用户未认证",
+			"code":    "UNAUTHENTICATED",
+			"error":   "User not authenticated",
+		})
+	}
+
+	userInfo := getUserInfo(ctx)
+	return userInfo, nil
 }
 
 func (r *AuthController) Login(ctx http.Context) http.Response {
@@ -62,6 +104,8 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 			return ctx.Response().Status(500).Json(http.Json{
 				"status":  false,
 				"message": "用户名配置不存在",
+				"code":    "CONFIG_ERROR",
+				"error":   "Admin username not configured",
 			})
 		}
 		fmt.Println("查询到的用户名:", userName)
@@ -198,6 +242,84 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 			"token":    token,
 			"username": loginPost.Username,
 			"type":     loginPost.Type,
+		},
+	})
+}
+
+func (r *AuthController) Refresh(ctx http.Context) http.Response {
+	// 从请求头获取 Authorization token
+	authHeader := ctx.Request().Header("Authorization")
+	if authHeader == "" {
+		return ctx.Response().Status(401).Json(http.Json{
+			"status":  false,
+			"message": "缺少认证令牌",
+		})
+	}
+
+	// 移除 "Bearer " 前缀（如果存在）
+	token := authHeader
+	if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
+		token = authHeader[7:]
+	}
+
+	// 解析 Token
+	payload, err := facades.Auth(ctx).Parse(token)
+	if err != nil {
+		// 检查是否是 Token 过期错误
+		if err.Error() == "token has expired" || err.Error() == "token expired" {
+			return ctx.Response().Status(401).Json(http.Json{
+				"status":  false,
+				"message": "Token已过期",
+				"code":    "TOKEN_EXPIRED",
+				"error":   "Token has expired, please login again",
+			})
+		}
+
+		return ctx.Response().Status(401).Json(http.Json{
+			"status":  false,
+			"message": "Token无效",
+			"code":    "TOKEN_INVALID",
+			"error":   "Invalid token format or signature",
+		})
+	}
+
+	// 刷新 Token
+	newToken, refreshErr := facades.Auth(ctx).Refresh()
+	if refreshErr != nil {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  false,
+			"message": "Token刷新失败",
+			"error":   refreshErr.Error(),
+		})
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status":  true,
+		"message": "Token刷新成功",
+		"data": map[string]any{
+			"token":      newToken,
+			"user_id":    payload.Key,
+			"guard":      payload.Guard,
+			"expires_at": payload.ExpireAt.Unix(),
+		},
+	})
+}
+
+func (r *AuthController) Check(ctx http.Context) http.Response {
+	// 使用辅助函数获取用户信息，减少重复代码
+	userInfo, errResponse := requireAuth(ctx)
+	if errResponse != nil {
+		return errResponse
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status":  true,
+		"message": "用户已认证",
+		"data": map[string]any{
+			"user_id":   userInfo.ID,
+			"guard":     userInfo.Guard,
+			"user_type": userInfo.Type,
+			"is_valid":  true,
 		},
 	})
 }
