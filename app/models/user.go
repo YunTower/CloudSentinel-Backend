@@ -1,21 +1,23 @@
 package models
 
 import (
-	"github.com/goravel/framework/database/orm"
+	"time"
 )
 
 // User 用户模型
 type User struct {
-	orm.Model
-	Username string `json:"username"`
-	Type     string `json:"type"`
-	IP       string `json:"ip,omitempty"`
-	UA       string `json:"ua,omitempty"`
+	ID        uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	Username  string    `json:"username"`
+	Type      string    `json:"type"`
+	IP        string    `json:"ip,omitempty"`
+	UA        string    `json:"ua,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // TableName 指定表名
 func (u *User) TableName() string {
-	return "system_settings"
+	return "users" // 使用标准的 users 表
 }
 
 // GetID 获取用户ID
