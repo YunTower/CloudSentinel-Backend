@@ -30,14 +30,15 @@ func init() {
 		"guards": map[string]any{
 			"user": map[string]any{
 				"driver":   "jwt",
-				"provider": "user",
+				"provider": "users",
 			},
 		},
 
-		// Supported: "orm"
+		// 使用 ORM provider
 		"providers": map[string]any{
-			"user": map[string]any{
+			"users": map[string]any{
 				"driver": "orm",
+				"model":  "goravel/app/models/User",
 			},
 		},
 	})

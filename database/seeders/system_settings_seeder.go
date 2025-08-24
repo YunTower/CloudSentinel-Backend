@@ -17,6 +17,7 @@ func (s *SystemSettingsSeeder) Signature() string {
 // Run executes the seeder logic.
 func (s *SystemSettingsSeeder) Run() error {
 	// 插入管理员账号配置
+	hashedAdminPassword, _ := facades.Hash().Make("admin123")
 	adminSettings := []map[string]interface{}{
 		{
 			"setting_key":   "panel_title",
@@ -32,7 +33,7 @@ func (s *SystemSettingsSeeder) Run() error {
 		},
 		{
 			"setting_key":   "admin_password_hash",
-			"setting_value": "$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi",
+			"setting_value": hashedAdminPassword,
 			"setting_type":  "string",
 			"description":   "管理员密码哈希",
 		},
@@ -75,22 +76,22 @@ func (s *SystemSettingsSeeder) Run() error {
 		},
 		// 访客访问相关设置
 		{
-			"setting_key":   "allow_guest",
-			"setting_value": "true",
+			"setting_key":   "allow_guest_login",
+			"setting_value": "false",
 			"setting_type":  "boolean",
-			"description":   "是否允许访客访问",
+			"description":   "是否允许游客登录",
 		},
 		{
-			"setting_key":   "enable_guest_password",
+			"setting_key":   "guest_password_enabled",
 			"setting_value": "true",
 			"setting_type":  "boolean",
-			"description":   "是否启用访客密码访问",
+			"description":   "是否启用游客密码访问",
 		},
 		{
-			"setting_key":   "guest_password",
+			"setting_key":   "guest_password_hash",
 			"setting_value": "$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi",
 			"setting_type":  "string",
-			"description":   "访客访问密码哈希（默认：admin123）",
+			"description":   "游客访问密码哈希（默认：admin123）",
 		},
 		{
 			"setting_key":   "hide_sensitive_info",
@@ -110,7 +111,7 @@ func (s *SystemSettingsSeeder) Run() error {
 		// 添加时间戳字段
 		setting["created_at"] = now
 		setting["updated_at"] = now
-		
+
 		err := facades.Orm().Query().Table("system_settings").Create(setting)
 		if err != nil {
 			return err
