@@ -22,7 +22,7 @@ func (r *LoginPostRequest) Authorize(ctx http.Context) error {
 func (r *LoginPostRequest) Rules(ctx http.Context) map[string]string {
 	return map[string]string{
 		"type":     "required|in:admin,guest",
-		"password": "required|min_len:6",
+		"password": "required_if:type,admin|min_len:6",
 		"username": "required_if:type,admin|min_len:3|max_len:50",
 		"remember": "boolean",
 	}
@@ -33,7 +33,7 @@ func (r *LoginPostRequest) Messages() map[string]string {
 	return map[string]string{
 		"type.required":     "用户类型不能为空",
 		"type.in":           "用户类型必须是 admin 或 guest",
-		"password.required": "密码不能为空",
+		"password.required_if": "管理员用户必须提供密码",
 		"password.min_len":  "密码长度不能少于6位",
 		"username.required_if": "管理员用户必须提供用户名",
 		"username.min_len":  "用户名长度不能少于3位",
