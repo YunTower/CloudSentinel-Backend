@@ -76,7 +76,8 @@ func (r *SettingsController) GetPanelSettings(ctx http.Context) http.Response {
 		"status":  true,
 		"message": "success",
 		"data": map[string]any{
-			"panel_title": panelTitle,
+			"panel_title":     panelTitle,
+			"current_version": "0.0.1",
 		},
 	})
 }

@@ -12,6 +12,7 @@ import (
 func Api() {
 	authController := controllers.NewAuthController()
 	settingsController := controllers.NewSettingsController()
+	updateController := controllers.NewUpdateController()
 
 	facades.Route().Post("/auth/login", authController.Login)
 	facades.Route().Get("/settings/public", settingsController.GetPublicSettings)
@@ -23,6 +24,8 @@ func Api() {
 		router.Prefix("/settings").Patch("/panel", settingsController.UpdatePanelSettings)
 		router.Prefix("/settings").Patch("/permissions", settingsController.UpdatePermissionsSettings)
 		router.Prefix("/settings").Patch("/alerts", settingsController.UpdateAlertsSettings)
+
+		router.Prefix("/update").Get("/check", updateController.Check)
 
 		router.Prefix("/auth").Get("/refresh", authController.Refresh)
 		router.Prefix("/auth").Get("/check", authController.Check)
