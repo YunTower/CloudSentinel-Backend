@@ -17,7 +17,9 @@ func (s *DatabaseSeeder) Signature() string {
 func (s *DatabaseSeeder) Run() error {
 	return facades.Seeder().Call([]seeder.Seeder{
 		&SystemSettingsSeeder{},
-		&AlertRulesSeeder{},
 		&MonitorConfigSeeder{},
+		&TrafficResetConfigSeeder{},
+		&LogCleanupConfigSeeder{},
+		&AlertRulesSeeder{}, // 注意：新的 alert_rules 表不再插入默认数据
 	})
 }
