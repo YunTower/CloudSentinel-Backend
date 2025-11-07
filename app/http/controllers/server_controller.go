@@ -56,7 +56,7 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 
 	// 生成UUID作为server_id
 	serverID := uuid.New().String()
-	
+
 	// 生成agent_key
 	agentKey := uuid.New().String()
 
@@ -118,7 +118,7 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 func (c *ServerController) GetServers(ctx http.Context) http.Response {
 	var servers []map[string]interface{}
 	err := facades.Orm().Query().Table("servers").
-		Select("id", "name", "ip", "port", "status", "location", "os", "architecture", "kernel", "hostname", "cores", "agent_version", "system_name", "boot_time", "last_report_time", "uptime_days", "created_at", "updated_at").
+		Select("id", "name", "ip", "port", "os", "architecture", "status", "location", "created_at", "updated_at").
 		OrderBy("created_at", "desc").
 		Get(&servers)
 
@@ -138,9 +138,48 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 	})
 }
 
+// GetServerDetail 获取服务器详细信息
+func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
+	serverID := ctx.Request().Route("id")
+	if serverID == "" {
+		return ctx.Response().Status(http.StatusBadRequest).Json(http.Json{
+			"status":  false,
+			"message": "缺少服务器ID",
+		})
+	}
+
+	var servers []map[string]interface{}
+	err := facades.Orm().Query().Table("servers").
+		Select("id", "name", "ip", "port", "status", "location", "os", "architecture", "kernel", "hostname", "cores", "agent_version", "system_name", "boot_time", "last_report_time", "uptime_days", "agent_key", "created_at", "updated_at").
+		Where("id", serverID).
+		Get(&servers)
+
+	if err != nil {
+		facades.Log().Errorf("获取服务器详情失败: %v", err)
+		return ctx.Response().Status(http.StatusInternalServerError).Json(http.Json{
+			"status":  false,
+			"message": "获取服务器详情失败",
+			"error":   err.Error(),
+		})
+	}
+
+	if len(servers) == 0 {
+		return ctx.Response().Status(http.StatusNotFound).Json(http.Json{
+			"status":  false,
+			"message": "服务器不存在",
+		})
+	}
+
+	return ctx.Response().Json(http.StatusOK, http.Json{
+		"status":  true,
+		"message": "获取成功",
+		"data":    servers[0],
+	})
+}
+
 // UpdateServer 更新服务器信息
 func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
-	serverID := ctx.Request().Input("id")
+	serverID := ctx.Request().Route("id")
 	if serverID == "" {
 		return ctx.Response().Status(http.StatusBadRequest).Json(http.Json{
 			"status":  false,
@@ -214,7 +253,7 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 
 // DeleteServer 删除服务器
 func (c *ServerController) DeleteServer(ctx http.Context) http.Response {
-	serverID := ctx.Request().Input("id")
+	serverID := ctx.Request().Route("id")
 	if serverID == "" {
 		return ctx.Response().Status(http.StatusBadRequest).Json(http.Json{
 			"status":  false,
@@ -243,4 +282,3 @@ func (c *ServerController) DeleteServer(ctx http.Context) http.Response {
 		"message": "删除成功",
 	})
 }
-

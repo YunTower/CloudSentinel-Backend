@@ -89,34 +89,44 @@ func SaveMetrics(serverID string, data map[string]interface{}) error {
 
 	// 保存到server_metrics表
 	metricsData := map[string]interface{}{
-		"server_id":  serverID,
-		"timestamp":  timestamp,
-		"created_at": timestamp,
+		"server_id": serverID,
+		"timestamp": time.Now(),
 	}
 
+	// CPU使用率
 	if v, ok := data["cpu_usage"].(float64); ok {
 		metricsData["cpu_usage"] = v
+	} else {
+		metricsData["cpu_usage"] = 0.0 // 默认值
 	}
-	if v, ok := data["memory_total"].(float64); ok {
-		metricsData["memory_total"] = int64(v)
-	}
-	if v, ok := data["memory_used"].(float64); ok {
-		metricsData["memory_used"] = int64(v)
-	}
+
+	// 内存使用率
 	if v, ok := data["memory_usage_percent"].(float64); ok {
-		metricsData["memory_usage_percent"] = v
+		metricsData["memory_usage"] = v
+	} else {
+		metricsData["memory_usage"] = 0.0 // 默认值
 	}
+
+	// 磁盘使用率
+	if v, ok := data["disk_usage"].(float64); ok {
+		metricsData["disk_usage"] = v
+	} else {
+		metricsData["disk_usage"] = 0.0 // 默认值
+	}
+
+	// 网络速度
 	if v, ok := data["network_upload"].(float64); ok {
 		metricsData["network_upload"] = v
+	} else {
+		metricsData["network_upload"] = 0.0
 	}
 	if v, ok := data["network_download"].(float64); ok {
 		metricsData["network_download"] = v
+	} else {
+		metricsData["network_download"] = 0.0
 	}
 
-	_, err = facades.Orm().Query().Exec("INSERT INTO server_metrics (server_id, timestamp, created_at, cpu_usage, memory_total, memory_used, memory_usage_percent, network_upload, network_download) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		metricsData["server_id"], metricsData["timestamp"], metricsData["created_at"],
-		metricsData["cpu_usage"], metricsData["memory_total"], metricsData["memory_used"],
-		metricsData["memory_usage_percent"], metricsData["network_upload"], metricsData["network_download"])
+	err = facades.Orm().Query().Table("server_metrics").Create(metricsData)
 	if err != nil {
 		facades.Log().Errorf("保存性能指标失败: %v", err)
 		return err
@@ -195,9 +205,6 @@ func SaveMemoryInfo(serverID string, data map[string]interface{}) error {
 
 // SaveDiskInfo 保存磁盘信息
 func SaveDiskInfo(serverID string, data []interface{}) error {
-	timestamp := time.Now().Unix()
-
-	// 先删除该服务器的旧磁盘记录（因为磁盘信息需要全量更新）
 	facades.Orm().Query().Table("server_disks").
 		Where("server_id", serverID).
 		Delete()
@@ -209,34 +216,26 @@ func SaveDiskInfo(serverID string, data []interface{}) error {
 		}
 
 		record := map[string]interface{}{
-			"server_id":  serverID,
-			"timestamp":  timestamp,
-			"created_at": timestamp,
-			"updated_at": timestamp,
+			"server_id": serverID,
 		}
 
 		if v, ok := diskData["mount_point"].(string); ok {
 			record["mount_point"] = v
 		}
 		if v, ok := diskData["device"].(string); ok {
-			record["device"] = v
+			record["disk_name"] = v // 映射到disk_name列
 		}
 		if v, ok := diskData["total"].(float64); ok {
-			record["total"] = int64(v)
+			record["total_size"] = int64(v) // 映射到total_size列
 		}
 		if v, ok := diskData["used"].(float64); ok {
-			record["used"] = int64(v)
+			record["used_size"] = int64(v) // 映射到used_size列
 		}
 		if v, ok := diskData["free"].(float64); ok {
-			record["free"] = int64(v)
-		}
-		if v, ok := diskData["usage_percent"].(float64); ok {
-			record["usage_percent"] = v
+			record["free_size"] = int64(v) // 映射到free_size列
 		}
 
-		_, err := facades.Orm().Query().Exec("INSERT INTO server_disks (server_id, timestamp, created_at, updated_at, mount_point, device, total, used, free, usage_percent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			record["server_id"], record["timestamp"], record["created_at"], record["updated_at"],
-			record["mount_point"], record["device"], record["total"], record["used"], record["free"], record["usage_percent"])
+		err := facades.Orm().Query().Table("server_disks").Create(record)
 		if err != nil {
 			facades.Log().Errorf("保存磁盘信息失败: %v", err)
 			return err
@@ -296,29 +295,40 @@ func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
 			year := now.Year()
 			month := int(now.Month())
 
-			// 查询当前月份的流量记录
-			var existing map[string]interface{}
-			err := facades.Orm().Query().Table("server_traffic_usage").
-				Where("server_id", serverID).
-				Where("year", year).
-				Where("month", month).
-				First(&existing)
-
-			if err == nil && existing != nil {
-				// 更新现有记录
-				_, err = facades.Orm().Query().Table("server_traffic_usage").
+			_, err := facades.Orm().Query().Exec(
+				"INSERT OR REPLACE INTO server_traffic_usage (server_id, year, month, upload_bytes, download_bytes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM server_traffic_usage WHERE server_id = ? AND year = ? AND month = ?), ?), ?)",
+				serverID, year, month, int64(uploadBytes), int64(downloadBytes),
+				serverID, year, month, now, now)
+			
+			if err != nil {
+				var existing []map[string]interface{}
+				queryErr := facades.Orm().Query().Table("server_traffic_usage").
 					Where("server_id", serverID).
 					Where("year", year).
 					Where("month", month).
-					Update(map[string]interface{}{
-						"upload_bytes":   int64(uploadBytes),
+					Get(&existing)
+
+				if queryErr == nil && len(existing) > 0 {
+					// 更新现有记录
+					_, err = facades.Orm().Query().Table("server_traffic_usage").
+						Where("server_id", serverID).
+						Where("year", year).
+						Where("month", month).
+						Update(map[string]interface{}{
+							"upload_bytes":   int64(uploadBytes),
+							"download_bytes": int64(downloadBytes),
+							"updated_at":     now,
+						})
+				} else {
+					// 插入新记录
+					err = facades.Orm().Query().Table("server_traffic_usage").Create(map[string]interface{}{
+						"server_id":     serverID,
+						"year":          year,
+						"month":         month,
+						"upload_bytes":  int64(uploadBytes),
 						"download_bytes": int64(downloadBytes),
-						"updated_at":     timestamp,
 					})
-			} else {
-				// 插入新记录
-				_, err = facades.Orm().Query().Exec("INSERT INTO server_traffic_usage (server_id, year, month, upload_bytes, download_bytes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-					serverID, year, month, int64(uploadBytes), int64(downloadBytes), timestamp, timestamp)
+				}
 			}
 
 			if err != nil {

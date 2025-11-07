@@ -38,6 +38,7 @@ func Api() {
 		// 服务器管理路由
 		router.Prefix("/servers").Post("", serverController.CreateServer)
 		router.Prefix("/servers").Get("", serverController.GetServers)
+		router.Prefix("/servers").Get("/:id", serverController.GetServerDetail)
 		router.Prefix("/servers").Patch("/:id", serverController.UpdateServer)
 		router.Prefix("/servers").Delete("/:id", serverController.DeleteServer)
 	})
