@@ -13,9 +13,14 @@ func Api() {
 	authController := controllers.NewAuthController()
 	settingsController := controllers.NewSettingsController()
 	updateController := controllers.NewUpdateController()
+	wsController := controllers.NewWebSocketController()
+	serverController := controllers.NewServerController()
 
 	facades.Route().Post("/auth/login", authController.Login)
 	facades.Route().Get("/settings/public", settingsController.GetPublicSettings)
+	
+	// WebSocket路由（不需要认证中间件，自己处理认证）
+	facades.Route().Get("/ws/agent", wsController.HandleAgentConnection)
 
 	facades.Route().Middleware(middleware.Auth()).Group(func(router route.Router) {
 		router.Prefix("/settings").Get("/panel", settingsController.GetPanelSettings)
@@ -29,5 +34,11 @@ func Api() {
 
 		router.Prefix("/auth").Get("/refresh", authController.Refresh)
 		router.Prefix("/auth").Get("/check", authController.Check)
+
+		// 服务器管理路由
+		router.Prefix("/servers").Post("", serverController.CreateServer)
+		router.Prefix("/servers").Get("", serverController.GetServers)
+		router.Prefix("/servers").Patch("/:id", serverController.UpdateServer)
+		router.Prefix("/servers").Delete("/:id", serverController.DeleteServer)
 	})
 }
