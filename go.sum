@@ -363,6 +363,8 @@ github.com/goravel/postgres v1.4.0 h1:GD5vl5quD7THUXY/VhkHNuZC2W3aQZd9OJW0oyTPk5
 github.com/goravel/postgres v1.4.0/go.mod h1:nttlrmEWux5/SaPxVW/uMH7OQJn4hgmwH1MZCeSmdlo=
 github.com/goravel/sqlite v1.4.0 h1:f6aLhImzDQA0ln/2WuGSV2HYg1Oot9W+s8i11053CbQ=
 github.com/goravel/sqlite v1.4.0/go.mod h1:AChcZCNSWgNEZLqvybnCZ1ukD8ageozhAPqLfs439EE=
+github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
+github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
 github.com/hashicorp/errwrap v1.0.0/go.mod h1:YH+1FKiLXxHSkmPseP+kNlulaMuP3n2brvKWEqk/Jc4=
 github.com/hashicorp/errwrap v1.1.0 h1:OxrOeh75EUXMY8TBjag2fzXGZ40LB6IKw45YeGUDY2I=
 github.com/hashicorp/errwrap v1.1.0/go.mod h1:YH+1FKiLXxHSkmPseP+kNlulaMuP3n2brvKWEqk/Jc4=
