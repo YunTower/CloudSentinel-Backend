@@ -108,7 +108,6 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 				"error":   "Admin username not configured",
 			})
 		}
-		fmt.Println("查询到的用户名:", userName)
 
 		// 查询密码哈希
 		var userPasswordHash string
@@ -128,7 +127,6 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 				"message": "密码配置不存在",
 			})
 		}
-		fmt.Println("查询到的密码哈希:", userPasswordHash)
 
 		// 验证用户名
 		if loginPost.Username != userName {
