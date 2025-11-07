@@ -122,6 +122,7 @@ func init() {
 			&providers.EventServiceProvider{},
 			&providers.ValidationServiceProvider{},
 			&providers.DatabaseServiceProvider{},
+			&providers.CleanupServiceProvider{},
 			&gin.ServiceProvider{},
 		},
 	})
