@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/goravel/framework/facades"
@@ -10,7 +11,7 @@ import (
 // SaveSystemInfo 保存系统基础信息
 func SaveSystemInfo(serverID string, data map[string]interface{}) error {
 	now := time.Now()
-	
+
 	updateData := map[string]interface{}{
 		"last_report_time": now.Unix(),
 		"status":           "online",
@@ -369,7 +370,7 @@ func ValidateAgentKey(agentKey string) (string, error) {
 		First(&server)
 
 	if err != nil {
-		facades.Log().Errorf("验证agent key失败: %v", err)
+		facades.Log().Channel("websocket").Warningf("验证agent key失败: %v", err)
 		return "", errors.New("无效的agent key")
 	}
 
@@ -387,20 +388,63 @@ func ValidateAgentKey(agentKey string) (string, error) {
 
 // ValidateAgentAuth 验证agent key和IP地址并返回server_id
 func ValidateAgentAuth(agentKey string, clientIP string) (string, error) {
-	var server map[string]interface{}
+	// 清理 IP 地址（移除端口号，如果有的话）
+	cleanIP := clientIP
+	if idx := strings.LastIndex(clientIP, ":"); idx != -1 {
+		// 检查是否是 IPv6 地址格式 [::1]:port
+		if strings.HasPrefix(clientIP, "[") {
+			if endIdx := strings.Index(clientIP, "]:"); endIdx != -1 {
+				cleanIP = clientIP[1:endIdx] // 提取 [::1] 中的 ::1
+			}
+		} else {
+			// IPv4 格式 127.0.0.1:port，提取 IP 部分
+			cleanIP = clientIP[:idx]
+		}
+	}
+	
+	keyPreview := agentKey
+	if len(keyPreview) > 8 {
+		keyPreview = keyPreview[:8] + "..."
+	}
+	
+	// 先尝试使用清理后的 IP 查询
+	var servers []map[string]interface{}
 	err := facades.Orm().Query().Table("servers").
 		Where("agent_key", agentKey).
-		Where("ip", clientIP).
-		First(&server)
+		Where("ip", cleanIP).
+		Get(&servers)
+	
+	var server map[string]interface{}
+	if err == nil && len(servers) > 0 {
+		// 找到匹配的记录
+		server = servers[0]
+	} else if err == nil && len(servers) == 0 {
+		// 没有找到记录，尝试使用原始 IP
+		if cleanIP != clientIP {
+			facades.Log().Channel("websocket").Infof("使用清理后的IP查询无结果，尝试使用原始IP: cleanIP=%s, originalIP=%s", cleanIP, clientIP)
+			err = facades.Orm().Query().Table("servers").
+				Where("agent_key", agentKey).
+				Where("ip", clientIP).
+				Get(&servers)
+			if err == nil && len(servers) > 0 {
+				server = servers[0]
+			}
+		}
+		if len(servers) == 0 {
+			err = errors.New("model value required")
+		}
+	}
 
 	if err != nil {
-		facades.Log().Errorf("验证agent认证失败: %v (key=%s, ip=%s)", err, agentKey, clientIP)
-		return "", errors.New("IP或agent_key验证失败")
+		// 记录认证失败信息
+		facades.Log().Channel("websocket").Warningf("验证agent认证失败: %v (key=%s, cleanIP=%s, originalIP=%s)", err, keyPreview, cleanIP, clientIP)
+		return "", errors.New("IP或agent_key验证失败，IP: " + clientIP)
 	}
 
 	if server == nil {
-		facades.Log().Warning("未找到匹配的服务器记录 (key=" + agentKey + ", ip=" + clientIP + ")")
-		return "", errors.New("IP或agent_key验证失败")
+		// 未找到匹配记录
+		facades.Log().Channel("websocket").Warningf("未找到匹配的服务器记录 (key=%s, cleanIP=%s, originalIP=%s)", keyPreview, cleanIP, clientIP)
+		return "", errors.New("IP或agent_key验证失败，IP: " + clientIP)
 	}
 
 	serverID, ok := server["id"].(string)
@@ -419,4 +463,3 @@ func ValidateAgentAuth(agentKey string, clientIP string) (string, error) {
 
 	return serverID, nil
 }
-

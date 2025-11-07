@@ -33,12 +33,12 @@ func (c *WebSocketController) HandleAgentConnection(ctx http.Context) http.Respo
 	// 升级HTTP连接为WebSocket
 	conn, err := c.Upgrader.Upgrade(ctx.Response().Writer(), ctx.Request().Origin(), nil)
 	if err != nil {
-		facades.Log().Errorf("WebSocket升级失败: %v", err)
+		facades.Log().Channel("websocket").Errorf("WebSocket升级失败: %v", err)
 		return ctx.Response().String(http.StatusBadRequest, "WebSocket升级失败")
 	}
 
 	remoteAddr := ctx.Request().Ip()
-	facades.Log().Infof("新的WebSocket连接来自: %s", remoteAddr)
+	facades.Log().Channel("websocket").Infof("新的WebSocket连接来自: %s", remoteAddr)
 
 	// 创建连接对象
 	agentConn := &services.AgentConnection{
@@ -53,7 +53,7 @@ func (c *WebSocketController) HandleAgentConnection(ctx http.Context) http.Respo
 			services.GetWebSocketService().Unregister(agentConn.ServerID)
 		}
 		conn.Close()
-		facades.Log().Infof("WebSocket连接关闭: %s", remoteAddr)
+		facades.Log().Channel("websocket").Infof("WebSocket连接关闭: %s", remoteAddr)
 	}()
 
 	// 启动读取消息循环
@@ -61,7 +61,7 @@ func (c *WebSocketController) HandleAgentConnection(ctx http.Context) http.Respo
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				facades.Log().Errorf("WebSocket读取错误: %v", err)
+				facades.Log().Channel("websocket").Errorf("WebSocket读取错误: %v", err)
 			}
 			break
 		}
@@ -69,23 +69,27 @@ func (c *WebSocketController) HandleAgentConnection(ctx http.Context) http.Respo
 		// 解析消息
 		var msg map[string]interface{}
 		if err := json.Unmarshal(message, &msg); err != nil {
-			facades.Log().Errorf("消息解析失败: %v", err)
+			facades.Log().Channel("websocket").Warningf("消息解析失败: %v", err)
 			c.sendError(conn, "消息格式错误")
 			continue
 		}
 
 		msgType, ok := msg["type"].(string)
 		if !ok {
-			facades.Log().Error("消息缺少type字段")
+			facades.Log().Channel("websocket").Warning("消息缺少type字段")
 			c.sendError(conn, "消息缺少type字段")
 			continue
 		}
 
-		// 处理消息
-		if err := c.handleMessage(msgType, msg, agentConn); err != nil {
-			facades.Log().Errorf("处理消息失败 [%s]: %v", msgType, err)
-			c.sendError(conn, err.Error())
+	// 处理消息
+	if err := c.handleMessage(msgType, msg, agentConn); err != nil {
+		if msgType == "auth" {
+			facades.Log().Channel("websocket").Warningf("处理消息失败 [%s]: %v", msgType, err)
+		} else {
+			facades.Log().Channel("websocket").Errorf("处理消息失败 [%s]: %v", msgType, err)
 		}
+		c.sendError(conn, err.Error())
+	}
 	}
 
 	return nil
@@ -113,7 +117,7 @@ func (c *WebSocketController) handleMessage(msgType string, data map[string]inte
 	case "virtual_memory":
 		return c.handleVirtualMemory(data, conn)
 	default:
-		facades.Log().Warning("未知的消息类型: " + msgType)
+		facades.Log().Channel("websocket").Warning("未知的消息类型: " + msgType)
 		return errors.New("未知的消息类型")
 	}
 }
@@ -122,23 +126,48 @@ func (c *WebSocketController) handleMessage(msgType string, data map[string]inte
 func (c *WebSocketController) handleAuth(data map[string]interface{}, conn *services.AgentConnection) error {
 	authData, ok := data["data"].(map[string]interface{})
 	if !ok {
+		// 认证数据格式错误
+		facades.Log().Channel("websocket").Warning("认证数据格式错误")
 		return errors.New("认证数据格式错误")
 	}
 
 	agentKey, ok := authData["key"].(string)
 	if !ok || agentKey == "" {
+		// 缺少 agent key
+		facades.Log().Channel("websocket").Warningf("认证失败: 缺少agent key (IP: %s)", conn.RemoteAddr)
 		return errors.New("缺少agent key")
+	}
+	
+	// 验证 key 长度（UUID 格式应该是 36 个字符）
+	if len(agentKey) != 36 {
+		keyPreview := agentKey
+		if len(keyPreview) > 8 {
+			keyPreview = keyPreview[:8] + "..."
+		}
+		facades.Log().Channel("websocket").Warningf("警告: 接收到的 agent key 长度异常 (%d)，正常应该是 36 个字符，key: %s", len(agentKey), keyPreview)
 	}
 
 	authType, _ := authData["type"].(string)
 	if authType != "server" {
+		keyPreview := agentKey
+		if len(keyPreview) > 8 {
+			keyPreview = keyPreview[:8] + "..."
+		}
+		facades.Log().Channel("websocket").Warningf("认证失败: 不支持的认证类型 %s (IP: %s, key: %s)", authType, conn.RemoteAddr, keyPreview)
 		return errors.New("不支持的认证类型")
 	}
 
 	// 验证agent key和IP并获取server_id
 	clientIP := conn.RemoteAddr
+	keyPreview := agentKey
+	if len(keyPreview) > 8 {
+		keyPreview = keyPreview[:8] + "..."
+	}
+	facades.Log().Channel("websocket").Infof("尝试认证: IP=%s, key=%s (完整长度: %d)", clientIP, keyPreview, len(agentKey))
+	
 	serverID, err := services.ValidateAgentAuth(agentKey, clientIP)
 	if err != nil {
+		facades.Log().Channel("websocket").Warningf("认证失败: %v (IP: %s, key: %s)", err, clientIP, keyPreview)
 		return errors.New("认证失败: " + err.Error())
 	}
 
@@ -161,7 +190,7 @@ func (c *WebSocketController) handleAuth(data map[string]interface{}, conn *serv
 		},
 	}
 
-	facades.Log().Infof("Agent认证成功: server_id=%s, remote=%s", serverID, conn.RemoteAddr)
+	facades.Log().Channel("websocket").Infof("Agent认证成功: server_id=%s, remote=%s", serverID, conn.RemoteAddr)
 	return conn.Conn.WriteJSON(response)
 }
 

@@ -49,11 +49,11 @@ func (s *WebSocketService) Register(serverID string, conn *AgentConnection) {
 	// 如果已存在旧连接，先关闭
 	if oldConn, exists := s.connections[serverID]; exists {
 		oldConn.Conn.Close()
-		facades.Log().Infof("关闭服务器 %s 的旧连接", serverID)
+		facades.Log().Channel("websocket").Infof("关闭服务器 %s 的旧连接", serverID)
 	}
 	
 	s.connections[serverID] = conn
-	facades.Log().Infof("注册服务器连接: %s (来自 %s)", serverID, conn.RemoteAddr)
+	facades.Log().Channel("websocket").Infof("注册服务器连接: %s (来自 %s)", serverID, conn.RemoteAddr)
 }
 
 // Unregister 注销agent连接
@@ -64,7 +64,7 @@ func (s *WebSocketService) Unregister(serverID string) {
 	if conn, exists := s.connections[serverID]; exists {
 		conn.Conn.Close()
 		delete(s.connections, serverID)
-		facades.Log().Infof("注销服务器连接: %s", serverID)
+		facades.Log().Channel("websocket").Infof("注销服务器连接: %s", serverID)
 		
 		// 更新服务器状态为offline
 		go func() {
@@ -75,7 +75,7 @@ func (s *WebSocketService) Unregister(serverID string) {
 					"updated_at": time.Now().Unix(),
 				})
 			if err != nil {
-				facades.Log().Errorf("更新服务器状态失败: %v", err)
+				facades.Log().Channel("websocket").Errorf("更新服务器状态失败: %v", err)
 			}
 		}()
 	}
@@ -138,7 +138,7 @@ func (s *WebSocketService) Broadcast(message interface{}) {
 		conn.Mutex.Unlock()
 		
 		if err != nil {
-			facades.Log().Errorf("向服务器 %s 发送消息失败: %v", serverID, err)
+			facades.Log().Channel("websocket").Errorf("向服务器 %s 发送消息失败: %v", serverID, err)
 			go s.Unregister(serverID)
 		}
 	}
@@ -160,7 +160,7 @@ func (s *WebSocketService) startHeartbeatChecker() {
 			
 			// 超过60秒未收到心跳，断开连接
 			if now.Sub(lastPing) > 60*time.Second {
-				facades.Log().Warning("服务器 " + serverID + " 心跳超时，断开连接")
+				facades.Log().Channel("websocket").Warning("服务器 " + serverID + " 心跳超时，断开连接")
 				s.Unregister(serverID)
 			}
 		}

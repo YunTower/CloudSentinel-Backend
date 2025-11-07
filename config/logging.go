@@ -37,6 +37,13 @@ func init() {
 				"days":   7,
 				"print":  false,
 			},
+			"websocket": map[string]any{
+				"driver": "daily",
+				"path":   "storage/logs/websocket.log",
+				"level":  config.Env("LOG_LEVEL", "debug"),
+				"days":   7,
+				"print":  false,
+			},
 		},
 	})
 }
