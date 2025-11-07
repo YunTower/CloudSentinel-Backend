@@ -34,6 +34,7 @@ func (kernel Kernel) Migrations() []schema.Migration {
 		&migrations.M20250116000011CreateServiceMonitorAlertsTable{},
 		&migrations.M20250116000012CreateLogCleanupConfigTable{},
 		&migrations.M20250116000013CreateNewIndexesTable{},
+		&migrations.M20250116000014AddAgentKeyToServersTable{},
 	}
 }
 
