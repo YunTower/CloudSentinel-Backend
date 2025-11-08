@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -57,6 +58,20 @@ func SaveSystemInfo(serverID string, data map[string]interface{}) error {
 	}
 
 	facades.Log().Infof("已保存服务器 %s 的系统信息", serverID)
+	
+	// 向前端推送系统信息更新
+	go func() {
+		wsService := GetWebSocketService()
+		message := map[string]interface{}{
+			"type": "system_info_update",
+			"data": map[string]interface{}{
+				"server_id": serverID,
+				"data":      updateData,
+			},
+		}
+		wsService.BroadcastToFrontend(message)
+	}()
+	
 	return nil
 }
 
@@ -109,7 +124,8 @@ func SaveMetrics(serverID string, data map[string]interface{}) error {
 
 	// 磁盘使用率
 	if v, ok := data["disk_usage"].(float64); ok {
-		metricsData["disk_usage"] = v
+		// 使用math.Round四舍五入到两位小数
+		metricsData["disk_usage"] = float64(int(v*100+0.5)) / 100.0
 	} else {
 		metricsData["disk_usage"] = 0.0 // 默认值
 	}
@@ -133,53 +149,99 @@ func SaveMetrics(serverID string, data map[string]interface{}) error {
 	}
 
 	facades.Log().Debugf("已保存服务器 %s 的性能指标", serverID)
+	
+	// 向前端推送性能指标更新
+	go func() {
+		wsService := GetWebSocketService()
+		
+		// 获取服务器boot_time以计算运行时间
+		var servers []map[string]interface{}
+		var uptimeStr string
+		err := facades.Orm().Query().Table("servers").
+			Select("boot_time").
+			Where("id", serverID).
+			Get(&servers)
+		
+		if err == nil && len(servers) > 0 {
+			if bootTimeVal, ok := servers[0]["boot_time"]; ok && bootTimeVal != nil {
+				var bootTimeUnix int64
+				switch v := bootTimeVal.(type) {
+				case int64:
+					bootTimeUnix = v
+				case float64:
+					bootTimeUnix = int64(v)
+				case int:
+					bootTimeUnix = int64(v)
+				}
+				
+				if bootTimeUnix > 0 {
+					bootTime := time.Unix(bootTimeUnix, 0)
+					duration := time.Since(bootTime)
+					
+					days := int(duration.Hours() / 24)
+					hours := int(duration.Hours()) % 24
+					minutes := int(duration.Minutes()) % 60
+					
+					if days > 0 {
+						uptimeStr = fmt.Sprintf("%d天%d小时%d分钟", days, hours, minutes)
+					} else if hours > 0 {
+						uptimeStr = fmt.Sprintf("%d小时%d分钟", hours, minutes)
+					} else {
+						uptimeStr = fmt.Sprintf("%d分钟", minutes)
+					}
+				}
+			}
+		}
+		
+		if uptimeStr == "" {
+			uptimeStr = "0天0时0分"
+		}
+		
+		// 推送实时指标更新（用于更新卡片显示）
+		message := map[string]interface{}{
+			"type": "metrics_update",
+			"data": map[string]interface{}{
+				"server_id": serverID,
+				"cpu_usage":  metricsData["cpu_usage"],
+				"memory_usage": metricsData["memory_usage"],
+				"disk_usage":   metricsData["disk_usage"],
+				"network_upload":   metricsData["network_upload"],
+				"network_download": metricsData["network_download"],
+				"uptime": uptimeStr,
+			},
+		}
+		wsService.BroadcastToFrontend(message)
+
+		// 推送实时数据点
+		realtimeDataPoint := map[string]interface{}{
+			"type": "metrics_realtime",
+			"data": map[string]interface{}{
+				"server_id": serverID,
+				"timestamp": timestamp,
+				"cpu_usage":  metricsData["cpu_usage"],
+				"memory_usage": metricsData["memory_usage"],
+				"disk_usage":   metricsData["disk_usage"],
+				"network_upload":   metricsData["network_upload"],
+				"network_download": metricsData["network_download"],
+			},
+		}
+		wsService.BroadcastToFrontend(realtimeDataPoint)
+	}()
+	
 	return nil
 }
 
-// SaveCPUInfo 保存CPU信息
-func SaveCPUInfo(serverID string, data []interface{}) error {
-	timestamp := time.Now().Unix()
-
-	for _, item := range data {
-		cpuData, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		record := map[string]interface{}{
-			"server_id": serverID,
-			"timestamp": timestamp,
-		}
-
-		if v, ok := cpuData["cpu_name"].(string); ok {
-			record["cpu_name"] = v
-		}
-		if v, ok := cpuData["cpu_usage"].(float64); ok {
-			record["cpu_usage"] = v
-		}
-		if v, ok := cpuData["cores"].(float64); ok {
-			record["cores"] = int(v)
-		}
-
-		_, err := facades.Orm().Query().Exec("INSERT INTO server_cpus (server_id, timestamp, cpu_name, cpu_usage, cores) VALUES (?, ?, ?, ?, ?)",
-			record["server_id"], record["timestamp"], record["cpu_name"], record["cpu_usage"], record["cores"])
-		if err != nil {
-			facades.Log().Errorf("保存CPU信息失败: %v", err)
-			return err
-		}
-	}
-
-	facades.Log().Debugf("已保存服务器 %s 的CPU信息", serverID)
-	return nil
-}
+// SaveCPUInfo 保存CPU信息（已废弃，CPU核心功能已移除）
+// func SaveCPUInfo(serverID string, data []interface{}) error {
+// 	// CPU核心功能已移除，不再保存
+// 	return nil
+// }
 
 // SaveMemoryInfo 保存内存信息
 func SaveMemoryInfo(serverID string, data map[string]interface{}) error {
-	timestamp := time.Now().Unix()
-
 	record := map[string]interface{}{
 		"server_id": serverID,
-		"timestamp": timestamp,
+		"timestamp": time.Now(), // 使用 time.Time 对象，匹配 DATETIME 类型
 	}
 
 	if v, ok := data["memory_total"].(float64); ok {
@@ -192,8 +254,8 @@ func SaveMemoryInfo(serverID string, data map[string]interface{}) error {
 		record["memory_usage_percent"] = v
 	}
 
-	_, err := facades.Orm().Query().Exec("INSERT INTO server_memory_history (server_id, timestamp, memory_total, memory_used, memory_usage_percent) VALUES (?, ?, ?, ?, ?)",
-		record["server_id"], record["timestamp"], record["memory_total"], record["memory_used"], record["memory_usage_percent"])
+	// 使用ORM的Create方法，自动处理timestamp字段
+	err := facades.Orm().Query().Table("server_memory_history").Create(record)
 	if err != nil {
 		facades.Log().Errorf("保存内存信息失败: %v", err)
 		return err
@@ -248,8 +310,6 @@ func SaveDiskInfo(serverID string, data []interface{}) error {
 
 // SaveNetworkInfo 保存网络信息
 func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
-	timestamp := time.Now().Unix()
-
 	// 保存TCP/UDP连接数
 	if tcpConns, ok1 := data["tcp_connections"].(float64); ok1 {
 		if udpConns, ok2 := data["udp_connections"].(float64); ok2 {
@@ -257,7 +317,7 @@ func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
 				"server_id":       serverID,
 				"tcp_connections": int(tcpConns),
 				"udp_connections": int(udpConns),
-				"timestamp":       timestamp,
+				"timestamp":       time.Now(), // 使用 time.Time 对象，匹配 DATETIME 类型
 			}
 
 			_, err := facades.Orm().Query().Exec("INSERT INTO server_network_connections (server_id, tcp_connections, udp_connections, timestamp) VALUES (?, ?, ?, ?)",
@@ -276,11 +336,11 @@ func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
 				"server_id":      serverID,
 				"upload_speed":   upload,
 				"download_speed": download,
-				"timestamp":      timestamp,
+				"timestamp":      time.Now(), // 使用 time.Time 对象，匹配 DATETIME 类型
 			}
 
-			_, err := facades.Orm().Query().Exec("INSERT INTO server_network_speed (server_id, upload_speed, download_speed, timestamp) VALUES (?, ?, ?, ?)",
-				record["server_id"], record["upload_speed"], record["download_speed"], record["timestamp"])
+			// 使用ORM的Create方法，自动处理timestamp字段
+			err := facades.Orm().Query().Table("server_network_speed").Create(record)
 			if err != nil {
 				facades.Log().Errorf("保存网络速度失败: %v", err)
 				return err
@@ -342,6 +402,31 @@ func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
 	return nil
 }
 
+// SaveDiskIO 保存磁盘IO信息
+func SaveDiskIO(serverID string, data map[string]interface{}) error {
+	// 保存磁盘IO速度（转换为KB/s）
+	if readSpeed, ok1 := data["read_speed"].(float64); ok1 {
+		if writeSpeed, ok2 := data["write_speed"].(float64); ok2 {
+			record := map[string]interface{}{
+				"server_id":  serverID,
+				"read_speed": readSpeed / 1024,  // 转换为KB/s
+				"write_speed": writeSpeed / 1024, // 转换为KB/s
+				"timestamp":  time.Now(),         // 使用 time.Time 对象，匹配 DATETIME 类型
+			}
+
+			// 使用ORM的Create方法，自动处理timestamp字段
+			err := facades.Orm().Query().Table("server_disk_io").Create(record)
+			if err != nil {
+				facades.Log().Errorf("保存磁盘IO失败: %v", err)
+				return err
+			}
+		}
+	}
+
+	facades.Log().Debugf("已保存服务器 %s 的磁盘IO信息", serverID)
+	return nil
+}
+
 // SaveVirtualMemory 保存虚拟内存信息
 func SaveVirtualMemory(serverID string, data map[string]interface{}) error {
 	timestamp := time.Now().Unix()
@@ -361,8 +446,8 @@ func SaveVirtualMemory(serverID string, data map[string]interface{}) error {
 		record["virtual_memory_free"] = int64(v)
 	}
 
-	_, err := facades.Orm().Query().Exec("INSERT INTO server_virtual_memory (server_id, timestamp, virtual_memory_total, virtual_memory_used, virtual_memory_free) VALUES (?, ?, ?, ?, ?)",
-		record["server_id"], record["timestamp"], record["virtual_memory_total"], record["virtual_memory_used"], record["virtual_memory_free"])
+	// 使用ORM的Create方法，自动处理timestamp字段
+	err := facades.Orm().Query().Table("server_virtual_memory").Create(record)
 	if err != nil {
 		facades.Log().Errorf("保存虚拟内存信息失败: %v", err)
 		return err
