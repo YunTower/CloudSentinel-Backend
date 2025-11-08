@@ -20,10 +20,20 @@ type AgentConnection struct {
 	RemoteAddr string
 }
 
+// FrontendConnection 表示一个前端连接
+type FrontendConnection struct {
+	Conn       *websocket.Conn
+	LastPing   time.Time
+	Mutex      sync.Mutex
+	RemoteAddr string
+}
+
 // WebSocketService 管理所有WebSocket连接
 type WebSocketService struct {
-	connections map[string]*AgentConnection
-	mutex       sync.RWMutex
+	connections       map[string]*AgentConnection
+	frontendConnections map[string]*FrontendConnection
+	mutex             sync.RWMutex
+	frontendMutex     sync.RWMutex
 }
 
 var wsService *WebSocketService
@@ -33,7 +43,8 @@ var once sync.Once
 func GetWebSocketService() *WebSocketService {
 	once.Do(func() {
 		wsService = &WebSocketService{
-			connections: make(map[string]*AgentConnection),
+			connections:        make(map[string]*AgentConnection),
+			frontendConnections: make(map[string]*FrontendConnection),
 		}
 		// 启动心跳检测
 		go wsService.startHeartbeatChecker()
@@ -172,5 +183,73 @@ func (s *WebSocketService) GetConnectionCount() int {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 	return len(s.connections)
+}
+
+// RegisterFrontend 注册新的前端连接
+func (s *WebSocketService) RegisterFrontend(connID string, conn *FrontendConnection) {
+	s.frontendMutex.Lock()
+	defer s.frontendMutex.Unlock()
+	
+	// 如果已存在旧连接，先关闭
+	if oldConn, exists := s.frontendConnections[connID]; exists {
+		oldConn.Conn.Close()
+		facades.Log().Channel("websocket").Infof("关闭前端连接 %s 的旧连接", connID)
+	}
+	
+	s.frontendConnections[connID] = conn
+	facades.Log().Channel("websocket").Infof("注册前端连接: %s (来自 %s)", connID, conn.RemoteAddr)
+}
+
+// UnregisterFrontend 注销前端连接
+func (s *WebSocketService) UnregisterFrontend(connID string) {
+	s.frontendMutex.Lock()
+	defer s.frontendMutex.Unlock()
+	
+	if conn, exists := s.frontendConnections[connID]; exists {
+		conn.Conn.Close()
+		delete(s.frontendConnections, connID)
+		facades.Log().Channel("websocket").Infof("注销前端连接: %s", connID)
+	}
+}
+
+// BroadcastToFrontend 向前端连接广播消息
+func (s *WebSocketService) BroadcastToFrontend(message interface{}) {
+	s.frontendMutex.RLock()
+	connections := make(map[string]*FrontendConnection)
+	for k, v := range s.frontendConnections {
+		connections[k] = v
+	}
+	s.frontendMutex.RUnlock()
+	
+	for connID, conn := range connections {
+		conn.Mutex.Lock()
+		err := conn.Conn.WriteJSON(message)
+		conn.Mutex.Unlock()
+		
+		if err != nil {
+			facades.Log().Channel("websocket").Errorf("向前端连接 %s 发送消息失败: %v", connID, err)
+			go s.UnregisterFrontend(connID)
+		}
+	}
+}
+
+// UpdateFrontendPing 更新前端连接的最后ping时间
+func (s *WebSocketService) UpdateFrontendPing(connID string) {
+	s.frontendMutex.RLock()
+	conn, exists := s.frontendConnections[connID]
+	s.frontendMutex.RUnlock()
+	
+	if exists {
+		conn.Mutex.Lock()
+		conn.LastPing = time.Now()
+		conn.Mutex.Unlock()
+	}
+}
+
+// GetFrontendConnectionCount 获取当前前端连接数
+func (s *WebSocketService) GetFrontendConnectionCount() int {
+	s.frontendMutex.RLock()
+	defer s.frontendMutex.RUnlock()
+	return len(s.frontendConnections)
 }
 

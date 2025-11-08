@@ -7,6 +7,7 @@ import (
 	nethttp "net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/goravel/framework/contracts/http"
 	"github.com/goravel/framework/facades"
 	"github.com/gorilla/websocket"
@@ -81,15 +82,15 @@ func (c *WebSocketController) HandleAgentConnection(ctx http.Context) http.Respo
 			continue
 		}
 
-	// 处理消息
-	if err := c.handleMessage(msgType, msg, agentConn); err != nil {
-		if msgType == "auth" {
-			facades.Log().Channel("websocket").Warningf("处理消息失败 [%s]: %v", msgType, err)
-		} else {
-			facades.Log().Channel("websocket").Errorf("处理消息失败 [%s]: %v", msgType, err)
+		// 处理消息
+		if err := c.handleMessage(msgType, msg, agentConn); err != nil {
+			if msgType == "auth" {
+				facades.Log().Channel("websocket").Warningf("处理消息失败 [%s]: %v", msgType, err)
+			} else {
+				facades.Log().Channel("websocket").Errorf("处理消息失败 [%s]: %v", msgType, err)
+			}
+			c.sendError(conn, err.Error())
 		}
-		c.sendError(conn, err.Error())
-	}
 	}
 
 	return nil
@@ -106,19 +107,24 @@ func (c *WebSocketController) handleMessage(msgType string, data map[string]inte
 		return c.handleSystemInfo(data, conn)
 	case "metrics":
 		return c.handleMetrics(data, conn)
-	case "cpu_info":
-		return c.handleCPUInfo(data, conn)
 	case "memory_info":
 		return c.handleMemoryInfo(data, conn)
 	case "disk_info":
 		return c.handleDiskInfo(data, conn)
+	case "disk_io":
+		return c.handleDiskIO(data, conn)
 	case "network_info":
 		return c.handleNetworkInfo(data, conn)
 	case "virtual_memory":
 		return c.handleVirtualMemory(data, conn)
+	case "cpu_info":
+		// CPU核心功能已移除，忽略此消息类型
+		facades.Log().Channel("websocket").Debug("收到已废弃的cpu_info消息，已忽略")
+		return nil
 	default:
 		facades.Log().Channel("websocket").Warning("未知的消息类型: " + msgType)
-		return errors.New("未知的消息类型")
+		// 对于未知消息类型，不返回错误，只记录警告
+		return nil
 	}
 }
 
@@ -137,7 +143,7 @@ func (c *WebSocketController) handleAuth(data map[string]interface{}, conn *serv
 		facades.Log().Channel("websocket").Warningf("认证失败: 缺少agent key (IP: %s)", conn.RemoteAddr)
 		return errors.New("缺少agent key")
 	}
-	
+
 	// 验证 key 长度（UUID 格式应该是 36 个字符）
 	if len(agentKey) != 36 {
 		keyPreview := agentKey
@@ -164,7 +170,7 @@ func (c *WebSocketController) handleAuth(data map[string]interface{}, conn *serv
 		keyPreview = keyPreview[:8] + "..."
 	}
 	facades.Log().Channel("websocket").Infof("尝试认证: IP=%s, key=%s (完整长度: %d)", clientIP, keyPreview, len(agentKey))
-	
+
 	serverID, err := services.ValidateAgentAuth(agentKey, clientIP)
 	if err != nil {
 		facades.Log().Channel("websocket").Warningf("认证失败: %v (IP: %s, key: %s)", err, clientIP, keyPreview)
@@ -237,20 +243,6 @@ func (c *WebSocketController) handleMetrics(data map[string]interface{}, conn *s
 	return services.SaveMetrics(conn.ServerID, metricsData)
 }
 
-// handleCPUInfo 处理CPU信息消息
-func (c *WebSocketController) handleCPUInfo(data map[string]interface{}, conn *services.AgentConnection) error {
-	if !conn.IsAuth {
-		return errors.New("未认证")
-	}
-
-	cpuData, ok := data["data"].([]interface{})
-	if !ok {
-		return errors.New("CPU信息数据格式错误")
-	}
-
-	return services.SaveCPUInfo(conn.ServerID, cpuData)
-}
-
 // handleMemoryInfo 处理内存信息消息
 func (c *WebSocketController) handleMemoryInfo(data map[string]interface{}, conn *services.AgentConnection) error {
 	if !conn.IsAuth {
@@ -277,6 +269,20 @@ func (c *WebSocketController) handleDiskInfo(data map[string]interface{}, conn *
 	}
 
 	return services.SaveDiskInfo(conn.ServerID, diskData)
+}
+
+// handleDiskIO 处理磁盘IO消息
+func (c *WebSocketController) handleDiskIO(data map[string]interface{}, conn *services.AgentConnection) error {
+	if !conn.IsAuth {
+		return errors.New("未认证")
+	}
+
+	diskIOData, ok := data["data"].(map[string]interface{})
+	if !ok {
+		return errors.New("磁盘IO数据格式错误")
+	}
+
+	return services.SaveDiskIO(conn.ServerID, diskIOData)
 }
 
 // handleNetworkInfo 处理网络信息消息
@@ -307,6 +313,117 @@ func (c *WebSocketController) handleVirtualMemory(data map[string]interface{}, c
 	return services.SaveVirtualMemory(conn.ServerID, vmData)
 }
 
+// HandleFrontendConnection 处理前端的WebSocket连接
+func (c *WebSocketController) HandleFrontendConnection(ctx http.Context) http.Response {
+	// 先升级HTTP连接为WebSocket（必须在验证之前升级）
+	conn, err := c.Upgrader.Upgrade(ctx.Response().Writer(), ctx.Request().Origin(), nil)
+	if err != nil {
+		facades.Log().Channel("websocket").Errorf("前端WebSocket升级失败: %v", err)
+		return ctx.Response().String(http.StatusBadRequest, "WebSocket升级失败")
+	}
+
+	remoteAddr := ctx.Request().Ip()
+	connID := uuid.New().String()
+	facades.Log().Channel("websocket").Infof("新的前端WebSocket连接来自: %s (连接ID: %s)", remoteAddr, connID)
+
+	// 从URL参数或Header获取token
+	var token string
+
+	// 尝试从URL查询参数获取token（通过原始HTTP请求）
+	req := ctx.Request().Origin()
+	if req != nil {
+		token = req.URL.Query().Get("token")
+	}
+
+	// 如果URL参数中没有，尝试从Header获取
+	if token == "" {
+		authHeader := ctx.Request().Header("Authorization")
+		if authHeader != "" && len(authHeader) > 7 && authHeader[:7] == "Bearer " {
+			token = authHeader[7:]
+		}
+	}
+
+	// 验证token（在升级后进行）
+	var userID string
+
+	if token != "" {
+		// 解析和验证token
+		payload, err := facades.Auth(ctx).Parse(token)
+		if err != nil {
+			facades.Log().Channel("websocket").Warningf("前端WebSocket token验证失败: %v", err)
+			// 发送错误消息并关闭连接
+			c.sendError(conn, "Token无效或已过期")
+			conn.Close()
+			return nil
+		}
+		userID = payload.Key
+		facades.Log().Channel("websocket").Infof("前端WebSocket认证成功: 用户ID=%s (连接ID: %s)", userID, connID)
+	} else {
+		facades.Log().Channel("websocket").Warning("前端WebSocket连接缺少token")
+		// 发送错误消息并关闭连接
+		c.sendError(conn, "缺少认证token")
+		conn.Close()
+		return nil
+	}
+
+	// 创建前端连接对象
+	frontendConn := &services.FrontendConnection{
+		Conn:       conn,
+		LastPing:   time.Now(),
+		RemoteAddr: remoteAddr,
+	}
+
+	// 注册连接
+	services.GetWebSocketService().RegisterFrontend(connID, frontendConn)
+
+	defer func() {
+		services.GetWebSocketService().UnregisterFrontend(connID)
+		conn.Close()
+		facades.Log().Channel("websocket").Infof("前端WebSocket连接关闭: %s (连接ID: %s)", remoteAddr, connID)
+	}()
+
+	// 启动读取消息循环
+	for {
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				facades.Log().Channel("websocket").Errorf("前端WebSocket读取错误: %v", err)
+			}
+			break
+		}
+
+		// 解析消息
+		var msg map[string]interface{}
+		if err := json.Unmarshal(message, &msg); err != nil {
+			facades.Log().Channel("websocket").Warningf("前端消息解析失败: %v", err)
+			c.sendError(conn, "消息格式错误")
+			continue
+		}
+
+		msgType, ok := msg["type"].(string)
+		if !ok {
+			facades.Log().Channel("websocket").Warning("前端消息缺少type字段")
+			c.sendError(conn, "消息缺少type字段")
+			continue
+		}
+
+		// 处理心跳消息
+		if msgType == "ping" {
+			services.GetWebSocketService().UpdateFrontendPing(connID)
+			response := map[string]interface{}{
+				"type":   "pong",
+				"status": "success",
+			}
+			if err := conn.WriteJSON(response); err != nil {
+				facades.Log().Channel("websocket").Errorf("发送pong消息失败: %v", err)
+				break
+			}
+		}
+	}
+
+	return nil
+}
+
 // sendError 发送错误消息
 func (c *WebSocketController) sendError(conn *websocket.Conn, message string) {
 	response := map[string]interface{}{
@@ -316,4 +433,3 @@ func (c *WebSocketController) sendError(conn *websocket.Conn, message string) {
 	}
 	conn.WriteJSON(response)
 }
-
