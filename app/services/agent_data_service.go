@@ -443,6 +443,9 @@ func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
 
 // SaveDiskIO 保存磁盘IO信息
 func SaveDiskIO(serverID string, data map[string]interface{}) error {
+	now := time.Now()
+	timestamp := now.Unix()
+
 	// 保存磁盘IO速度（转换为KB/s）
 	if readSpeed, ok1 := data["read_speed"].(float64); ok1 {
 		if writeSpeed, ok2 := data["write_speed"].(float64); ok2 {
@@ -450,7 +453,7 @@ func SaveDiskIO(serverID string, data map[string]interface{}) error {
 				"server_id":   serverID,
 				"read_speed":  readSpeed / 1024,  // 转换为KB/s
 				"write_speed": writeSpeed / 1024, // 转换为KB/s
-				"timestamp":   time.Now(),        // 使用 time.Time 对象，匹配 DATETIME 类型
+				"timestamp":   now,
 			}
 
 			// 使用ORM的Create方法，自动处理timestamp字段
@@ -459,6 +462,21 @@ func SaveDiskIO(serverID string, data map[string]interface{}) error {
 				facades.Log().Errorf("保存磁盘IO失败: %v", err)
 				return err
 			}
+
+			// 向前端推送磁盘IO实时数据点
+			go func() {
+				wsService := GetWebSocketService()
+				realtimeDataPoint := map[string]interface{}{
+					"type": "metrics_realtime",
+					"data": map[string]interface{}{
+						"server_id":  serverID,
+						"timestamp":  timestamp,
+						"disk_read":  readSpeed / 1024,  // KB/s
+						"disk_write": writeSpeed / 1024, // KB/s
+					},
+				}
+				wsService.BroadcastToFrontend(realtimeDataPoint)
+			}()
 		}
 	}
 
