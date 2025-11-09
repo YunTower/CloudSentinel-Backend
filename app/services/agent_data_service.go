@@ -3,11 +3,75 @@ package services
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/goravel/framework/facades"
 )
+
+// CalculateUptime 计算运行时间
+// 接受多种类型的 boot_time 值（time.Time, string, int64, float64, int），返回格式化的运行时间字符串
+func CalculateUptime(bootTimeVal interface{}) string {
+	if bootTimeVal == nil {
+		return "0天0小时0分钟"
+	}
+
+	var bootTime time.Time
+
+	// 处理不同类型的 boot_time 值
+	switch v := bootTimeVal.(type) {
+	case time.Time:
+		// 如果已经是 time.Time 类型，直接使用
+		bootTime = v
+	case string:
+		// 如果是字符串，尝试解析
+		if parsedTime, err := time.Parse(time.RFC3339, v); err == nil {
+			bootTime = parsedTime
+		} else if parsedTime, err := time.Parse("2006-01-02 15:04:05", v); err == nil {
+			bootTime = parsedTime
+		} else {
+			// 尝试解析 Unix 时间戳字符串
+			if unixTime, err := strconv.ParseInt(v, 10, 64); err == nil && unixTime > 0 {
+				bootTime = time.Unix(unixTime, 0)
+			}
+		}
+	case int64:
+		if v > 0 {
+			bootTime = time.Unix(v, 0)
+		}
+	case float64:
+		if v > 0 {
+			bootTime = time.Unix(int64(v), 0)
+		}
+	case int:
+		if v > 0 {
+			bootTime = time.Unix(int64(v), 0)
+		}
+	}
+
+	// 如果成功解析了启动时间，计算运行时间
+	if bootTime.IsZero() {
+		return "0天0小时0分钟"
+	}
+
+	duration := time.Since(bootTime)
+	if duration <= 0 {
+		return "0天0小时0分钟"
+	}
+
+	days := int(duration.Hours() / 24)
+	hours := int(duration.Hours()) % 24
+	minutes := int(duration.Minutes()) % 60
+
+	if days > 0 {
+		return fmt.Sprintf("%d天%d小时%d分钟", days, hours, minutes)
+	} else if hours > 0 {
+		return fmt.Sprintf("%d小时%d分钟", hours, minutes)
+	} else {
+		return fmt.Sprintf("%d分钟", minutes)
+	}
+}
 
 // SaveSystemInfo 保存系统基础信息
 func SaveSystemInfo(serverID string, data map[string]interface{}) error {
@@ -41,9 +105,13 @@ func SaveSystemInfo(serverID string, data map[string]interface{}) error {
 	if v, ok := data["cores"].(float64); ok {
 		updateData["cores"] = int(v)
 	}
-	if v, ok := data["boot_time"].(string); ok {
+	if v, ok := data["boot_time"].(string); ok && v != "" {
 		if bootTime, err := time.Parse(time.RFC3339, v); err == nil {
-			updateData["boot_time"] = bootTime.Unix()
+			// 将 boot_time 保存为 time.Time 类型，让 ORM 自动处理 TIMESTAMP 字段
+			updateData["boot_time"] = bootTime
+			facades.Log().Debugf("保存 boot_time: %s (Unix: %d)", bootTime.Format(time.RFC3339), bootTime.Unix())
+		} else {
+			facades.Log().Warningf("解析 boot_time 失败: %v, 原始值: %s", err, v)
 		}
 	}
 
@@ -58,7 +126,7 @@ func SaveSystemInfo(serverID string, data map[string]interface{}) error {
 	}
 
 	facades.Log().Infof("已保存服务器 %s 的系统信息", serverID)
-	
+
 	// 向前端推送系统信息更新
 	go func() {
 		wsService := GetWebSocketService()
@@ -71,7 +139,7 @@ func SaveSystemInfo(serverID string, data map[string]interface{}) error {
 		}
 		wsService.BroadcastToFrontend(message)
 	}()
-	
+
 	return nil
 }
 
@@ -149,11 +217,11 @@ func SaveMetrics(serverID string, data map[string]interface{}) error {
 	}
 
 	facades.Log().Debugf("已保存服务器 %s 的性能指标", serverID)
-	
+
 	// 向前端推送性能指标更新
 	go func() {
 		wsService := GetWebSocketService()
-		
+
 		// 获取服务器boot_time以计算运行时间
 		var servers []map[string]interface{}
 		var uptimeStr string
@@ -161,53 +229,24 @@ func SaveMetrics(serverID string, data map[string]interface{}) error {
 			Select("boot_time").
 			Where("id", serverID).
 			Get(&servers)
-		
+
 		if err == nil && len(servers) > 0 {
-			if bootTimeVal, ok := servers[0]["boot_time"]; ok && bootTimeVal != nil {
-				var bootTimeUnix int64
-				switch v := bootTimeVal.(type) {
-				case int64:
-					bootTimeUnix = v
-				case float64:
-					bootTimeUnix = int64(v)
-				case int:
-					bootTimeUnix = int64(v)
-				}
-				
-				if bootTimeUnix > 0 {
-					bootTime := time.Unix(bootTimeUnix, 0)
-					duration := time.Since(bootTime)
-					
-					days := int(duration.Hours() / 24)
-					hours := int(duration.Hours()) % 24
-					minutes := int(duration.Minutes()) % 60
-					
-					if days > 0 {
-						uptimeStr = fmt.Sprintf("%d天%d小时%d分钟", days, hours, minutes)
-					} else if hours > 0 {
-						uptimeStr = fmt.Sprintf("%d小时%d分钟", hours, minutes)
-					} else {
-						uptimeStr = fmt.Sprintf("%d分钟", minutes)
-					}
-				}
-			}
+			uptimeStr = CalculateUptime(servers[0]["boot_time"])
+		} else {
+			uptimeStr = "0天0小时0分钟"
 		}
-		
-		if uptimeStr == "" {
-			uptimeStr = "0天0时0分"
-		}
-		
+
 		// 推送实时指标更新（用于更新卡片显示）
 		message := map[string]interface{}{
 			"type": "metrics_update",
 			"data": map[string]interface{}{
-				"server_id": serverID,
-				"cpu_usage":  metricsData["cpu_usage"],
-				"memory_usage": metricsData["memory_usage"],
-				"disk_usage":   metricsData["disk_usage"],
+				"server_id":        serverID,
+				"cpu_usage":        metricsData["cpu_usage"],
+				"memory_usage":     metricsData["memory_usage"],
+				"disk_usage":       metricsData["disk_usage"],
 				"network_upload":   metricsData["network_upload"],
 				"network_download": metricsData["network_download"],
-				"uptime": uptimeStr,
+				"uptime":           uptimeStr,
 			},
 		}
 		wsService.BroadcastToFrontend(message)
@@ -216,18 +255,18 @@ func SaveMetrics(serverID string, data map[string]interface{}) error {
 		realtimeDataPoint := map[string]interface{}{
 			"type": "metrics_realtime",
 			"data": map[string]interface{}{
-				"server_id": serverID,
-				"timestamp": timestamp,
-				"cpu_usage":  metricsData["cpu_usage"],
-				"memory_usage": metricsData["memory_usage"],
-				"disk_usage":   metricsData["disk_usage"],
+				"server_id":        serverID,
+				"timestamp":        timestamp,
+				"cpu_usage":        metricsData["cpu_usage"],
+				"memory_usage":     metricsData["memory_usage"],
+				"disk_usage":       metricsData["disk_usage"],
 				"network_upload":   metricsData["network_upload"],
 				"network_download": metricsData["network_download"],
 			},
 		}
 		wsService.BroadcastToFrontend(realtimeDataPoint)
 	}()
-	
+
 	return nil
 }
 
@@ -359,7 +398,7 @@ func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
 				"INSERT OR REPLACE INTO server_traffic_usage (server_id, year, month, upload_bytes, download_bytes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM server_traffic_usage WHERE server_id = ? AND year = ? AND month = ?), ?), ?)",
 				serverID, year, month, int64(uploadBytes), int64(downloadBytes),
 				serverID, year, month, now, now)
-			
+
 			if err != nil {
 				var existing []map[string]interface{}
 				queryErr := facades.Orm().Query().Table("server_traffic_usage").
@@ -382,10 +421,10 @@ func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
 				} else {
 					// 插入新记录
 					err = facades.Orm().Query().Table("server_traffic_usage").Create(map[string]interface{}{
-						"server_id":     serverID,
-						"year":          year,
-						"month":         month,
-						"upload_bytes":  int64(uploadBytes),
+						"server_id":      serverID,
+						"year":           year,
+						"month":          month,
+						"upload_bytes":   int64(uploadBytes),
 						"download_bytes": int64(downloadBytes),
 					})
 				}
@@ -408,10 +447,10 @@ func SaveDiskIO(serverID string, data map[string]interface{}) error {
 	if readSpeed, ok1 := data["read_speed"].(float64); ok1 {
 		if writeSpeed, ok2 := data["write_speed"].(float64); ok2 {
 			record := map[string]interface{}{
-				"server_id":  serverID,
-				"read_speed": readSpeed / 1024,  // 转换为KB/s
+				"server_id":   serverID,
+				"read_speed":  readSpeed / 1024,  // 转换为KB/s
 				"write_speed": writeSpeed / 1024, // 转换为KB/s
-				"timestamp":  time.Now(),         // 使用 time.Time 对象，匹配 DATETIME 类型
+				"timestamp":   time.Now(),        // 使用 time.Time 对象，匹配 DATETIME 类型
 			}
 
 			// 使用ORM的Create方法，自动处理timestamp字段
@@ -496,19 +535,19 @@ func ValidateAgentAuth(agentKey string, clientIP string) (string, error) {
 			cleanIP = clientIP[:idx]
 		}
 	}
-	
+
 	keyPreview := agentKey
 	if len(keyPreview) > 8 {
 		keyPreview = keyPreview[:8] + "..."
 	}
-	
+
 	// 先尝试使用清理后的 IP 查询
 	var servers []map[string]interface{}
 	err := facades.Orm().Query().Table("servers").
 		Where("agent_key", agentKey).
 		Where("ip", cleanIP).
 		Get(&servers)
-	
+
 	var server map[string]interface{}
 	if err == nil && len(servers) > 0 {
 		// 找到匹配的记录

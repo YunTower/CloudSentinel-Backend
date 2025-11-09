@@ -13,6 +13,11 @@ import (
 	"github.com/goravel/framework/facades"
 )
 
+// calculateUptime 计算运行时间
+func calculateUptime(bootTimeVal interface{}) string {
+	return services.CalculateUptime(bootTimeVal)
+}
+
 type ServerController struct{}
 
 func NewServerController() *ServerController {
@@ -123,7 +128,7 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 func (c *ServerController) GetServers(ctx http.Context) http.Response {
 	var servers []map[string]interface{}
 	err := facades.Orm().Query().Table("servers").
-		Select("id", "name", "ip", "port", "os", "architecture", "status", "location", "created_at", "updated_at").
+		Select("id", "name", "ip", "port", "os", "architecture", "status", "location", "boot_time", "created_at", "updated_at").
 		OrderBy("created_at", "desc").
 		Get(&servers)
 
@@ -134,6 +139,11 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 			"message": "获取服务器列表失败",
 			"error":   err.Error(),
 		})
+	}
+
+	// 为每个服务器计算运行时间
+	for i := range servers {
+		servers[i]["uptime"] = calculateUptime(servers[i]["boot_time"])
 	}
 
 	return ctx.Response().Json(http.StatusOK, http.Json{
@@ -178,41 +188,7 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 	server := servers[0]
 
 	// 计算运行时间
-	var uptimeStr string
-	if bootTimeVal, ok := server["boot_time"]; ok && bootTimeVal != nil {
-		var bootTimeUnix int64
-		switch v := bootTimeVal.(type) {
-		case int64:
-			bootTimeUnix = v
-		case float64:
-			bootTimeUnix = int64(v)
-		case int:
-			bootTimeUnix = int64(v)
-		}
-
-		if bootTimeUnix > 0 {
-			bootTime := time.Unix(bootTimeUnix, 0)
-			duration := time.Since(bootTime)
-
-			days := int(duration.Hours() / 24)
-			hours := int(duration.Hours()) % 24
-			minutes := int(duration.Minutes()) % 60
-
-			if days > 0 {
-				uptimeStr = fmt.Sprintf("%d天%d小时%d分钟", days, hours, minutes)
-			} else if hours > 0 {
-				uptimeStr = fmt.Sprintf("%d小时%d分钟", hours, minutes)
-			} else {
-				uptimeStr = fmt.Sprintf("%d分钟", minutes)
-			}
-		}
-	}
-
-	if uptimeStr == "" {
-		uptimeStr = "0天0时0分"
-	}
-
-	server["uptime"] = uptimeStr
+	server["uptime"] = calculateUptime(server["boot_time"])
 
 	// 查询磁盘信息
 	var disks []map[string]interface{}
