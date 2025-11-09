@@ -3,6 +3,7 @@ package services
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -236,32 +237,51 @@ func SaveMetrics(serverID string, data map[string]interface{}) error {
 			uptimeStr = "0天0小时0分钟"
 		}
 
-		// 推送实时指标更新（用于更新卡片显示）
+		// 格式化数值为两位小数
+		var cpuUsage, memoryUsage, diskUsage, networkUpload, networkDownload float64
+		if v, ok := metricsData["cpu_usage"].(float64); ok {
+			cpuUsage = math.Floor(v*100) / 100.0
+		}
+		if v, ok := metricsData["memory_usage"].(float64); ok {
+			memoryUsage = math.Floor(v*100) / 100.0
+		}
+		if v, ok := metricsData["disk_usage"].(float64); ok {
+			diskUsage = math.Floor(v*100) / 100.0
+		}
+		if v, ok := metricsData["network_upload"].(float64); ok {
+			networkUpload = math.Floor(v*100) / 100.0
+		}
+		if v, ok := metricsData["network_download"].(float64); ok {
+			networkDownload = math.Floor(v*100) / 100.0
+		}
+
+		// 推送实时指标更新
 		message := map[string]interface{}{
 			"type": "metrics_update",
 			"data": map[string]interface{}{
 				"server_id":        serverID,
-				"cpu_usage":        metricsData["cpu_usage"],
-				"memory_usage":     metricsData["memory_usage"],
-				"disk_usage":       metricsData["disk_usage"],
-				"network_upload":   metricsData["network_upload"],
-				"network_download": metricsData["network_download"],
+				"cpu_usage":        cpuUsage,
+				"memory_usage":     memoryUsage,
+				"disk_usage":       diskUsage,
+				"network_upload":   networkUpload,
+				"network_download": networkDownload,
 				"uptime":           uptimeStr,
 			},
 		}
 		wsService.BroadcastToFrontend(message)
 
 		// 推送实时数据点
+
 		realtimeDataPoint := map[string]interface{}{
 			"type": "metrics_realtime",
 			"data": map[string]interface{}{
 				"server_id":        serverID,
 				"timestamp":        timestamp,
-				"cpu_usage":        metricsData["cpu_usage"],
-				"memory_usage":     metricsData["memory_usage"],
-				"disk_usage":       metricsData["disk_usage"],
-				"network_upload":   metricsData["network_upload"],
-				"network_download": metricsData["network_download"],
+				"cpu_usage":        cpuUsage,
+				"memory_usage":     memoryUsage,
+				"disk_usage":       diskUsage,
+				"network_upload":   networkUpload,
+				"network_download": networkDownload,
 			},
 		}
 		wsService.BroadcastToFrontend(realtimeDataPoint)
@@ -270,17 +290,11 @@ func SaveMetrics(serverID string, data map[string]interface{}) error {
 	return nil
 }
 
-// SaveCPUInfo 保存CPU信息（已废弃，CPU核心功能已移除）
-// func SaveCPUInfo(serverID string, data []interface{}) error {
-// 	// CPU核心功能已移除，不再保存
-// 	return nil
-// }
-
 // SaveMemoryInfo 保存内存信息
 func SaveMemoryInfo(serverID string, data map[string]interface{}) error {
 	record := map[string]interface{}{
 		"server_id": serverID,
-		"timestamp": time.Now(), // 使用 time.Time 对象，匹配 DATETIME 类型
+		"timestamp": time.Now(),
 	}
 
 	if v, ok := data["memory_total"].(float64); ok {
@@ -356,7 +370,7 @@ func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
 				"server_id":       serverID,
 				"tcp_connections": int(tcpConns),
 				"udp_connections": int(udpConns),
-				"timestamp":       time.Now(), // 使用 time.Time 对象，匹配 DATETIME 类型
+				"timestamp":       time.Now(),
 			}
 
 			_, err := facades.Orm().Query().Exec("INSERT INTO server_network_connections (server_id, tcp_connections, udp_connections, timestamp) VALUES (?, ?, ?, ?)",
@@ -375,7 +389,7 @@ func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
 				"server_id":      serverID,
 				"upload_speed":   upload,
 				"download_speed": download,
-				"timestamp":      time.Now(), // 使用 time.Time 对象，匹配 DATETIME 类型
+				"timestamp":      time.Now(),
 			}
 
 			// 使用ORM的Create方法，自动处理timestamp字段
@@ -466,13 +480,15 @@ func SaveDiskIO(serverID string, data map[string]interface{}) error {
 			// 向前端推送磁盘IO实时数据点
 			go func() {
 				wsService := GetWebSocketService()
+				readSpeedKB := readSpeed / 1024   // KB/s
+				writeSpeedKB := writeSpeed / 1024 // KB/s
 				realtimeDataPoint := map[string]interface{}{
 					"type": "metrics_realtime",
 					"data": map[string]interface{}{
 						"server_id":  serverID,
 						"timestamp":  timestamp,
-						"disk_read":  readSpeed / 1024,  // KB/s
-						"disk_write": writeSpeed / 1024, // KB/s
+						"disk_read":  math.Floor(readSpeedKB*100) / 100.0,
+						"disk_write": math.Floor(writeSpeedKB*100) / 100.0,
 					},
 				}
 				wsService.BroadcastToFrontend(realtimeDataPoint)
@@ -514,7 +530,7 @@ func SaveVirtualMemory(serverID string, data map[string]interface{}) error {
 	return nil
 }
 
-// ValidateAgentKey 验证agent key并返回server_id (保留兼容性)
+// ValidateAgentKey 验证agent key并返回server_id
 func ValidateAgentKey(agentKey string) (string, error) {
 	var server map[string]interface{}
 	err := facades.Orm().Query().Table("servers").
