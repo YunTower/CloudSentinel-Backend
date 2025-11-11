@@ -18,6 +18,7 @@ type AgentConnection struct {
 	Mutex      sync.Mutex
 	IsAuth     bool
 	RemoteAddr string
+	Closed     bool // 标记连接是否已被关闭
 }
 
 // FrontendConnection 表示一个前端连接
@@ -30,10 +31,10 @@ type FrontendConnection struct {
 
 // WebSocketService 管理所有WebSocket连接
 type WebSocketService struct {
-	connections       map[string]*AgentConnection
+	connections         map[string]*AgentConnection
 	frontendConnections map[string]*FrontendConnection
-	mutex             sync.RWMutex
-	frontendMutex     sync.RWMutex
+	mutex               sync.RWMutex
+	frontendMutex       sync.RWMutex
 }
 
 var wsService *WebSocketService
@@ -43,7 +44,7 @@ var once sync.Once
 func GetWebSocketService() *WebSocketService {
 	once.Do(func() {
 		wsService = &WebSocketService{
-			connections:        make(map[string]*AgentConnection),
+			connections:         make(map[string]*AgentConnection),
 			frontendConnections: make(map[string]*FrontendConnection),
 		}
 		// 启动心跳检测
@@ -56,13 +57,23 @@ func GetWebSocketService() *WebSocketService {
 func (s *WebSocketService) Register(serverID string, conn *AgentConnection) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	
-	// 如果已存在旧连接，先关闭
+
+	// 如果已存在旧连接，先标记为已关闭，然后异步关闭
+	// 这样可以避免在关闭连接时，旧连接还在尝试发送响应消息
 	if oldConn, exists := s.connections[serverID]; exists {
-		oldConn.Conn.Close()
-		facades.Log().Channel("websocket").Infof("关闭服务器 %s 的旧连接", serverID)
+		// 标记连接已关闭，避免继续处理消息
+		oldConn.Mutex.Lock()
+		oldConn.Closed = true
+		oldConn.Mutex.Unlock()
+
+		// 异步关闭连接，给当前消息处理一些时间
+		go func() {
+			time.Sleep(100 * time.Millisecond) // 给当前消息处理100ms时间
+			oldConn.Conn.Close()
+			facades.Log().Channel("websocket").Infof("关闭服务器 %s 的旧连接", serverID)
+		}()
 	}
-	
+
 	s.connections[serverID] = conn
 	facades.Log().Channel("websocket").Infof("注册服务器连接: %s (来自 %s)", serverID, conn.RemoteAddr)
 }
@@ -71,12 +82,12 @@ func (s *WebSocketService) Register(serverID string, conn *AgentConnection) {
 func (s *WebSocketService) Unregister(serverID string) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	
+
 	if conn, exists := s.connections[serverID]; exists {
 		conn.Conn.Close()
 		delete(s.connections, serverID)
 		facades.Log().Channel("websocket").Infof("注销服务器连接: %s", serverID)
-		
+
 		// 更新服务器状态为offline
 		go func() {
 			_, err := facades.Orm().Query().Table("servers").
@@ -96,7 +107,7 @@ func (s *WebSocketService) Unregister(serverID string) {
 func (s *WebSocketService) GetConnection(serverID string) (*AgentConnection, bool) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	
+
 	conn, exists := s.connections[serverID]
 	return conn, exists
 }
@@ -105,7 +116,7 @@ func (s *WebSocketService) GetConnection(serverID string) (*AgentConnection, boo
 func (s *WebSocketService) GetAllConnections() map[string]*AgentConnection {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	
+
 	// 返回副本避免并发问题
 	result := make(map[string]*AgentConnection)
 	for k, v := range s.connections {
@@ -119,7 +130,7 @@ func (s *WebSocketService) UpdatePing(serverID string) {
 	s.mutex.RLock()
 	conn, exists := s.connections[serverID]
 	s.mutex.RUnlock()
-	
+
 	if exists {
 		conn.Mutex.Lock()
 		conn.LastPing = time.Now()
@@ -133,10 +144,10 @@ func (s *WebSocketService) SendMessage(serverID string, message interface{}) err
 	if !exists {
 		return errors.New("服务器连接不存在")
 	}
-	
+
 	conn.Mutex.Lock()
 	defer conn.Mutex.Unlock()
-	
+
 	return conn.Conn.WriteJSON(message)
 }
 
@@ -147,7 +158,7 @@ func (s *WebSocketService) Broadcast(message interface{}) {
 		conn.Mutex.Lock()
 		err := conn.Conn.WriteJSON(message)
 		conn.Mutex.Unlock()
-		
+
 		if err != nil {
 			facades.Log().Channel("websocket").Errorf("向服务器 %s 发送消息失败: %v", serverID, err)
 			go s.Unregister(serverID)
@@ -159,16 +170,16 @@ func (s *WebSocketService) Broadcast(message interface{}) {
 func (s *WebSocketService) startHeartbeatChecker() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-	
+
 	for range ticker.C {
 		now := time.Now()
 		connections := s.GetAllConnections()
-		
+
 		for serverID, conn := range connections {
 			conn.Mutex.Lock()
 			lastPing := conn.LastPing
 			conn.Mutex.Unlock()
-			
+
 			// 超过60秒未收到心跳，断开连接
 			if now.Sub(lastPing) > 60*time.Second {
 				facades.Log().Channel("websocket").Warning("服务器 " + serverID + " 心跳超时，断开连接")
@@ -189,13 +200,13 @@ func (s *WebSocketService) GetConnectionCount() int {
 func (s *WebSocketService) RegisterFrontend(connID string, conn *FrontendConnection) {
 	s.frontendMutex.Lock()
 	defer s.frontendMutex.Unlock()
-	
+
 	// 如果已存在旧连接，先关闭
 	if oldConn, exists := s.frontendConnections[connID]; exists {
 		oldConn.Conn.Close()
 		facades.Log().Channel("websocket").Infof("关闭前端连接 %s 的旧连接", connID)
 	}
-	
+
 	s.frontendConnections[connID] = conn
 	facades.Log().Channel("websocket").Infof("注册前端连接: %s (来自 %s)", connID, conn.RemoteAddr)
 }
@@ -204,7 +215,7 @@ func (s *WebSocketService) RegisterFrontend(connID string, conn *FrontendConnect
 func (s *WebSocketService) UnregisterFrontend(connID string) {
 	s.frontendMutex.Lock()
 	defer s.frontendMutex.Unlock()
-	
+
 	if conn, exists := s.frontendConnections[connID]; exists {
 		conn.Conn.Close()
 		delete(s.frontendConnections, connID)
@@ -220,12 +231,12 @@ func (s *WebSocketService) BroadcastToFrontend(message interface{}) {
 		connections[k] = v
 	}
 	s.frontendMutex.RUnlock()
-	
+
 	for connID, conn := range connections {
 		conn.Mutex.Lock()
 		err := conn.Conn.WriteJSON(message)
 		conn.Mutex.Unlock()
-		
+
 		if err != nil {
 			facades.Log().Channel("websocket").Errorf("向前端连接 %s 发送消息失败: %v", connID, err)
 			go s.UnregisterFrontend(connID)
@@ -238,7 +249,7 @@ func (s *WebSocketService) UpdateFrontendPing(connID string) {
 	s.frontendMutex.RLock()
 	conn, exists := s.frontendConnections[connID]
 	s.frontendMutex.RUnlock()
-	
+
 	if exists {
 		conn.Mutex.Lock()
 		conn.LastPing = time.Now()
@@ -252,4 +263,3 @@ func (s *WebSocketService) GetFrontendConnectionCount() int {
 	defer s.frontendMutex.RUnlock()
 	return len(s.frontendConnections)
 }
-

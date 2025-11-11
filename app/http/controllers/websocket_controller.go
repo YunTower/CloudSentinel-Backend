@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"goravel/app/services"
+	"net"
 	nethttp "net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,7 +40,7 @@ func (c *WebSocketController) HandleAgentConnection(ctx http.Context) http.Respo
 		return ctx.Response().String(http.StatusBadRequest, "WebSocket升级失败")
 	}
 
-	remoteAddr := ctx.Request().Ip()
+	remoteAddr := c.extractIPFromAddr(conn.RemoteAddr())
 	facades.Log().Channel("websocket").Infof("新的WebSocket连接来自: %s", remoteAddr)
 
 	// 创建连接对象
@@ -82,8 +84,30 @@ func (c *WebSocketController) HandleAgentConnection(ctx http.Context) http.Respo
 			continue
 		}
 
+		// 检查连接是否已被标记为关闭（可能被新连接替换）
+		agentConn.Mutex.Lock()
+		closed := agentConn.Closed
+		agentConn.Mutex.Unlock()
+
+		// 如果连接已被标记为关闭，停止处理消息
+		if closed {
+			facades.Log().Channel("websocket").Debugf("连接已被新连接替换，停止处理消息")
+			break
+		}
+
 		// 处理消息
 		if err := c.handleMessage(msgType, msg, agentConn); err != nil {
+			// 再次检查连接状态
+			agentConn.Mutex.Lock()
+			closed = agentConn.Closed
+			agentConn.Mutex.Unlock()
+
+			// 如果连接已被关闭，不发送错误消息
+			if closed {
+				facades.Log().Channel("websocket").Debugf("连接已被关闭，跳过错误响应")
+				break
+			}
+
 			if msgType == "auth" {
 				facades.Log().Channel("websocket").Warningf("处理消息失败 [%s]: %v", msgType, err)
 			} else {
@@ -117,13 +141,8 @@ func (c *WebSocketController) handleMessage(msgType string, data map[string]inte
 		return c.handleNetworkInfo(data, conn)
 	case "virtual_memory":
 		return c.handleVirtualMemory(data, conn)
-	case "cpu_info":
-		// CPU核心功能已移除，忽略此消息类型
-		facades.Log().Channel("websocket").Debug("收到已废弃的cpu_info消息，已忽略")
-		return nil
 	default:
 		facades.Log().Channel("websocket").Warning("未知的消息类型: " + msgType)
-		// 对于未知消息类型，不返回错误，只记录警告
 		return nil
 	}
 }
@@ -175,6 +194,22 @@ func (c *WebSocketController) handleAuth(data map[string]interface{}, conn *serv
 	if err != nil {
 		facades.Log().Channel("websocket").Warningf("认证失败: %v (IP: %s, key: %s)", err, clientIP, keyPreview)
 		return errors.New("认证失败: " + err.Error())
+	}
+
+	// 认证成功后，如果当前IP是127.0.0.1，使用服务器记录中的IP作为真实IP
+	// 因为本地连接可能是通过代理、隧道或同一台机器，无法获取真实IP
+	if strings.HasPrefix(clientIP, "127.0.0.1") || strings.HasPrefix(clientIP, "::1") || strings.HasPrefix(clientIP, "localhost") {
+		var serverRecord []map[string]interface{}
+		if err := facades.Orm().Query().Table("servers").
+			Select("ip").
+			Where("id", serverID).
+			Get(&serverRecord); err == nil && len(serverRecord) > 0 {
+			if serverIP, ok := serverRecord[0]["ip"].(string); ok && serverIP != "" && serverIP != "127.0.0.1" {
+				// 使用服务器记录中的IP更新RemoteAddr（这是创建服务器时记录的真实IP）
+				conn.RemoteAddr = serverIP
+				facades.Log().Channel("websocket").Infof("检测到本地连接，使用服务器记录中的IP: %s (原连接IP: %s)", serverIP, clientIP)
+			}
+		}
 	}
 
 	// 更新连接信息
@@ -322,7 +357,7 @@ func (c *WebSocketController) HandleFrontendConnection(ctx http.Context) http.Re
 		return ctx.Response().String(http.StatusBadRequest, "WebSocket升级失败")
 	}
 
-	remoteAddr := ctx.Request().Ip()
+	remoteAddr := c.getClientIPFromConn(conn, ctx)
 	connID := uuid.New().String()
 	facades.Log().Channel("websocket").Infof("新的前端WebSocket连接来自: %s (连接ID: %s)", remoteAddr, connID)
 
@@ -431,5 +466,80 @@ func (c *WebSocketController) sendError(conn *websocket.Conn, message string) {
 		"status":  "error",
 		"message": message,
 	}
-	conn.WriteJSON(response)
+	// 忽略发送错误，因为连接可能已经关闭（例如被新连接替换）
+	_ = conn.WriteJSON(response)
+}
+
+// extractIPFromAddr 从 net.Addr 中提取IP地址
+func (c *WebSocketController) extractIPFromAddr(addr net.Addr) string {
+	if addr == nil {
+		return "unknown"
+	}
+	return c.extractIPFromAddrString(addr.String())
+}
+
+// extractIPFromAddrString 从地址字符串中提取IP地址
+func (c *WebSocketController) extractIPFromAddrString(addrStr string) string {
+	if addrStr == "" {
+		return "unknown"
+	}
+
+	// 处理 IPv6 地址
+	if strings.Contains(addrStr, "[") {
+		// IPv6 格式：[IP]:Port
+		start := strings.Index(addrStr, "[")
+		end := strings.Index(addrStr, "]")
+		if start != -1 && end != -1 && end > start {
+			return addrStr[start+1 : end]
+		}
+	} else {
+		// IPv4 格式：IP:Port
+		parts := strings.Split(addrStr, ":")
+		if len(parts) > 0 {
+			return parts[0]
+		}
+	}
+	return addrStr
+}
+
+// getClientIPFromConn 获取客户端真实IP地址
+func (c *WebSocketController) getClientIPFromConn(conn *websocket.Conn, ctx http.Context) string {
+	// 检查 X-Forwarded-For 头
+	if xff := ctx.Request().Header("X-Forwarded-For"); xff != "" {
+		// 取第一个IP
+		if len(xff) > 0 {
+			ips := strings.Split(xff, ",")
+			if len(ips) > 0 {
+				ip := strings.TrimSpace(ips[0])
+				if ip != "" {
+					return ip
+				}
+			}
+		}
+	}
+
+	// 检查 X-Real-Ip 头
+	if xri := ctx.Request().Header("X-Real-Ip"); xri != "" {
+		return xri
+	}
+
+	// 检查 X-Forwarded 头
+	if xf := ctx.Request().Header("X-Forwarded"); xf != "" {
+		if strings.HasPrefix(xf, "for=") {
+			parts := strings.Split(xf, ";")
+			if len(parts) > 0 {
+				forPart := strings.TrimPrefix(parts[0], "for=")
+				if forPart != "" {
+					return strings.TrimSpace(forPart)
+				}
+			}
+		}
+	}
+
+	// 从WebSocket连接对象获取远程地址
+	if conn != nil {
+		return c.extractIPFromAddr(conn.RemoteAddr())
+	}
+
+	return ctx.Request().Ip()
 }
