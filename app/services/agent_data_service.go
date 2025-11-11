@@ -15,7 +15,7 @@ import (
 // 接受多种类型的 boot_time 值（time.Time, string, int64, float64, int），返回格式化的运行时间字符串
 func CalculateUptime(bootTimeVal interface{}) string {
 	if bootTimeVal == nil {
-		return "0天0小时0分钟"
+		return "0天0时0分"
 	}
 
 	var bootTime time.Time
@@ -53,12 +53,12 @@ func CalculateUptime(bootTimeVal interface{}) string {
 
 	// 如果成功解析了启动时间，计算运行时间
 	if bootTime.IsZero() {
-		return "0天0小时0分钟"
+		return "0天0时0分"
 	}
 
 	duration := time.Since(bootTime)
 	if duration <= 0 {
-		return "0天0小时0分钟"
+		return "0天0时0分"
 	}
 
 	days := int(duration.Hours() / 24)
@@ -66,11 +66,11 @@ func CalculateUptime(bootTimeVal interface{}) string {
 	minutes := int(duration.Minutes()) % 60
 
 	if days > 0 {
-		return fmt.Sprintf("%d天%d小时%d分钟", days, hours, minutes)
+		return fmt.Sprintf("%d天%d时%d分", days, hours, minutes)
 	} else if hours > 0 {
-		return fmt.Sprintf("%d小时%d分钟", hours, minutes)
+		return fmt.Sprintf("%d时%d分", hours, minutes)
 	} else {
-		return fmt.Sprintf("%d分钟", minutes)
+		return fmt.Sprintf("%d分", minutes)
 	}
 }
 
@@ -234,7 +234,7 @@ func SaveMetrics(serverID string, data map[string]interface{}) error {
 		if err == nil && len(servers) > 0 {
 			uptimeStr = CalculateUptime(servers[0]["boot_time"])
 		} else {
-			uptimeStr = "0天0小时0分钟"
+			uptimeStr = "0天0时0分"
 		}
 
 		// 格式化数值为两位小数
