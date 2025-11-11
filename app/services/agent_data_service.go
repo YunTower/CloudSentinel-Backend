@@ -556,7 +556,7 @@ func ValidateAgentKey(agentKey string) (string, error) {
 
 // ValidateAgentAuth 验证agent key和IP地址并返回server_id
 func ValidateAgentAuth(agentKey string, clientIP string) (string, error) {
-	// 清理 IP 地址（移除端口号，如果有的话）
+	// 清理 IP 地址
 	cleanIP := clientIP
 	if idx := strings.LastIndex(clientIP, ":"); idx != -1 {
 		// 检查是否是 IPv6 地址格式 [::1]:port
@@ -575,44 +575,56 @@ func ValidateAgentAuth(agentKey string, clientIP string) (string, error) {
 		keyPreview = keyPreview[:8] + "..."
 	}
 
-	// 先尝试使用清理后的 IP 查询
+	// 判断是否是本地回环地址
+	isLocalhost := cleanIP == "127.0.0.1" || cleanIP == "::1" || cleanIP == "localhost"
+
 	var servers []map[string]interface{}
-	err := facades.Orm().Query().Table("servers").
-		Where("agent_key", agentKey).
-		Where("ip", cleanIP).
-		Get(&servers)
+	var err error
+
+	if isLocalhost {
+		// 如果是本地地址，只验证 agent_key，不验证 IP
+		// 因为可能是通过代理、隧道或同一台机器连接
+		facades.Log().Channel("websocket").Infof("检测到本地连接 (IP: %s)，仅验证 agent_key", cleanIP)
+		err = facades.Orm().Query().Table("servers").
+			Where("agent_key", agentKey).
+			Get(&servers)
+	} else {
+		// 非本地地址，同时验证 agent_key 和 IP
+		// 先尝试使用清理后的 IP 查询
+		err = facades.Orm().Query().Table("servers").
+			Where("agent_key", agentKey).
+			Where("ip", cleanIP).
+			Get(&servers)
+
+		// 如果没有找到记录，尝试使用原始 IP
+		if err == nil && len(servers) == 0 {
+			facades.Log().Channel("websocket").Infof("使用清理后的IP查询无结果，尝试使用原始IP: cleanIP=%s, originalIP=%s", cleanIP, clientIP)
+			err = facades.Orm().Query().Table("servers").
+				Where("agent_key", agentKey).
+				Where("ip", clientIP).
+				Get(&servers)
+		}
+	}
 
 	var server map[string]interface{}
 	if err == nil && len(servers) > 0 {
 		// 找到匹配的记录
 		server = servers[0]
 	} else if err == nil && len(servers) == 0 {
-		// 没有找到记录，尝试使用原始 IP
-		if cleanIP != clientIP {
-			facades.Log().Channel("websocket").Infof("使用清理后的IP查询无结果，尝试使用原始IP: cleanIP=%s, originalIP=%s", cleanIP, clientIP)
-			err = facades.Orm().Query().Table("servers").
-				Where("agent_key", agentKey).
-				Where("ip", clientIP).
-				Get(&servers)
-			if err == nil && len(servers) > 0 {
-				server = servers[0]
-			}
-		}
-		if len(servers) == 0 {
-			err = errors.New("model value required")
-		}
+		// 未找到匹配记录
+		err = errors.New("model value required")
 	}
 
 	if err != nil {
 		// 记录认证失败信息
 		facades.Log().Channel("websocket").Warningf("验证agent认证失败: %v (key=%s, cleanIP=%s, originalIP=%s)", err, keyPreview, cleanIP, clientIP)
-		return "", errors.New("IP或agent_key验证失败，IP: " + clientIP)
+		return "", errors.New("agent_key验证失败")
 	}
 
 	if server == nil {
 		// 未找到匹配记录
 		facades.Log().Channel("websocket").Warningf("未找到匹配的服务器记录 (key=%s, cleanIP=%s, originalIP=%s)", keyPreview, cleanIP, clientIP)
-		return "", errors.New("IP或agent_key验证失败，IP: " + clientIP)
+		return "", errors.New("agent_key验证失败")
 	}
 
 	serverID, ok := server["id"].(string)

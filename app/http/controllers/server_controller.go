@@ -126,9 +126,27 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 
 // GetServers 获取服务器列表
 func (c *ServerController) GetServers(ctx http.Context) http.Response {
+	// 获取用户类型
+	userType, _ := ctx.Value("user_type").(string)
+	if userType == "" {
+		userType = "guest" // 默认为游客
+	}
+
+	// 获取敏感信息隐藏设置
+	var hideSensitiveInfoStr string
+	hideSensitiveInfo := true // 默认隐藏
+	if err := facades.DB().Table("system_settings").
+		Where("setting_key", "hide_sensitive_info").
+		Value("setting_value", &hideSensitiveInfoStr); err == nil {
+		hideSensitiveInfo = hideSensitiveInfoStr == "true"
+	}
+
+	// 判断是否需要隐藏敏感信息
+	shouldHideSensitive := userType == "guest" && hideSensitiveInfo
+
 	var servers []map[string]interface{}
 	err := facades.Orm().Query().Table("servers").
-		Select("id", "name", "ip", "port", "os", "architecture", "status", "location", "boot_time", "created_at", "updated_at").
+		Select("id", "name", "ip", "port", "os", "architecture", "status", "location", "boot_time", "cores", "created_at", "updated_at").
 		OrderBy("created_at", "desc").
 		Get(&servers)
 
@@ -141,9 +159,80 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 		})
 	}
 
-	// 为每个服务器计算运行时间
+	// 为每个服务器获取最新指标和磁盘信息
 	for i := range servers {
+		serverID, ok := servers[i]["id"].(string)
+		if !ok {
+			continue
+		}
+
+		// 计算运行时间
 		servers[i]["uptime"] = calculateUptime(servers[i]["boot_time"])
+
+		// 获取最新指标数据
+		var latestMetrics []map[string]interface{}
+		facades.Orm().Query().Table("server_metrics").
+			Select("cpu_usage", "memory_usage", "disk_usage", "network_upload", "network_download").
+			Where("server_id", serverID).
+			OrderBy("timestamp", "desc").
+			Limit(1).
+			Get(&latestMetrics)
+
+		if len(latestMetrics) > 0 {
+			metric := latestMetrics[0]
+			servers[i]["cpu_usage"] = metric["cpu_usage"]
+			servers[i]["memory_usage"] = metric["memory_usage"]
+			servers[i]["disk_usage"] = metric["disk_usage"]
+			servers[i]["network_upload"] = metric["network_upload"]
+			servers[i]["network_download"] = metric["network_download"]
+		} else {
+			// 如果没有指标数据，设置默认值
+			servers[i]["cpu_usage"] = 0.0
+			servers[i]["memory_usage"] = 0.0
+			servers[i]["disk_usage"] = 0.0
+			servers[i]["network_upload"] = 0.0
+			servers[i]["network_download"] = 0.0
+		}
+
+		// 计算总存储容量
+		var disks []map[string]interface{}
+		facades.Orm().Query().Table("server_disks").
+			Select("total_size").
+			Where("server_id", serverID).
+			Get(&disks)
+
+		var totalStorageBytes int64 = 0
+		for _, disk := range disks {
+			if totalSize, ok := disk["total_size"].(int64); ok {
+				totalStorageBytes += totalSize
+			}
+		}
+
+		// 格式化存储容量
+		var totalStorage string
+		if totalStorageBytes == 0 {
+			totalStorage = ""
+		} else if totalStorageBytes >= 1024*1024*1024*1024 {
+			// TB
+			totalStorage = fmt.Sprintf("%.1fTB", float64(totalStorageBytes)/(1024*1024*1024*1024))
+		} else if totalStorageBytes >= 1024*1024*1024 {
+			// GB
+			totalStorage = fmt.Sprintf("%.1fGB", float64(totalStorageBytes)/(1024*1024*1024))
+		} else if totalStorageBytes >= 1024*1024 {
+			// MB
+			totalStorage = fmt.Sprintf("%.1fMB", float64(totalStorageBytes)/(1024*1024))
+		} else {
+			// KB
+			totalStorage = fmt.Sprintf("%.1fKB", float64(totalStorageBytes)/1024)
+		}
+		servers[i]["total_storage"] = totalStorage
+
+		// 根据角色和设置过滤敏感信息
+		if shouldHideSensitive {
+			// 隐藏IP地址和端口
+			servers[i]["ip"] = "***"
+			servers[i]["port"] = nil
+		}
 	}
 
 	return ctx.Response().Json(http.StatusOK, http.Json{
