@@ -10,14 +10,15 @@ import (
 
 // BaseConnection 基础连接实现
 type BaseConnection struct {
-	conn    *websocket.Conn
-	ctx     context.Context
-	cancel  context.CancelFunc
-	state   ConnectionState
-	mu      sync.RWMutex
-	config  *Config
+	conn     *websocket.Conn
+	ctx      context.Context
+	cancel   context.CancelFunc
+	state    ConnectionState
+	mu       sync.RWMutex
+	writeMu  sync.Mutex // 保护 WebSocket 写入操作，防止并发写入
+	config   *Config
 	lastPing time.Time
-	muPing  sync.RWMutex
+	muPing   sync.RWMutex
 }
 
 // NewBaseConnection 创建基础连接
@@ -104,8 +105,17 @@ func (c *BaseConnection) ReadMessage() (messageType int, p []byte, err error) {
 	return c.conn.ReadMessage()
 }
 
-// WriteJSON 写入 JSON 消息（使用超时控制）
+// WriteJSON 写入 JSON 消息
 func (c *BaseConnection) WriteJSON(v interface{}) error {
+	// 使用写锁保护，防止并发写入导致 panic
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	// 检查连接是否已关闭
+	if c.IsClosed() {
+		return ErrConnectionClosed
+	}
+
 	if c.config != nil && c.config.WriteTimeout > 0 {
 		deadline := time.Now().Add(c.config.WriteTimeout)
 		if err := c.SetWriteDeadline(deadline); err != nil {
@@ -252,4 +262,3 @@ func (c *FrontendConnection) GetInfo() *FrontendConnectionInfo {
 	info.LastPing = c.GetLastPing()
 	return &info
 }
-
