@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"fmt"
-	"math"
 	"strconv"
 	"time"
 
@@ -180,18 +179,22 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 
 		if len(latestMetrics) > 0 {
 			metric := latestMetrics[0]
-			servers[i]["cpu_usage"] = metric["cpu_usage"]
-			servers[i]["memory_usage"] = metric["memory_usage"]
-			servers[i]["disk_usage"] = metric["disk_usage"]
-			servers[i]["network_upload"] = metric["network_upload"]
-			servers[i]["network_download"] = metric["network_download"]
+			servers[i]["metrics"] = map[string]interface{}{
+				"cpu_usage":        services.FormatMetricValue(metric["cpu_usage"]),
+				"memory_usage":     services.FormatMetricValue(metric["memory_usage"]),
+				"disk_usage":       services.FormatMetricValue(metric["disk_usage"]),
+				"network_upload":   services.FormatMetricValue(metric["network_upload"]),
+				"network_download": services.FormatMetricValue(metric["network_download"]),
+			}
 		} else {
 			// 如果没有指标数据，设置默认值
-			servers[i]["cpu_usage"] = 0.0
-			servers[i]["memory_usage"] = 0.0
-			servers[i]["disk_usage"] = 0.0
-			servers[i]["network_upload"] = 0.0
-			servers[i]["network_download"] = 0.0
+			servers[i]["metrics"] = map[string]interface{}{
+				"cpu_usage":        0.0,
+				"memory_usage":     0.0,
+				"disk_usage":       0.0,
+				"network_upload":   0.0,
+				"network_download": 0.0,
+			}
 		}
 
 		// 计算总存储容量
@@ -714,15 +717,12 @@ func (c *ServerController) getServerMetricsByType(ctx http.Context, metricType s
 			metrics[i]["timestamp"] = unixTimestamp
 		}
 
-		// 处理所有数值字段，保留两位小数（不四舍五入，向下取整）
 		for key, value := range metrics[i] {
 			if key == "timestamp" {
 				continue // 跳过timestamp字段
 			}
-			if v, ok := value.(float64); ok {
-				// 向下取整到两位小数：先乘以100，向下取整，再除以100
-				metrics[i][key] = math.Floor(v*100) / 100.0
-			}
+			// 使用统一的格式化函数
+			metrics[i][key] = services.FormatMetricValue(value)
 		}
 	}
 

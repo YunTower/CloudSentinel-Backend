@@ -46,10 +46,10 @@ type ConnectionManager interface {
 
 // connectionManager 连接管理器实现
 type connectionManager struct {
-	agentConnections     map[string]*AgentConnection
-	frontendConnections  map[string]*FrontendConnection
-	agentMutex           sync.RWMutex
-	frontendMutex        sync.RWMutex
+	agentConnections        map[string]*AgentConnection
+	frontendConnections     map[string]*FrontendConnection
+	agentMutex              sync.RWMutex
+	frontendMutex           sync.RWMutex
 	oldConnectionCloseDelay time.Duration
 }
 
@@ -233,14 +233,34 @@ func (m *connectionManager) UpdateFrontendPing(connID string) {
 // BroadcastToFrontend 向前端连接广播消息
 func (m *connectionManager) BroadcastToFrontend(message interface{}) {
 	connections := m.GetAllFrontendConnections()
+	frontendCount := len(connections)
+
+	// 尝试获取消息类型用于日志
+	var msgType string
+	if msgMap, ok := message.(map[string]interface{}); ok {
+		if t, ok := msgMap["type"].(string); ok {
+			msgType = t
+		}
+	}
+
+	facades.Log().Channel("websocket").Infof("BroadcastToFrontend: 消息类型=%s, 前端连接数=%d", msgType, frontendCount)
+
+	if frontendCount == 0 {
+		facades.Log().Channel("websocket").Warningf("BroadcastToFrontend: 没有前端连接，消息无法推送 (类型: %s)", msgType)
+		return
+	}
+
 	for connID, conn := range connections {
 		if conn.IsClosed() {
+			facades.Log().Channel("websocket").Infof("BroadcastToFrontend: 跳过已关闭的连接 %s", connID)
 			continue
 		}
 
 		if err := conn.WriteJSON(message); err != nil {
 			facades.Log().Channel("websocket").Errorf("向前端连接 %s 发送消息失败: %v", connID, err)
 			go m.UnregisterFrontend(connID)
+		} else {
+			facades.Log().Channel("websocket").Infof("BroadcastToFrontend: 成功向前端连接 %s 发送消息 (类型: %s)", connID, msgType)
 		}
 	}
 }
@@ -296,7 +316,7 @@ func (m *connectionManager) checkAgentHeartbeats() {
 // 错误定义
 var (
 	ErrConnectionNotFound = &ConnectionError{Message: "连接不存在"}
-	ErrConnectionClosed  = &ConnectionError{Message: "连接已关闭"}
+	ErrConnectionClosed   = &ConnectionError{Message: "连接已关闭"}
 )
 
 // ConnectionError 连接错误
@@ -307,4 +327,3 @@ type ConnectionError struct {
 func (e *ConnectionError) Error() string {
 	return e.Message
 }
-

@@ -56,6 +56,11 @@ func GetWebSocketService() *WebSocketService {
 	return wsService
 }
 
+// GetManager 获取连接管理器
+func (s *WebSocketService) GetManager() ws.ConnectionManager {
+	return s.manager
+}
+
 // Register 注册新的agent连接（保持向后兼容）
 func (s *WebSocketService) Register(serverID string, conn *AgentConnection) {
 	// 转换为新的连接类型

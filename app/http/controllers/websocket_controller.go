@@ -26,8 +26,9 @@ func NewWebSocketController() *WebSocketController {
 	// 创建升级器
 	upgrader := ws.NewUpgrader(config)
 
-	// 创建连接管理器
-	manager := ws.NewConnectionManager()
+	// 使用全局的 WebSocket 服务单例，确保连接管理器实例一致
+	wsService := services.GetWebSocketService()
+	manager := wsService.GetManager()
 
 	// 创建消息处理器
 	agentHandler := ws.NewAgentMessageHandler(manager, services.GetAgentAuthValidator(), services.GetAgentDataSaver())
@@ -217,6 +218,40 @@ func (c *WebSocketController) HandleFrontendConnection(ctx http.Context) http.Re
 		return nil
 	}
 
+	// 发送认证成功消息
+	authSuccessMsg := map[string]interface{}{
+		"type":    "auth_success",
+		"status":  "success",
+		"message": "连接已建立",
+		"data": map[string]interface{}{
+			"conn_id": connID,
+			"user_id": userID,
+		},
+	}
+	if err := frontendConn.WriteJSON(authSuccessMsg); err != nil {
+		facades.Log().Channel("websocket").Errorf("发送认证成功消息失败: %v", err)
+	}
+
+	// 检查是否有 agent 连接，并发送连接状态
+	agentCount := c.manager.GetAgentConnectionCount()
+	facades.Log().Channel("websocket").Infof("当前 agent 连接数: %d", agentCount)
+
+	// 发送连接状态消息，告知前端当前 agent 连接数
+	connectionStatusMsg := map[string]interface{}{
+		"type":    "connection_status",
+		"status":  "success",
+		"message": "连接状态",
+		"data": map[string]interface{}{
+			"agent_count": agentCount,
+		},
+	}
+	if err := frontendConn.WriteJSON(connectionStatusMsg); err != nil {
+		facades.Log().Channel("websocket").Errorf("发送连接状态消息失败: %v", err)
+	}
+
+	// 推送所有在线服务器的初始状态数据
+	c.pushInitialServerStates(frontendConn)
+
 	defer func() {
 		c.manager.UnregisterFrontend(connID)
 		frontendConn.Close()
@@ -275,4 +310,106 @@ func (c *WebSocketController) sendError(conn *websocket.Conn, message string) {
 	}
 	// 忽略发送错误，因为连接可能已经关闭（例如被新连接替换）
 	_ = conn.WriteJSON(response)
+}
+
+// pushInitialServerStates 推送所有在线服务器的初始状态数据
+func (c *WebSocketController) pushInitialServerStates(frontendConn *ws.FrontendConnection) {
+	// 检查连接是否已关闭
+	if frontendConn.IsClosed() {
+		facades.Log().Channel("websocket").Warning("前端连接已关闭，跳过初始数据推送")
+		return
+	}
+
+	// 查询所有在线服务器
+	var servers []map[string]interface{}
+	err := facades.Orm().Query().Table("servers").
+		Select("id", "boot_time").
+		Where("status", "online").
+		Get(&servers)
+
+	if err != nil {
+		facades.Log().Channel("websocket").Errorf("查询在线服务器失败: %v", err)
+		return
+	}
+
+	if len(servers) == 0 {
+		facades.Log().Channel("websocket").Debug("没有在线服务器，跳过初始数据推送")
+		return
+	}
+
+	facades.Log().Channel("websocket").Infof("开始推送 %d 个在线服务器的初始状态", len(servers))
+
+	// 为每个服务器推送最新状态
+	for _, server := range servers {
+		serverID, ok := server["id"].(string)
+		if !ok {
+			continue
+		}
+
+		// 检查连接是否已关闭
+		if frontendConn.IsClosed() {
+			facades.Log().Channel("websocket").Warning("前端连接已关闭，停止推送初始数据")
+			return
+		}
+
+		// 获取最新指标数据
+		var latestMetrics []map[string]interface{}
+		err := facades.Orm().Query().Table("server_metrics").
+			Select("cpu_usage", "memory_usage", "disk_usage", "network_upload", "network_download").
+			Where("server_id", serverID).
+			OrderBy("timestamp", "desc").
+			Limit(1).
+			Get(&latestMetrics)
+
+		if err != nil {
+			facades.Log().Channel("websocket").Warningf("查询服务器 %s 的指标数据失败: %v", serverID, err)
+			continue
+		}
+
+		// 如果没有指标数据，跳过该服务器
+		if len(latestMetrics) == 0 {
+			facades.Log().Channel("websocket").Debugf("服务器 %s 没有指标数据，跳过", serverID)
+			continue
+		}
+
+		metric := latestMetrics[0]
+
+		// 计算运行时间
+		uptimeStr := services.CalculateUptime(server["boot_time"])
+
+		// 格式化数值为两位小数
+		cpuUsage := services.FormatMetricValue(metric["cpu_usage"])
+		memoryUsage := services.FormatMetricValue(metric["memory_usage"])
+		diskUsage := services.FormatMetricValue(metric["disk_usage"])
+		networkUpload := services.FormatMetricValue(metric["network_upload"])
+		networkDownload := services.FormatMetricValue(metric["network_download"])
+
+		// 构造并推送 metrics_update 消息
+		message := map[string]interface{}{
+			"type": "metrics_update",
+			"data": map[string]interface{}{
+				"server_id": serverID,
+				"metrics": map[string]interface{}{
+					"cpu_usage":        cpuUsage,
+					"memory_usage":     memoryUsage,
+					"disk_usage":       diskUsage,
+					"network_upload":   networkUpload,
+					"network_download": networkDownload,
+				},
+				"uptime": uptimeStr,
+			},
+		}
+
+		if err := frontendConn.WriteJSON(message); err != nil {
+			facades.Log().Channel("websocket").Errorf("推送服务器 %s 的初始状态失败: %v", serverID, err)
+			// 如果连接已关闭，停止推送
+			if frontendConn.IsClosed() {
+				return
+			}
+		} else {
+			facades.Log().Channel("websocket").Debugf("成功推送服务器 %s 的初始状态", serverID)
+		}
+	}
+
+	facades.Log().Channel("websocket").Info("初始服务器状态推送完成")
 }

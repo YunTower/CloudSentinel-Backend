@@ -11,6 +11,25 @@ import (
 	"github.com/goravel/framework/facades"
 )
 
+// FormatMetricValue 格式化指标值为两位小数
+func FormatMetricValue(value interface{}) float64 {
+	var v float64
+	switch val := value.(type) {
+	case float64:
+		v = val
+	case float32:
+		v = float64(val)
+	case int:
+		v = float64(val)
+	case int64:
+		v = float64(val)
+	default:
+		return 0.0
+	}
+	// 向下取整到两位小数：先乘以100，向下取整，再除以100
+	return math.Floor(v*100) / 100.0
+}
+
 // CalculateUptime 计算运行时间
 // 接受多种类型的 boot_time 值（time.Time, string, int64, float64, int），返回格式化的运行时间字符串
 func CalculateUptime(bootTimeVal interface{}) string {
@@ -179,34 +198,33 @@ func SaveMetrics(serverID string, data map[string]interface{}) error {
 
 	// CPU使用率
 	if v, ok := data["cpu_usage"].(float64); ok {
-		metricsData["cpu_usage"] = v
+		metricsData["cpu_usage"] = FormatMetricValue(v)
 	} else {
 		metricsData["cpu_usage"] = 0.0 // 默认值
 	}
 
 	// 内存使用率
 	if v, ok := data["memory_usage_percent"].(float64); ok {
-		metricsData["memory_usage"] = v
+		metricsData["memory_usage"] = FormatMetricValue(v)
 	} else {
 		metricsData["memory_usage"] = 0.0 // 默认值
 	}
 
 	// 磁盘使用率
 	if v, ok := data["disk_usage"].(float64); ok {
-		// 使用math.Round四舍五入到两位小数
-		metricsData["disk_usage"] = float64(int(v*100+0.5)) / 100.0
+		metricsData["disk_usage"] = FormatMetricValue(v)
 	} else {
 		metricsData["disk_usage"] = 0.0 // 默认值
 	}
 
 	// 网络速度
 	if v, ok := data["network_upload"].(float64); ok {
-		metricsData["network_upload"] = v
+		metricsData["network_upload"] = FormatMetricValue(v)
 	} else {
 		metricsData["network_upload"] = 0.0
 	}
 	if v, ok := data["network_download"].(float64); ok {
-		metricsData["network_download"] = v
+		metricsData["network_download"] = FormatMetricValue(v)
 	} else {
 		metricsData["network_download"] = 0.0
 	}
@@ -221,6 +239,7 @@ func SaveMetrics(serverID string, data map[string]interface{}) error {
 
 	// 向前端推送性能指标更新
 	go func() {
+		facades.Log().Infof("开始准备推送服务器 %s 的性能指标更新", serverID)
 		wsService := GetWebSocketService()
 
 		// 获取服务器boot_time以计算运行时间
@@ -238,50 +257,44 @@ func SaveMetrics(serverID string, data map[string]interface{}) error {
 		}
 
 		// 格式化数值为两位小数
-		var cpuUsage, memoryUsage, diskUsage, networkUpload, networkDownload float64
-		if v, ok := metricsData["cpu_usage"].(float64); ok {
-			cpuUsage = math.Floor(v*100) / 100.0
-		}
-		if v, ok := metricsData["memory_usage"].(float64); ok {
-			memoryUsage = math.Floor(v*100) / 100.0
-		}
-		if v, ok := metricsData["disk_usage"].(float64); ok {
-			diskUsage = math.Floor(v*100) / 100.0
-		}
-		if v, ok := metricsData["network_upload"].(float64); ok {
-			networkUpload = math.Floor(v*100) / 100.0
-		}
-		if v, ok := metricsData["network_download"].(float64); ok {
-			networkDownload = math.Floor(v*100) / 100.0
-		}
+		cpuUsage := FormatMetricValue(metricsData["cpu_usage"])
+		memoryUsage := FormatMetricValue(metricsData["memory_usage"])
+		diskUsage := FormatMetricValue(metricsData["disk_usage"])
+		networkUpload := FormatMetricValue(metricsData["network_upload"])
+		networkDownload := FormatMetricValue(metricsData["network_download"])
 
 		// 推送实时指标更新
 		message := map[string]interface{}{
 			"type": "metrics_update",
 			"data": map[string]interface{}{
-				"server_id":        serverID,
-				"cpu_usage":        cpuUsage,
-				"memory_usage":     memoryUsage,
-				"disk_usage":       diskUsage,
-				"network_upload":   networkUpload,
-				"network_download": networkDownload,
-				"uptime":           uptimeStr,
+				"server_id": serverID,
+				"metrics": map[string]interface{}{
+					"cpu_usage":        cpuUsage,
+					"memory_usage":     memoryUsage,
+					"disk_usage":       diskUsage,
+					"network_upload":   networkUpload,
+					"network_download": networkDownload,
+				},
+				"uptime": uptimeStr,
 			},
 		}
+		facades.Log().Infof("准备推送 metrics_update 消息，服务器: %s", serverID)
 		wsService.BroadcastToFrontend(message)
+		facades.Log().Infof("已调用 BroadcastToFrontend，服务器: %s", serverID)
 
 		// 推送实时数据点
-
 		realtimeDataPoint := map[string]interface{}{
 			"type": "metrics_realtime",
 			"data": map[string]interface{}{
-				"server_id":        serverID,
-				"timestamp":        timestamp,
-				"cpu_usage":        cpuUsage,
-				"memory_usage":     memoryUsage,
-				"disk_usage":       diskUsage,
-				"network_upload":   networkUpload,
-				"network_download": networkDownload,
+				"server_id": serverID,
+				"timestamp": timestamp,
+				"metrics": map[string]interface{}{
+					"cpu_usage":        cpuUsage,
+					"memory_usage":     memoryUsage,
+					"disk_usage":       diskUsage,
+					"network_upload":   networkUpload,
+					"network_download": networkDownload,
+				},
 			},
 		}
 		wsService.BroadcastToFrontend(realtimeDataPoint)
@@ -485,10 +498,12 @@ func SaveDiskIO(serverID string, data map[string]interface{}) error {
 				realtimeDataPoint := map[string]interface{}{
 					"type": "metrics_realtime",
 					"data": map[string]interface{}{
-						"server_id":  serverID,
-						"timestamp":  timestamp,
-						"disk_read":  math.Floor(readSpeedKB*100) / 100.0,
-						"disk_write": math.Floor(writeSpeedKB*100) / 100.0,
+						"server_id": serverID,
+						"timestamp": timestamp,
+						"metrics": map[string]interface{}{
+							"disk_read":  FormatMetricValue(readSpeedKB),
+							"disk_write": FormatMetricValue(writeSpeedKB),
+						},
 					},
 				}
 				wsService.BroadcastToFrontend(realtimeDataPoint)
