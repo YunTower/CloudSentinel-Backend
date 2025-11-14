@@ -318,6 +318,36 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 		server["memory"] = nil
 	}
 
+	// 查询最新Swap记录
+	var swapRecords []map[string]interface{}
+	facades.Orm().Query().Table("server_swap").
+		Select("swap_total", "swap_used", "swap_free", "timestamp").
+		Where("server_id", serverID).
+		OrderBy("timestamp", "desc").
+		Limit(1).
+		Get(&swapRecords)
+
+	if len(swapRecords) > 0 {
+		swapRecord := swapRecords[0]
+		// 计算swap使用率
+		var usagePercent float64
+		if total, ok := swapRecord["swap_total"].(int64); ok && total > 0 {
+			if used, ok := swapRecord["swap_used"].(int64); ok {
+				usagePercent = float64(used) / float64(total) * 100
+			}
+		}
+		// 转换为前端期望的字段名
+		server["swap"] = map[string]interface{}{
+			"swap_total":         swapRecord["swap_total"],
+			"swap_used":          swapRecord["swap_used"],
+			"swap_free":          swapRecord["swap_free"],
+			"swap_usage_percent": usagePercent,
+			"timestamp":          swapRecord["timestamp"],
+		}
+	} else {
+		server["swap"] = nil
+	}
+
 	// 查询自开机以来的总流量统计（所有月份的总和）
 	var totalTraffic []map[string]interface{}
 	err = facades.Orm().Query().Raw(

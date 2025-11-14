@@ -13,6 +13,6 @@ type AgentDataSaver interface {
 	SaveDiskInfo(serverID string, data []interface{}) error
 	SaveDiskIO(serverID string, data map[string]interface{}) error
 	SaveNetworkInfo(serverID string, data map[string]interface{}) error
-	SaveVirtualMemory(serverID string, data map[string]interface{}) error
+	SaveSwapInfo(serverID string, data map[string]interface{}) error
 }
 

@@ -515,8 +515,8 @@ func SaveDiskIO(serverID string, data map[string]interface{}) error {
 	return nil
 }
 
-// SaveVirtualMemory 保存虚拟内存信息
-func SaveVirtualMemory(serverID string, data map[string]interface{}) error {
+// SaveSwapInfo 保存Swap内存信息
+func SaveSwapInfo(serverID string, data map[string]interface{}) error {
 	timestamp := time.Now().Unix()
 
 	record := map[string]interface{}{
@@ -524,24 +524,24 @@ func SaveVirtualMemory(serverID string, data map[string]interface{}) error {
 		"timestamp": timestamp,
 	}
 
-	if v, ok := data["virtual_memory_total"].(float64); ok {
-		record["virtual_memory_total"] = int64(v)
+	if v, ok := data["swap_total"].(float64); ok {
+		record["swap_total"] = int64(v)
 	}
-	if v, ok := data["virtual_memory_used"].(float64); ok {
-		record["virtual_memory_used"] = int64(v)
+	if v, ok := data["swap_used"].(float64); ok {
+		record["swap_used"] = int64(v)
 	}
-	if v, ok := data["virtual_memory_free"].(float64); ok {
-		record["virtual_memory_free"] = int64(v)
+	if v, ok := data["swap_free"].(float64); ok {
+		record["swap_free"] = int64(v)
 	}
 
 	// 使用ORM的Create方法，自动处理timestamp字段
-	err := facades.Orm().Query().Table("server_virtual_memory").Create(record)
+	err := facades.Orm().Query().Table("server_swap").Create(record)
 	if err != nil {
-		facades.Log().Errorf("保存虚拟内存信息失败: %v", err)
+		facades.Log().Errorf("保存Swap信息失败: %v", err)
 		return err
 	}
 
-	facades.Log().Debugf("已保存服务器 %s 的虚拟内存信息", serverID)
+	facades.Log().Debugf("已保存服务器 %s 的Swap信息", serverID)
 	return nil
 }
 

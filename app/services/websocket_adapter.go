@@ -38,8 +38,8 @@ func (s *agentDataSaver) SaveNetworkInfo(serverID string, data map[string]interf
 	return SaveNetworkInfo(serverID, data)
 }
 
-func (s *agentDataSaver) SaveVirtualMemory(serverID string, data map[string]interface{}) error {
-	return SaveVirtualMemory(serverID, data)
+func (s *agentDataSaver) SaveSwapInfo(serverID string, data map[string]interface{}) error {
+	return SaveSwapInfo(serverID, data)
 }
 
 // GetAgentAuthValidator 获取 Agent 认证验证器

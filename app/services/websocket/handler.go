@@ -25,8 +25,8 @@ type AgentMessageHandler interface {
 	HandleDiskIO(data map[string]interface{}, conn *AgentConnection) error
 	// HandleNetworkInfo 处理网络信息消息
 	HandleNetworkInfo(data map[string]interface{}, conn *AgentConnection) error
-	// HandleVirtualMemory 处理虚拟内存消息
-	HandleVirtualMemory(data map[string]interface{}, conn *AgentConnection) error
+	// HandleSwapInfo 处理Swap内存消息
+	HandleSwapInfo(data map[string]interface{}, conn *AgentConnection) error
 }
 
 // FrontendMessageHandler Frontend 消息处理器接口
@@ -243,18 +243,18 @@ func (h *agentMessageHandler) HandleNetworkInfo(data map[string]interface{}, con
 	return h.saver.SaveNetworkInfo(conn.GetServerID(), networkData)
 }
 
-// HandleVirtualMemory 处理虚拟内存消息
-func (h *agentMessageHandler) HandleVirtualMemory(data map[string]interface{}, conn *AgentConnection) error {
+// HandleSwapInfo 处理Swap内存消息
+func (h *agentMessageHandler) HandleSwapInfo(data map[string]interface{}, conn *AgentConnection) error {
 	if conn.GetState() != StateAuthenticated {
 		return errors.New("未认证")
 	}
 
-	vmData, ok := data["data"].(map[string]interface{})
+	swapData, ok := data["data"].(map[string]interface{})
 	if !ok {
-		return errors.New("虚拟内存数据格式错误")
+		return errors.New("Swap数据格式错误")
 	}
 
-	return h.saver.SaveVirtualMemory(conn.GetServerID(), vmData)
+	return h.saver.SaveSwapInfo(conn.GetServerID(), swapData)
 }
 
 // frontendMessageHandler Frontend 消息处理器实现
