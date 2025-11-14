@@ -524,14 +524,25 @@ func SaveSwapInfo(serverID string, data map[string]interface{}) error {
 		"timestamp": timestamp,
 	}
 
+	var swapTotal, swapUsed, swapFree float64
+	var swapUsagePercent float64
+
 	if v, ok := data["swap_total"].(float64); ok {
+		swapTotal = v
 		record["swap_total"] = int64(v)
 	}
 	if v, ok := data["swap_used"].(float64); ok {
+		swapUsed = v
 		record["swap_used"] = int64(v)
 	}
 	if v, ok := data["swap_free"].(float64); ok {
+		swapFree = v
 		record["swap_free"] = int64(v)
+	}
+
+	// 计算swap使用率
+	if swapTotal > 0 {
+		swapUsagePercent = (swapUsed / swapTotal) * 100
 	}
 
 	// 使用ORM的Create方法，自动处理timestamp字段
@@ -542,6 +553,27 @@ func SaveSwapInfo(serverID string, data map[string]interface{}) error {
 	}
 
 	facades.Log().Debugf("已保存服务器 %s 的Swap信息", serverID)
+
+	// 向前端推送Swap信息更新
+	go func() {
+		wsService := GetWebSocketService()
+
+		// 推送Swap信息更新
+		message := map[string]interface{}{
+			"type": "swap_info_update",
+			"data": map[string]interface{}{
+				"server_id": serverID,
+				"swap": map[string]interface{}{
+					"swap_total":         FormatMetricValue(swapTotal),
+					"swap_used":          FormatMetricValue(swapUsed),
+					"swap_free":          FormatMetricValue(swapFree),
+					"swap_usage_percent": FormatMetricValue(swapUsagePercent),
+				},
+			},
+		}
+		wsService.BroadcastToFrontend(message)
+	}()
+
 	return nil
 }
 
