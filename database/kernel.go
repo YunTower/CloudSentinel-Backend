@@ -36,6 +36,7 @@ func (kernel Kernel) Migrations() []schema.Migration {
 		&migrations.M20250116000013CreateNewIndexesTable{},
 		&migrations.M20250116000014AddAgentKeyToServersTable{},
 		&migrations.M20250116000016CreateServerDiskIoTable{},
+		&migrations.M20250116000017RenameVirtualMemoryToSwap{},
 	}
 }
 

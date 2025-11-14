@@ -31,11 +31,11 @@ func (r *M20250116000013CreateNewIndexesTable) Up() error {
 		})
 	}
 
-	// server_virtual_memory索引
-	if facades.Schema().HasTable("server_virtual_memory") {
-		facades.Schema().Table("server_virtual_memory", func(table schema.Blueprint) {
-			table.Index("idx_server_virtual_memory_server_id", "server_id")
-			table.Index("idx_server_virtual_memory_timestamp", "timestamp")
+	// server_swap索引
+	if facades.Schema().HasTable("server_swap") {
+		facades.Schema().Table("server_swap", func(table schema.Blueprint) {
+			table.Index("idx_server_swap_server_id", "server_id")
+			table.Index("idx_server_swap_timestamp", "timestamp")
 		})
 	}
 
@@ -109,10 +109,10 @@ func (r *M20250116000013CreateNewIndexesTable) Down() error {
 		})
 	}
 
-	if facades.Schema().HasTable("server_virtual_memory") {
-		facades.Schema().Table("server_virtual_memory", func(table schema.Blueprint) {
-			table.DropIndex("idx_server_virtual_memory_server_id")
-			table.DropIndex("idx_server_virtual_memory_timestamp")
+	if facades.Schema().HasTable("server_swap") {
+		facades.Schema().Table("server_swap", func(table schema.Blueprint) {
+			table.DropIndex("idx_server_swap_server_id")
+			table.DropIndex("idx_server_swap_timestamp")
 		})
 	}
 
@@ -162,4 +162,3 @@ func (r *M20250116000013CreateNewIndexesTable) Down() error {
 
 	return nil
 }
-
