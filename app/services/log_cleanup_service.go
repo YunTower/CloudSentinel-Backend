@@ -59,10 +59,10 @@ func CleanupStaleLogLocks() error {
 		// 检查文件修改时间
 		fileAge := now.Sub(info.ModTime())
 
-		// 如果锁文件超过5秒未修改，认为是残留的锁文件
+		// 如果锁文件超过3秒未修改，认为是残留的锁文件
 		// 正常的日志轮转应该在几秒内完成
 		// 有了日志队列后，写入是串行的，轮转应该更快完成
-		if fileAge > 5*time.Second {
+		if fileAge > 3*time.Second {
 			// 尝试删除锁文件
 			if err := os.Remove(lockFilePath); err != nil {
 				// 如果删除失败，可能是文件正在被使用，跳过
@@ -82,10 +82,10 @@ func CleanupStaleLogLocks() error {
 }
 
 // StartPeriodicLogLockCleanup 启动定期清理日志锁文件的任务
-// 每10秒清理一次（有了日志队列后，冲突减少，可以降低清理频率）
+// 每5秒清理一次
 func StartPeriodicLogLockCleanup() {
 	go func() {
-		ticker := time.NewTicker(10 * time.Second)
+		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 
 		// 立即执行一次

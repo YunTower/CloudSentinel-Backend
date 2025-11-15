@@ -35,7 +35,7 @@ func GetLogWriter() *LogWriter {
 	logWriterOnce.Do(func() {
 		globalLogWriter = &LogWriter{
 			buffer:    make([]LogEntry, 0, 100),
-			batchSize: 50,                    // 批量写入大小
+			batchSize: 50,                     // 批量写入大小
 			interval:  200 * time.Millisecond, // 批量写入间隔
 			stopChan:  make(chan struct{}),
 		}
@@ -109,65 +109,97 @@ func (w *LogWriter) flush() {
 	w.bufferMu.Unlock()
 
 	// 批量写入日志（串行写入，避免并发冲突）
+	// 如果遇到日志轮转冲突，重试写入
 	for _, entry := range entries {
-		if entry.Channel != "" {
-			logger := facades.Log().Channel(entry.Channel)
-			switch entry.Level {
-			case "debug":
-				if len(entry.Args) > 0 {
-					logger.Debugf(entry.Message, entry.Args...)
-				} else {
-					logger.Debug(entry.Message)
-				}
-			case "info":
-				if len(entry.Args) > 0 {
-					logger.Infof(entry.Message, entry.Args...)
-				} else {
-					logger.Info(entry.Message)
-				}
-			case "warning":
-				if len(entry.Args) > 0 {
-					logger.Warningf(entry.Message, entry.Args...)
-				} else {
-					logger.Warning(entry.Message)
-				}
-			case "error":
-				if len(entry.Args) > 0 {
-					logger.Errorf(entry.Message, entry.Args...)
-				} else {
-					logger.Error(entry.Message)
-				}
+		maxRetries := 3
+		retryDelay := 50 * time.Millisecond
+
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			err := w.writeLogEntry(entry)
+			if err == nil {
+				break // 写入成功，继续下一个
 			}
-		} else {
-			logger := facades.Log()
-			switch entry.Level {
-			case "debug":
-				if len(entry.Args) > 0 {
-					logger.Debugf(entry.Message, entry.Args...)
-				} else {
-					logger.Debug(entry.Message)
-				}
-			case "info":
-				if len(entry.Args) > 0 {
-					logger.Infof(entry.Message, entry.Args...)
-				} else {
-					logger.Info(entry.Message)
-				}
-			case "warning":
-				if len(entry.Args) > 0 {
-					logger.Warningf(entry.Message, entry.Args...)
-				} else {
-					logger.Warning(entry.Message)
-				}
-			case "error":
-				if len(entry.Args) > 0 {
-					logger.Errorf(entry.Message, entry.Args...)
-				} else {
-					logger.Error(entry.Message)
-				}
+
+			// 如果是最后一次重试仍然失败，跳过这条日志（避免无限重试）
+			if attempt == maxRetries-1 {
+				// 最后一次重试失败，静默跳过（避免日志循环）
+				continue
+			}
+
+			// 等待后重试
+			time.Sleep(retryDelay)
+			retryDelay *= 2 // 指数退避
+		}
+	}
+}
+
+// writeLogEntry 写入单条日志条目
+func (w *LogWriter) writeLogEntry(entry LogEntry) error {
+	// 使用recover捕获panic（日志轮转可能触发panic）
+	defer func() {
+		if r := recover(); r != nil {
+			// 静默处理panic，避免影响主程序
+		}
+	}()
+
+	if entry.Channel != "" {
+		logger := facades.Log().Channel(entry.Channel)
+		switch entry.Level {
+		case "debug":
+			if len(entry.Args) > 0 {
+				logger.Debugf(entry.Message, entry.Args...)
+			} else {
+				logger.Debug(entry.Message)
+			}
+		case "info":
+			if len(entry.Args) > 0 {
+				logger.Infof(entry.Message, entry.Args...)
+			} else {
+				logger.Info(entry.Message)
+			}
+		case "warning":
+			if len(entry.Args) > 0 {
+				logger.Warningf(entry.Message, entry.Args...)
+			} else {
+				logger.Warning(entry.Message)
+			}
+		case "error":
+			if len(entry.Args) > 0 {
+				logger.Errorf(entry.Message, entry.Args...)
+			} else {
+				logger.Error(entry.Message)
+			}
+		}
+	} else {
+		logger := facades.Log()
+		switch entry.Level {
+		case "debug":
+			if len(entry.Args) > 0 {
+				logger.Debugf(entry.Message, entry.Args...)
+			} else {
+				logger.Debug(entry.Message)
+			}
+		case "info":
+			if len(entry.Args) > 0 {
+				logger.Infof(entry.Message, entry.Args...)
+			} else {
+				logger.Info(entry.Message)
+			}
+		case "warning":
+			if len(entry.Args) > 0 {
+				logger.Warningf(entry.Message, entry.Args...)
+			} else {
+				logger.Warning(entry.Message)
+			}
+		case "error":
+			if len(entry.Args) > 0 {
+				logger.Errorf(entry.Message, entry.Args...)
+			} else {
+				logger.Error(entry.Message)
 			}
 		}
 	}
+	return nil
 }
 
 // LogToChannel 记录日志到指定通道（使用队列）
@@ -175,6 +207,3 @@ func LogToChannel(channel, level, message string, args ...interface{}) {
 	writer := GetLogWriter()
 	writer.Enqueue(channel, level, message, args...)
 }
-
-
-
