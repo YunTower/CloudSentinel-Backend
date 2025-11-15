@@ -95,6 +95,21 @@ func CalculateUptime(bootTimeVal interface{}) string {
 
 // SaveSystemInfo 保存系统基础信息
 func SaveSystemInfo(serverID string, data map[string]interface{}) error {
+	worker := GetGlobalDataWorker()
+	worker.Enqueue(&saveSystemInfoJob{
+		serverID: serverID,
+		data:     data,
+	})
+	return nil
+}
+
+// saveSystemInfoJob 保存系统信息的任务
+type saveSystemInfoJob struct {
+	serverID string
+	data     map[string]interface{}
+}
+
+func (j *saveSystemInfoJob) Execute() error {
 	now := time.Now()
 
 	updateData := map[string]interface{}{
@@ -104,30 +119,29 @@ func SaveSystemInfo(serverID string, data map[string]interface{}) error {
 	}
 
 	// 提取系统信息字段
-	if v, ok := data["agent_version"].(string); ok {
+	if v, ok := j.data["agent_version"].(string); ok {
 		updateData["agent_version"] = v
 	}
-	if v, ok := data["system_name"].(string); ok {
+	if v, ok := j.data["system_name"].(string); ok {
 		updateData["system_name"] = v
 	}
-	if v, ok := data["os"].(string); ok {
+	if v, ok := j.data["os"].(string); ok {
 		updateData["os"] = v
 	}
-	if v, ok := data["architecture"].(string); ok {
+	if v, ok := j.data["architecture"].(string); ok {
 		updateData["architecture"] = v
 	}
-	if v, ok := data["kernel"].(string); ok {
+	if v, ok := j.data["kernel"].(string); ok {
 		updateData["kernel"] = v
 	}
-	if v, ok := data["hostname"].(string); ok {
+	if v, ok := j.data["hostname"].(string); ok {
 		updateData["hostname"] = v
 	}
-	if v, ok := data["cores"].(float64); ok {
+	if v, ok := j.data["cores"].(float64); ok {
 		updateData["cores"] = int(v)
 	}
-	if v, ok := data["boot_time"].(string); ok && v != "" {
+	if v, ok := j.data["boot_time"].(string); ok && v != "" {
 		if bootTime, err := time.Parse(time.RFC3339, v); err == nil {
-			// 将 boot_time 保存为 time.Time 类型，让 ORM 自动处理 TIMESTAMP 字段
 			updateData["boot_time"] = bootTime
 			facades.Log().Debugf("保存 boot_time: %s (Unix: %d)", bootTime.Format(time.RFC3339), bootTime.Unix())
 		} else {
@@ -137,7 +151,7 @@ func SaveSystemInfo(serverID string, data map[string]interface{}) error {
 
 	// 更新服务器记录
 	_, err := facades.Orm().Query().Table("servers").
-		Where("id", serverID).
+		Where("id", j.serverID).
 		Update(updateData)
 
 	if err != nil {
@@ -145,28 +159,52 @@ func SaveSystemInfo(serverID string, data map[string]interface{}) error {
 		return err
 	}
 
-	facades.Log().Infof("已保存服务器 %s 的系统信息", serverID)
+	// 更新缓存
+	statusCache.SetStatus(j.serverID, "online")
 
 	// 向前端推送系统信息更新
-	go func() {
-		wsService := GetWebSocketService()
-		message := map[string]interface{}{
-			"type": "system_info_update",
-			"data": map[string]interface{}{
-				"server_id": serverID,
-				"data":      updateData,
-			},
-		}
-		wsService.BroadcastToFrontend(message)
-	}()
+	wsService := GetWebSocketService()
+	message := map[string]interface{}{
+		"type": "system_info_update",
+		"data": map[string]interface{}{
+			"server_id": j.serverID,
+			"data":      updateData,
+		},
+	}
+	wsService.BroadcastToFrontend(message)
 
 	return nil
 }
 
 // SaveMetrics 保存性能指标
 func SaveMetrics(serverID string, data map[string]interface{}) error {
+	// 立即返回，不阻塞WebSocket消息处理
+	// 实际的数据保存和推送在worker中异步执行
+	worker := GetGlobalDataWorker()
+	worker.Enqueue(&saveMetricsJob{
+		serverID: serverID,
+		data:     data,
+	})
+	return nil
+}
+
+// saveMetricsJob 保存指标数据的任务
+type saveMetricsJob struct {
+	serverID string
+	data     map[string]interface{}
+}
+
+func (j *saveMetricsJob) Execute() error {
 	now := time.Now()
 	timestamp := now.Unix()
+
+	// 从缓存获取状态，避免查询数据库
+	oldStatus := statusCache.GetStatus(j.serverID)
+	if oldStatus == "" {
+		// 缓存中没有，异步更新缓存（不阻塞）
+		statusCache.UpdateStatusFromDB(j.serverID)
+		oldStatus = "offline" // 默认值
+	}
 
 	// 更新服务器基本指标
 	updateData := map[string]interface{}{
@@ -176,13 +214,12 @@ func SaveMetrics(serverID string, data map[string]interface{}) error {
 	}
 
 	// 计算运行天数
-	if uptime, ok := data["uptime"].(string); ok {
+	if uptime, ok := j.data["uptime"].(string); ok {
 		updateData["uptime"] = uptime
-		// 可以解析uptime字符串来计算天数
 	}
 
 	_, err := facades.Orm().Query().Table("servers").
-		Where("id", serverID).
+		Where("id", j.serverID).
 		Update(updateData)
 
 	if err != nil {
@@ -190,40 +227,56 @@ func SaveMetrics(serverID string, data map[string]interface{}) error {
 		return err
 	}
 
+	// 更新缓存
+	statusCache.SetStatus(j.serverID, "online")
+
+	// 如果状态从offline变为online，向前端推送状态更新
+	if oldStatus != "online" {
+		wsService := GetWebSocketService()
+		message := map[string]interface{}{
+			"type": "server_status_update",
+			"data": map[string]interface{}{
+				"server_id": j.serverID,
+				"status":    "online",
+			},
+		}
+		wsService.BroadcastToFrontend(message)
+	}
+
 	// 保存到server_metrics表
 	metricsData := map[string]interface{}{
-		"server_id": serverID,
-		"timestamp": time.Now(),
+		"server_id": j.serverID,
+		"timestamp": now,
 	}
 
 	// CPU使用率
-	if v, ok := data["cpu_usage"].(float64); ok {
+	if v, ok := j.data["cpu_usage"].(float64); ok {
 		metricsData["cpu_usage"] = FormatMetricValue(v)
 	} else {
-		metricsData["cpu_usage"] = 0.0 // 默认值
+		metricsData["cpu_usage"] = 0.0
 	}
 
 	// 内存使用率
-	if v, ok := data["memory_usage_percent"].(float64); ok {
+	if v, ok := j.data["memory_usage_percent"].(float64); ok {
 		metricsData["memory_usage"] = FormatMetricValue(v)
 	} else {
-		metricsData["memory_usage"] = 0.0 // 默认值
+		metricsData["memory_usage"] = 0.0
 	}
 
 	// 磁盘使用率
-	if v, ok := data["disk_usage"].(float64); ok {
+	if v, ok := j.data["disk_usage"].(float64); ok {
 		metricsData["disk_usage"] = FormatMetricValue(v)
 	} else {
-		metricsData["disk_usage"] = 0.0 // 默认值
+		metricsData["disk_usage"] = 0.0
 	}
 
 	// 网络速度
-	if v, ok := data["network_upload"].(float64); ok {
+	if v, ok := j.data["network_upload"].(float64); ok {
 		metricsData["network_upload"] = FormatMetricValue(v)
 	} else {
 		metricsData["network_upload"] = 0.0
 	}
-	if v, ok := data["network_download"].(float64); ok {
+	if v, ok := j.data["network_download"].(float64); ok {
 		metricsData["network_download"] = FormatMetricValue(v)
 	} else {
 		metricsData["network_download"] = 0.0
@@ -235,99 +288,103 @@ func SaveMetrics(serverID string, data map[string]interface{}) error {
 		return err
 	}
 
-	facades.Log().Debugf("已保存服务器 %s 的性能指标", serverID)
-
 	// 向前端推送性能指标更新
-	go func() {
-		facades.Log().Infof("开始准备推送服务器 %s 的性能指标更新", serverID)
-		wsService := GetWebSocketService()
+	wsService := GetWebSocketService()
 
-		// 获取服务器boot_time以计算运行时间
-		var servers []map[string]interface{}
-		var uptimeStr string
-		err := facades.Orm().Query().Table("servers").
-			Select("boot_time").
-			Where("id", serverID).
-			Get(&servers)
+	// 获取服务器boot_time以计算运行时间
+	var servers []map[string]interface{}
+	var uptimeStr string
+	err = facades.Orm().Query().Table("servers").
+		Select("boot_time").
+		Where("id", j.serverID).
+		Get(&servers)
 
-		if err == nil && len(servers) > 0 {
-			uptimeStr = CalculateUptime(servers[0]["boot_time"])
-		} else {
-			uptimeStr = "0天0时0分"
-		}
+	if err == nil && len(servers) > 0 {
+		uptimeStr = CalculateUptime(servers[0]["boot_time"])
+	} else {
+		uptimeStr = "0天0时0分"
+	}
 
-		// 格式化数值为两位小数
-		cpuUsage := FormatMetricValue(metricsData["cpu_usage"])
-		memoryUsage := FormatMetricValue(metricsData["memory_usage"])
-		diskUsage := FormatMetricValue(metricsData["disk_usage"])
-		networkUpload := FormatMetricValue(metricsData["network_upload"])
-		networkDownload := FormatMetricValue(metricsData["network_download"])
+	// 格式化数值为两位小数
+	cpuUsage := FormatMetricValue(metricsData["cpu_usage"])
+	memoryUsage := FormatMetricValue(metricsData["memory_usage"])
+	diskUsage := FormatMetricValue(metricsData["disk_usage"])
+	networkUpload := FormatMetricValue(metricsData["network_upload"])
+	networkDownload := FormatMetricValue(metricsData["network_download"])
 
-		// 推送实时指标更新
-		message := map[string]interface{}{
-			"type": "metrics_update",
-			"data": map[string]interface{}{
-				"server_id": serverID,
-				"metrics": map[string]interface{}{
-					"cpu_usage":        cpuUsage,
-					"memory_usage":     memoryUsage,
-					"disk_usage":       diskUsage,
-					"network_upload":   networkUpload,
-					"network_download": networkDownload,
-				},
-				"uptime": uptimeStr,
+	// 推送实时指标更新
+	message := map[string]interface{}{
+		"type": "metrics_update",
+		"data": map[string]interface{}{
+			"server_id": j.serverID,
+			"metrics": map[string]interface{}{
+				"cpu_usage":        cpuUsage,
+				"memory_usage":     memoryUsage,
+				"disk_usage":       diskUsage,
+				"network_upload":   networkUpload,
+				"network_download": networkDownload,
 			},
-		}
-		facades.Log().Infof("准备推送 metrics_update 消息，服务器: %s", serverID)
-		wsService.BroadcastToFrontend(message)
-		facades.Log().Infof("已调用 BroadcastToFrontend，服务器: %s", serverID)
+			"uptime": uptimeStr,
+		},
+	}
+	wsService.BroadcastToFrontend(message)
 
-		// 推送实时数据点
-		realtimeDataPoint := map[string]interface{}{
-			"type": "metrics_realtime",
-			"data": map[string]interface{}{
-				"server_id": serverID,
-				"timestamp": timestamp,
-				"metrics": map[string]interface{}{
-					"cpu_usage":        cpuUsage,
-					"memory_usage":     memoryUsage,
-					"disk_usage":       diskUsage,
-					"network_upload":   networkUpload,
-					"network_download": networkDownload,
-				},
+	// 推送实时数据点
+	realtimeDataPoint := map[string]interface{}{
+		"type": "metrics_realtime",
+		"data": map[string]interface{}{
+			"server_id": j.serverID,
+			"timestamp": timestamp,
+			"metrics": map[string]interface{}{
+				"cpu_usage":    cpuUsage,
+				"memory_usage": memoryUsage,
+				"disk_usage":   diskUsage,
 			},
-		}
-		wsService.BroadcastToFrontend(realtimeDataPoint)
-	}()
+		},
+	}
+	wsService.BroadcastToFrontend(realtimeDataPoint)
 
 	return nil
 }
 
 // SaveMemoryInfo 保存内存信息
 func SaveMemoryInfo(serverID string, data map[string]interface{}) error {
+	worker := GetGlobalDataWorker()
+	worker.Enqueue(&saveMemoryInfoJob{
+		serverID: serverID,
+		data:     data,
+	})
+	return nil
+}
+
+// saveMemoryInfoJob 保存内存信息的任务
+type saveMemoryInfoJob struct {
+	serverID string
+	data     map[string]interface{}
+}
+
+func (j *saveMemoryInfoJob) Execute() error {
 	record := map[string]interface{}{
-		"server_id": serverID,
+		"server_id": j.serverID,
 		"timestamp": time.Now(),
 	}
 
-	if v, ok := data["memory_total"].(float64); ok {
+	if v, ok := j.data["memory_total"].(float64); ok {
 		record["memory_total"] = int64(v)
 	}
-	if v, ok := data["memory_used"].(float64); ok {
+	if v, ok := j.data["memory_used"].(float64); ok {
 		record["memory_used"] = int64(v)
 	}
-	if v, ok := data["memory_usage_percent"].(float64); ok {
+	if v, ok := j.data["memory_usage_percent"].(float64); ok {
 		record["memory_usage_percent"] = v
 	}
 
-	// 使用ORM的Create方法，自动处理timestamp字段
 	err := facades.Orm().Query().Table("server_memory_history").Create(record)
 	if err != nil {
 		facades.Log().Errorf("保存内存信息失败: %v", err)
 		return err
 	}
 
-	facades.Log().Debugf("已保存服务器 %s 的内存信息", serverID)
 	return nil
 }
 
@@ -376,11 +433,26 @@ func SaveDiskInfo(serverID string, data []interface{}) error {
 
 // SaveNetworkInfo 保存网络信息
 func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
+	worker := GetGlobalDataWorker()
+	worker.Enqueue(&saveNetworkInfoJob{
+		serverID: serverID,
+		data:     data,
+	})
+	return nil
+}
+
+// saveNetworkInfoJob 保存网络信息的任务
+type saveNetworkInfoJob struct {
+	serverID string
+	data     map[string]interface{}
+}
+
+func (j *saveNetworkInfoJob) Execute() error {
 	// 保存TCP/UDP连接数
-	if tcpConns, ok1 := data["tcp_connections"].(float64); ok1 {
-		if udpConns, ok2 := data["udp_connections"].(float64); ok2 {
+	if tcpConns, ok1 := j.data["tcp_connections"].(float64); ok1 {
+		if udpConns, ok2 := j.data["udp_connections"].(float64); ok2 {
 			record := map[string]interface{}{
-				"server_id":       serverID,
+				"server_id":       j.serverID,
 				"tcp_connections": int(tcpConns),
 				"udp_connections": int(udpConns),
 				"timestamp":       time.Now(),
@@ -396,16 +468,15 @@ func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
 	}
 
 	// 保存网络速度
-	if upload, ok1 := data["upload_speed"].(float64); ok1 {
-		if download, ok2 := data["download_speed"].(float64); ok2 {
+	if upload, ok1 := j.data["upload_speed"].(float64); ok1 {
+		if download, ok2 := j.data["download_speed"].(float64); ok2 {
 			record := map[string]interface{}{
-				"server_id":      serverID,
+				"server_id":      j.serverID,
 				"upload_speed":   upload,
 				"download_speed": download,
 				"timestamp":      time.Now(),
 			}
 
-			// 使用ORM的Create方法，自动处理timestamp字段
 			err := facades.Orm().Query().Table("server_network_speed").Create(record)
 			if err != nil {
 				facades.Log().Errorf("保存网络速度失败: %v", err)
@@ -415,21 +486,21 @@ func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
 	}
 
 	// 更新流量使用情况
-	if uploadBytes, ok1 := data["upload_bytes"].(float64); ok1 {
-		if downloadBytes, ok2 := data["download_bytes"].(float64); ok2 {
+	if uploadBytes, ok1 := j.data["upload_bytes"].(float64); ok1 {
+		if downloadBytes, ok2 := j.data["download_bytes"].(float64); ok2 {
 			now := time.Now()
 			year := now.Year()
 			month := int(now.Month())
 
 			_, err := facades.Orm().Query().Exec(
 				"INSERT OR REPLACE INTO server_traffic_usage (server_id, year, month, upload_bytes, download_bytes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM server_traffic_usage WHERE server_id = ? AND year = ? AND month = ?), ?), ?)",
-				serverID, year, month, int64(uploadBytes), int64(downloadBytes),
-				serverID, year, month, now, now)
+				j.serverID, year, month, int64(uploadBytes), int64(downloadBytes),
+				j.serverID, year, month, now, now)
 
 			if err != nil {
 				var existing []map[string]interface{}
 				queryErr := facades.Orm().Query().Table("server_traffic_usage").
-					Where("server_id", serverID).
+					Where("server_id", j.serverID).
 					Where("year", year).
 					Where("month", month).
 					Get(&existing)
@@ -437,7 +508,7 @@ func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
 				if queryErr == nil && len(existing) > 0 {
 					// 更新现有记录
 					_, err = facades.Orm().Query().Table("server_traffic_usage").
-						Where("server_id", serverID).
+						Where("server_id", j.serverID).
 						Where("year", year).
 						Where("month", month).
 						Update(map[string]interface{}{
@@ -448,7 +519,7 @@ func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
 				} else {
 					// 插入新记录
 					err = facades.Orm().Query().Table("server_traffic_usage").Create(map[string]interface{}{
-						"server_id":      serverID,
+						"server_id":      j.serverID,
 						"year":           year,
 						"month":          month,
 						"upload_bytes":   int64(uploadBytes),
@@ -464,26 +535,39 @@ func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
 		}
 	}
 
-	facades.Log().Debugf("已保存服务器 %s 的网络信息", serverID)
 	return nil
 }
 
 // SaveDiskIO 保存磁盘IO信息
 func SaveDiskIO(serverID string, data map[string]interface{}) error {
+	worker := GetGlobalDataWorker()
+	worker.Enqueue(&saveDiskIOJob{
+		serverID: serverID,
+		data:     data,
+	})
+	return nil
+}
+
+// saveDiskIOJob 保存磁盘IO信息的任务
+type saveDiskIOJob struct {
+	serverID string
+	data     map[string]interface{}
+}
+
+func (j *saveDiskIOJob) Execute() error {
 	now := time.Now()
 	timestamp := now.Unix()
 
 	// 保存磁盘IO速度（转换为KB/s）
-	if readSpeed, ok1 := data["read_speed"].(float64); ok1 {
-		if writeSpeed, ok2 := data["write_speed"].(float64); ok2 {
+	if readSpeed, ok1 := j.data["read_speed"].(float64); ok1 {
+		if writeSpeed, ok2 := j.data["write_speed"].(float64); ok2 {
 			record := map[string]interface{}{
-				"server_id":   serverID,
-				"read_speed":  readSpeed / 1024,  // 转换为KB/s
-				"write_speed": writeSpeed / 1024, // 转换为KB/s
+				"server_id":   j.serverID,
+				"read_speed":  readSpeed / 1024,
+				"write_speed": writeSpeed / 1024,
 				"timestamp":   now,
 			}
 
-			// 使用ORM的Create方法，自动处理timestamp字段
 			err := facades.Orm().Query().Table("server_disk_io").Create(record)
 			if err != nil {
 				facades.Log().Errorf("保存磁盘IO失败: %v", err)
@@ -491,51 +575,63 @@ func SaveDiskIO(serverID string, data map[string]interface{}) error {
 			}
 
 			// 向前端推送磁盘IO实时数据点
-			go func() {
-				wsService := GetWebSocketService()
-				readSpeedKB := readSpeed / 1024   // KB/s
-				writeSpeedKB := writeSpeed / 1024 // KB/s
-				realtimeDataPoint := map[string]interface{}{
-					"type": "metrics_realtime",
-					"data": map[string]interface{}{
-						"server_id": serverID,
-						"timestamp": timestamp,
-						"metrics": map[string]interface{}{
-							"disk_read":  FormatMetricValue(readSpeedKB),
-							"disk_write": FormatMetricValue(writeSpeedKB),
-						},
+			wsService := GetWebSocketService()
+			readSpeedKB := readSpeed / 1024
+			writeSpeedKB := writeSpeed / 1024
+			realtimeDataPoint := map[string]interface{}{
+				"type": "metrics_realtime",
+				"data": map[string]interface{}{
+					"server_id": j.serverID,
+					"timestamp": timestamp,
+					"metrics": map[string]interface{}{
+						"disk_read":  FormatMetricValue(readSpeedKB),
+						"disk_write": FormatMetricValue(writeSpeedKB),
 					},
-				}
-				wsService.BroadcastToFrontend(realtimeDataPoint)
-			}()
+				},
+			}
+			wsService.BroadcastToFrontend(realtimeDataPoint)
 		}
 	}
 
-	facades.Log().Debugf("已保存服务器 %s 的磁盘IO信息", serverID)
 	return nil
 }
 
 // SaveSwapInfo 保存Swap内存信息
 func SaveSwapInfo(serverID string, data map[string]interface{}) error {
+	worker := GetGlobalDataWorker()
+	worker.Enqueue(&saveSwapInfoJob{
+		serverID: serverID,
+		data:     data,
+	})
+	return nil
+}
+
+// saveSwapInfoJob 保存Swap信息的任务
+type saveSwapInfoJob struct {
+	serverID string
+	data     map[string]interface{}
+}
+
+func (j *saveSwapInfoJob) Execute() error {
 	timestamp := time.Now().Unix()
 
 	record := map[string]interface{}{
-		"server_id": serverID,
+		"server_id": j.serverID,
 		"timestamp": timestamp,
 	}
 
 	var swapTotal, swapUsed, swapFree float64
 	var swapUsagePercent float64
 
-	if v, ok := data["swap_total"].(float64); ok {
+	if v, ok := j.data["swap_total"].(float64); ok {
 		swapTotal = v
 		record["swap_total"] = int64(v)
 	}
-	if v, ok := data["swap_used"].(float64); ok {
+	if v, ok := j.data["swap_used"].(float64); ok {
 		swapUsed = v
 		record["swap_used"] = int64(v)
 	}
-	if v, ok := data["swap_free"].(float64); ok {
+	if v, ok := j.data["swap_free"].(float64); ok {
 		swapFree = v
 		record["swap_free"] = int64(v)
 	}
@@ -545,34 +641,27 @@ func SaveSwapInfo(serverID string, data map[string]interface{}) error {
 		swapUsagePercent = (swapUsed / swapTotal) * 100
 	}
 
-	// 使用ORM的Create方法，自动处理timestamp字段
 	err := facades.Orm().Query().Table("server_swap").Create(record)
 	if err != nil {
 		facades.Log().Errorf("保存Swap信息失败: %v", err)
 		return err
 	}
 
-	facades.Log().Debugf("已保存服务器 %s 的Swap信息", serverID)
-
 	// 向前端推送Swap信息更新
-	go func() {
-		wsService := GetWebSocketService()
-
-		// 推送Swap信息更新
-		message := map[string]interface{}{
-			"type": "swap_info_update",
-			"data": map[string]interface{}{
-				"server_id": serverID,
-				"swap": map[string]interface{}{
-					"swap_total":         FormatMetricValue(swapTotal),
-					"swap_used":          FormatMetricValue(swapUsed),
-					"swap_free":          FormatMetricValue(swapFree),
-					"swap_usage_percent": FormatMetricValue(swapUsagePercent),
-				},
+	wsService := GetWebSocketService()
+	message := map[string]interface{}{
+		"type": "swap_info_update",
+		"data": map[string]interface{}{
+			"server_id": j.serverID,
+			"swap": map[string]interface{}{
+				"swap_total":         FormatMetricValue(swapTotal),
+				"swap_used":          FormatMetricValue(swapUsed),
+				"swap_free":          FormatMetricValue(swapFree),
+				"swap_usage_percent": FormatMetricValue(swapUsagePercent),
 			},
-		}
-		wsService.BroadcastToFrontend(message)
-	}()
+		},
+	}
+	wsService.BroadcastToFrontend(message)
 
 	return nil
 }

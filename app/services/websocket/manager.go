@@ -6,7 +6,14 @@ import (
 	"time"
 
 	"github.com/goravel/framework/facades"
+
+	"goravel/app/utils"
 )
+
+// logToChannel 记录日志到指定通道
+func logToChannel(channel, level, message string, args ...interface{}) {
+	utils.LogToChannel(channel, level, message, args...)
+}
 
 // ConnectionManager 连接管理器接口
 type ConnectionManager interface {
@@ -86,6 +93,47 @@ func (m *connectionManager) RegisterAgent(serverID string, conn *AgentConnection
 
 	m.agentConnections[serverID] = conn
 	facades.Log().Channel("websocket").Infof("注册服务器连接: %s (来自 %s)", serverID, conn.GetRemoteAddr())
+
+	// 更新服务器状态为online并推送状态更新
+	go func() {
+		// 查询当前状态
+		var servers []map[string]interface{}
+		err := facades.Orm().Query().Table("servers").
+			Select("status").
+			Where("id", serverID).
+			Get(&servers)
+
+		var oldStatus string
+		if err == nil && len(servers) > 0 {
+			if status, ok := servers[0]["status"].(string); ok {
+				oldStatus = status
+			}
+		}
+
+		// 更新服务器状态为online
+		_, err = facades.Orm().Query().Table("servers").
+			Where("id", serverID).
+			Update(map[string]interface{}{
+				"status":     "online",
+				"updated_at": time.Now().Unix(),
+			})
+		if err != nil {
+			facades.Log().Channel("websocket").Errorf("更新服务器状态失败: %v", err)
+			return
+		}
+
+		// 如果状态从offline变为online，向前端推送状态更新
+		if oldStatus != "online" {
+			m.BroadcastToFrontend(map[string]interface{}{
+				"type": "server_status_update",
+				"data": map[string]interface{}{
+					"server_id": serverID,
+					"status":    "online",
+				},
+			})
+		}
+	}()
+
 	return nil
 }
 
@@ -100,9 +148,23 @@ func (m *connectionManager) UnregisterAgent(serverID string) {
 		delete(m.agentConnections, serverID)
 		facades.Log().Channel("websocket").Infof("注销服务器连接: %s", serverID)
 
-		// 更新服务器状态为offline
+		// 更新服务器状态为offline并推送状态更新
 		go func() {
-			_, err := facades.Orm().Query().Table("servers").
+			// 查询当前状态
+			var servers []map[string]interface{}
+			err := facades.Orm().Query().Table("servers").
+				Select("status").
+				Where("id", serverID).
+				Get(&servers)
+
+			var oldStatus string
+			if err == nil && len(servers) > 0 {
+				if status, ok := servers[0]["status"].(string); ok {
+					oldStatus = status
+				}
+			}
+
+			_, err = facades.Orm().Query().Table("servers").
 				Where("id", serverID).
 				Update(map[string]interface{}{
 					"status":     "offline",
@@ -110,6 +172,18 @@ func (m *connectionManager) UnregisterAgent(serverID string) {
 				})
 			if err != nil {
 				facades.Log().Channel("websocket").Errorf("更新服务器状态失败: %v", err)
+				return
+			}
+
+			// 如果状态从online变为offline，向前端推送状态更新
+			if oldStatus == "online" {
+				m.BroadcastToFrontend(map[string]interface{}{
+					"type": "server_status_update",
+					"data": map[string]interface{}{
+						"server_id": serverID,
+						"status":    "offline",
+					},
+				})
 			}
 		}()
 	}
@@ -243,24 +317,26 @@ func (m *connectionManager) BroadcastToFrontend(message interface{}) {
 		}
 	}
 
-	facades.Log().Channel("websocket").Infof("BroadcastToFrontend: 消息类型=%s, 前端连接数=%d", msgType, frontendCount)
+	// 使用队列记录日志，避免并发写入冲突
+	logToChannel("websocket", "info", "BroadcastToFrontend: 消息类型=%s, 前端连接数=%d", msgType, frontendCount)
 
 	if frontendCount == 0 {
-		facades.Log().Channel("websocket").Warningf("BroadcastToFrontend: 没有前端连接，消息无法推送 (类型: %s)", msgType)
+		logToChannel("websocket", "warning", "BroadcastToFrontend: 没有前端连接，消息无法推送 (类型: %s)", msgType)
 		return
 	}
 
 	for connID, conn := range connections {
 		if conn.IsClosed() {
-			facades.Log().Channel("websocket").Infof("BroadcastToFrontend: 跳过已关闭的连接 %s", connID)
+			logToChannel("websocket", "info", "BroadcastToFrontend: 跳过已关闭的连接 %s", connID)
 			continue
 		}
 
 		if err := conn.WriteJSON(message); err != nil {
-			facades.Log().Channel("websocket").Errorf("向前端连接 %s 发送消息失败: %v", connID, err)
+			logToChannel("websocket", "error", "向前端连接 %s 发送消息失败: %v", connID, err)
 			go m.UnregisterFrontend(connID)
 		} else {
-			facades.Log().Channel("websocket").Infof("BroadcastToFrontend: 成功向前端连接 %s 发送消息 (类型: %s)", connID, msgType)
+			// 成功时只记录debug级别，减少日志量
+			logToChannel("websocket", "debug", "BroadcastToFrontend: 成功向前端连接 %s 发送消息 (类型: %s)", connID, msgType)
 		}
 	}
 }

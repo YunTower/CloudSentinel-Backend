@@ -4,14 +4,29 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goravel/framework/facades"
 )
 
+var (
+	cleanupMutex sync.Mutex
+	lastCleanup  time.Time
+)
+
 // CleanupStaleLogLocks 清理过期的日志锁文件
-// 锁文件是日志轮转时创建的，如果进程异常退出可能残留
 func CleanupStaleLogLocks() error {
+	cleanupMutex.Lock()
+	defer cleanupMutex.Unlock()
+
+	// 防止过于频繁的清理（至少间隔1秒）
+	now := time.Now()
+	if !lastCleanup.IsZero() && now.Sub(lastCleanup) < 1*time.Second {
+		return nil
+	}
+	lastCleanup = now
+
 	logDir := "storage/logs"
 
 	// 确保日志目录存在
@@ -22,11 +37,9 @@ func CleanupStaleLogLocks() error {
 	// 读取日志目录
 	entries, err := os.ReadDir(logDir)
 	if err != nil {
-		facades.Log().Warningf("读取日志目录失败: %v", err)
 		return err
 	}
 
-	now := time.Now()
 	cleanedCount := 0
 
 	for _, entry := range entries {
@@ -40,43 +53,39 @@ func CleanupStaleLogLocks() error {
 		// 获取文件信息
 		info, err := entry.Info()
 		if err != nil {
-			facades.Log().Warningf("获取锁文件信息失败: %s, %v", lockFilePath, err)
 			continue
 		}
 
-		// 检查文件修改时间，如果超过5分钟未修改，认为是过期锁文件
-		// 正常的锁文件应该在日志轮转时被及时删除（通常几秒内）
-		// 如果超过5分钟还存在，说明是残留的锁文件
-		if now.Sub(info.ModTime()) > 5*time.Minute {
+		// 检查文件修改时间
+		fileAge := now.Sub(info.ModTime())
+
+		// 如果锁文件超过5秒未修改，认为是残留的锁文件
+		// 正常的日志轮转应该在几秒内完成
+		// 有了日志队列后，写入是串行的，轮转应该更快完成
+		if fileAge > 5*time.Second {
+			// 尝试删除锁文件
 			if err := os.Remove(lockFilePath); err != nil {
-				facades.Log().Warningf("删除过期锁文件失败: %s, %v", lockFilePath, err)
-			} else {
-				cleanedCount++
-				facades.Log().Infof("已清理过期锁文件: %s", entry.Name())
+				// 如果删除失败，可能是文件正在被使用，跳过
+				continue
 			}
-		} else {
-			// 即使未超过5分钟，也尝试删除（可能是残留的）
-			// 因为正常的轮转应该在几秒内完成
-			// 如果删除失败（可能正在使用），静默忽略
-			if err := os.Remove(lockFilePath); err == nil {
-				cleanedCount++
-				facades.Log().Infof("已清理锁文件: %s", entry.Name())
-			}
+			cleanedCount++
 		}
 	}
 
 	if cleanedCount > 0 {
-		facades.Log().Infof("清理完成，共清理 %d 个过期锁文件", cleanedCount)
+		// 直接使用facades.Log，避免循环依赖
+		// 清理服务本身不会产生大量日志，直接写入即可
+		facades.Log().Channel("websocket").Debugf("清理了 %d 个过期的日志锁文件", cleanedCount)
 	}
 
 	return nil
 }
 
 // StartPeriodicLogLockCleanup 启动定期清理日志锁文件的任务
-// 每5分钟清理一次，避免日志轮转失败
+// 每10秒清理一次（有了日志队列后，冲突减少，可以降低清理频率）
 func StartPeriodicLogLockCleanup() {
 	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
+		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 
 		// 立即执行一次
@@ -86,4 +95,46 @@ func StartPeriodicLogLockCleanup() {
 			CleanupStaleLogLocks()
 		}
 	}()
+}
+
+// ForceCleanupLogLocks 强制清理所有日志锁文件（用于紧急情况）
+func ForceCleanupLogLocks() error {
+	cleanupMutex.Lock()
+	defer cleanupMutex.Unlock()
+
+	logDir := "storage/logs"
+
+	// 确保日志目录存在
+	if _, err := os.Stat(logDir); os.IsNotExist(err) {
+		return nil
+	}
+
+	// 读取日志目录
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		return err
+	}
+
+	cleanedCount := 0
+
+	for _, entry := range entries {
+		// 只处理 .log_lock 文件
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log_lock") {
+			continue
+		}
+
+		lockFilePath := filepath.Join(logDir, entry.Name())
+
+		// 强制删除所有锁文件
+		if err := os.Remove(lockFilePath); err == nil {
+			cleanedCount++
+		}
+	}
+
+	if cleanedCount > 0 {
+		// 直接使用facades.Log，避免循环依赖
+		facades.Log().Channel("websocket").Warningf("强制清理了 %d 个日志锁文件", cleanedCount)
+	}
+
+	return nil
 }

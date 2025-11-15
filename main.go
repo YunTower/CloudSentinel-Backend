@@ -12,16 +12,16 @@ import (
 )
 
 func main() {
-	// This bootstraps the framework and gets it ready for use.
 	bootstrap.Boot()
 
-	// 避免日志轮转失败，清理过期的日志锁文件
-	if err := services.CleanupStaleLogLocks(); err != nil {
-		facades.Log().Warningf("清理日志锁文件失败: %v", err)
-	}
-
-	// 启动定期清理日志锁文件的任务（每5分钟清理一次）
+	_ = services.CleanupStaleLogLocks()
 	services.StartPeriodicLogLockCleanup()
+
+	// 初始化Agent数据Worker池
+	_ = services.GetGlobalDataWorker()
+
+	// 初始化日志写入队列
+	_ = services.GetLogWriter()
 
 	// Create a channel to listen for OS signals
 	quit := make(chan os.Signal, 1)
