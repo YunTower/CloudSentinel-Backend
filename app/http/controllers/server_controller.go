@@ -145,7 +145,7 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 
 	var servers []map[string]interface{}
 	err := facades.Orm().Query().Table("servers").
-		Select("id", "name", "ip", "port", "os", "architecture", "status", "location", "boot_time", "cores", "created_at", "updated_at").
+		Select("id", "name", "ip", "port", "os", "architecture", "status", "location", "boot_time", "uptime_seconds", "cores", "created_at", "updated_at").
 		OrderBy("created_at", "desc").
 		Get(&servers)
 
@@ -166,7 +166,7 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 		}
 
 		// 计算运行时间
-		servers[i]["uptime"] = calculateUptime(servers[i]["boot_time"])
+		servers[i]["uptime"] = services.CalculateUptime(servers[i]["boot_time"], servers[i]["uptime_seconds"])
 
 		// 获取最新指标数据
 		var latestMetrics []map[string]interface{}
@@ -257,7 +257,7 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 
 	var servers []map[string]interface{}
 	err := facades.Orm().Query().Table("servers").
-		Select("id", "name", "ip", "port", "status", "location", "os", "architecture", "kernel", "hostname", "cores", "agent_version", "system_name", "boot_time", "last_report_time", "uptime_days", "agent_key", "created_at", "updated_at").
+		Select("id", "name", "ip", "port", "status", "location", "os", "architecture", "kernel", "hostname", "cores", "agent_version", "system_name", "boot_time", "uptime_seconds", "last_report_time", "uptime_days", "agent_key", "created_at", "updated_at").
 		Where("id", serverID).
 		Get(&servers)
 
@@ -280,7 +280,7 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 	server := servers[0]
 
 	// 计算运行时间
-	server["uptime"] = calculateUptime(server["boot_time"])
+	server["uptime"] = services.CalculateUptime(server["boot_time"], server["uptime_seconds"])
 
 	// 查询磁盘信息
 	var disks []map[string]interface{}
