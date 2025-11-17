@@ -85,6 +85,7 @@ func (r *SettingsController) GetPanelSettings(ctx http.Context) http.Response {
 func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Response {
 	var allowGuestLogin string
 	var guestPasswordEnabled string
+	var guestPasswordHash string
 	var hideSensitiveInfo string
 	var sessionTimeoutSeconds string
 	var maxLoginAttempts string
@@ -107,6 +108,10 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 			"code":    "CONFIG_ERROR",
 			"error":   err.Error(),
 		})
+	}
+	// 查询密码hash，用于判断是否已设置密码（不返回实际密码）
+	if err := facades.DB().Table("system_settings").Where("setting_key", "guest_password_hash").Value("setting_value", &guestPasswordHash); err != nil {
+		guestPasswordHash = ""
 	}
 	if err := facades.DB().Table("system_settings").Where("setting_key", "hide_sensitive_info").Value("setting_value", &hideSensitiveInfo); err != nil {
 		hideSensitiveInfo = "true"
@@ -144,7 +149,8 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 		"data": map[string]any{
 			"allowGuest":        allowGuestLogin == "true",
 			"enablePassword":    guestPasswordEnabled == "true",
-			"guestPassword":     "",
+			"guestPassword":     "",                      // 不返回实际密码
+			"hasPassword":       guestPasswordHash != "", // 返回是否已设置密码的标志
 			"hideSensitiveInfo": hideSensitiveInfo == "true",
 			"sessionTimeout":    sessionMinutes,
 			"maxLoginAttempts":  parseInt(maxLoginAttempts, 5),
@@ -345,14 +351,22 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 		}
 	}
 
-	if enablePassword && guestPassword != "" {
-		hash, err := facades.Hash().Make(guestPassword)
-		if err != nil {
-			return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "加密失败", "error": err.Error()})
+	// 处理访客密码hash
+	if enablePassword {
+		// 如果启用了密码且提供了新密码，更新hash
+		if guestPassword != "" {
+			hash, err := facades.Hash().Make(guestPassword)
+			if err != nil {
+				return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "加密失败", "error": err.Error()})
+			}
+			if err := write("guest_password_hash", hash, "string"); err != nil {
+				return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
+			}
 		}
-		if err := write("guest_password_hash", hash, "string"); err != nil {
-			return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
-		}
+		// 如果启用了密码但没有提供新密码，保持现有hash不变
+	} else {
+		// 如果禁用了密码，不清除hash值，保留现有密码（用户可能稍后会重新启用）
+		// 这样用户重新启用密码访问时，之前的密码仍然有效
 	}
 
 	return ctx.Response().Success().Json(http.Json{

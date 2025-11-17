@@ -175,6 +175,15 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 
 		// 如果开启密码访问，验证密码
 		if guestPasswordEnabled == "true" {
+			// 检查是否提供了密码
+			if loginPost.Password == "" {
+				return ctx.Response().Status(401).Json(http.Json{
+					"status":  false,
+					"message": "请输入访客访问密码",
+				})
+			}
+
+			// 从数据库读取密码hash
 			var guestPasswordHash string
 			guestPasswordHashErr := facades.DB().Table("system_settings").Where("setting_key", "guest_password_hash").Value("setting_value", &guestPasswordHash)
 			if guestPasswordHashErr != nil {
@@ -185,18 +194,19 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 				})
 			}
 
+			// 检查hash值是否存在
 			if guestPasswordHash == "" {
 				return ctx.Response().Status(500).Json(http.Json{
 					"status":  false,
-					"message": "游客密码配置不存在",
+					"message": "游客密码配置不存在，请先在设置中配置访客访问密码",
 				})
 			}
 
 			// 验证游客密码
-			if facades.Hash().Check(loginPost.Password, guestPasswordHash) != true {
+			if !facades.Hash().Check(loginPost.Password, guestPasswordHash) {
 				return ctx.Response().Status(401).Json(http.Json{
 					"status":  false,
-					"message": "游客密码错误",
+					"message": "访客访问密码错误",
 				})
 			}
 		}

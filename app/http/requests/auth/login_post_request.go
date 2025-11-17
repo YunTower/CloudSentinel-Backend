@@ -20,26 +20,38 @@ func (r *LoginPostRequest) Authorize(ctx http.Context) error {
 
 // Rules 验证规则
 func (r *LoginPostRequest) Rules(ctx http.Context) map[string]string {
-	return map[string]string{
+	rules := map[string]string{
 		"type":     "required|in:admin,guest",
-		"password": "required_if:type,admin|min_len:6",
 		"username": "required_if:type,admin|min_len:3|max_len:50",
 		"remember": "boolean",
 	}
+
+	if r.Type == "admin" {
+		rules["password"] = "required|min_len:6"
+	}
+
+	return rules
 }
 
 // Messages 自定义错误消息
 func (r *LoginPostRequest) Messages() map[string]string {
-	return map[string]string{
-		"type.required":     "用户类型不能为空",
-		"type.in":           "用户类型必须是 admin 或 guest",
-		"password.required_if": "管理员用户必须提供密码",
-		"password.min_len":  "密码长度不能少于6位",
+	messages := map[string]string{
+		"type.required":        "用户类型不能为空",
+		"type.in":              "用户类型必须是 admin 或 guest",
 		"username.required_if": "管理员用户必须提供用户名",
-		"username.min_len":  "用户名长度不能少于3位",
-		"username.max_len":  "用户名长度不能超过50位",
-		"remember.boolean":  "记住我字段必须是布尔值",
+		"username.min_len":     "用户名长度不能少于3位",
+		"username.max_len":     "用户名长度不能超过50位",
+		"remember.boolean":     "记住我字段必须是布尔值",
 	}
+
+	if r.Type == "admin" {
+		messages["password.required"] = "管理员用户必须提供密码"
+		messages["password.min_len"] = "密码长度不能少于6位"
+	} else {
+		messages["password.min_len"] = "密码长度不能少于1位"
+	}
+
+	return messages
 }
 
 // Attributes 自定义验证属性名称
