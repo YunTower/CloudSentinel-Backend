@@ -7,15 +7,24 @@ import (
 
 	"github.com/goravel/framework/facades"
 
+	"goravel/app/services"
 	"goravel/bootstrap"
 )
 
 func main() {
-	// This bootstraps the framework and gets it ready for use.
 	bootstrap.Boot()
 
+	_ = services.CleanupStaleLogLocks()
+	services.StartPeriodicLogLockCleanup()
+
+	// 初始化Agent数据Worker池
+	_ = services.GetGlobalDataWorker()
+
+	// 初始化日志写入队列
+	_ = services.GetLogWriter()
+
 	// Create a channel to listen for OS signals
-	quit := make(chan os.Signal)
+	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	// Start http server by facades.Route().

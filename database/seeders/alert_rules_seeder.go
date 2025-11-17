@@ -1,8 +1,6 @@
 package seeders
 
 import (
-	"time"
-
 	"github.com/goravel/framework/facades"
 )
 
@@ -19,46 +17,10 @@ func (s *AlertRulesSeeder) Run() error {
 	// 先清空表，避免重复插入
 	facades.Orm().Query().Table("alert_rules").Delete()
 
-	// 获取当前Unix时间戳
-	now := time.Now().Unix()
-
-	// 插入默认告警规则
-	alertRules := []map[string]interface{}{
-		{
-			"rule_name":          "CPU告警",
-			"metric_type":        "cpu",
-			"warning_threshold":  80.0,
-			"critical_threshold": 95.0,
-			"enabled":            true,
-			"created_at":         now,
-			"updated_at":         now,
-		},
-		{
-			"rule_name":          "内存告警",
-			"metric_type":        "memory",
-			"warning_threshold":  80.0,
-			"critical_threshold": 95.0,
-			"enabled":            true,
-			"created_at":         now,
-			"updated_at":         now,
-		},
-		{
-			"rule_name":          "磁盘告警",
-			"metric_type":        "disk",
-			"warning_threshold":  80.0,
-			"critical_threshold": 95.0,
-			"enabled":            true,
-			"created_at":         now,
-			"updated_at":         now,
-		},
-	}
-
-	for _, rule := range alertRules {
-		err := facades.Orm().Query().Table("alert_rules").Create(rule)
-		if err != nil {
-			return err
-		}
-	}
+	// 注意：新的 alert_rules 表结构已改为服务监控类型
+	// 不再使用 metric_type, warning_threshold, critical_threshold
+	// 而是使用 monitor_type, target, interval 等字段
+	// 这里不再插入默认数据，因为服务监控规则需要用户手动配置
 
 	return nil
 }

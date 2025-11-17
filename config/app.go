@@ -41,7 +41,8 @@ func init() {
 		// This value is the name of your application. This value is used when the
 		// framework needs to place the application's name in a notification or
 		// any other location as required by the application or its packages.
-		"name": config.Env("APP_NAME", "Goravel"),
+		"name":    config.Env("APP_NAME", "Goravel"),
+		"version": "0.0.1",
 
 		// Application Environment
 		//
@@ -121,6 +122,7 @@ func init() {
 			&providers.EventServiceProvider{},
 			&providers.ValidationServiceProvider{},
 			&providers.DatabaseServiceProvider{},
+			&providers.CleanupServiceProvider{},
 			&gin.ServiceProvider{},
 		},
 	})
