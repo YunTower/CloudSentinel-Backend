@@ -109,7 +109,7 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 			"error":   err.Error(),
 		})
 	}
-	// 查询密码hash，用于判断是否已设置密码（不返回实际密码）
+	// 查询密码hash，用于判断是否已设置密码
 	if err := facades.DB().Table("system_settings").Where("setting_key", "guest_password_hash").Value("setting_value", &guestPasswordHash); err != nil {
 		guestPasswordHash = ""
 	}
