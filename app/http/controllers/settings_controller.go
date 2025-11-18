@@ -92,6 +92,7 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 	var lockoutDurationSeconds string
 	var jwtSecret string
 	var jwtExpirationSeconds string
+	var adminUsername string
 
 	if err := facades.DB().Table("system_settings").Where("setting_key", "allow_guest_login").Value("setting_value", &allowGuestLogin); err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
@@ -112,6 +113,10 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 	// 查询密码hash，用于判断是否已设置密码
 	if err := facades.DB().Table("system_settings").Where("setting_key", "guest_password_hash").Value("setting_value", &guestPasswordHash); err != nil {
 		guestPasswordHash = ""
+	}
+	// 查询管理员用户名
+	if err := facades.DB().Table("system_settings").Where("setting_key", "admin_username").Value("setting_value", &adminUsername); err != nil {
+		adminUsername = "admin"
 	}
 	if err := facades.DB().Table("system_settings").Where("setting_key", "hide_sensitive_info").Value("setting_value", &hideSensitiveInfo); err != nil {
 		hideSensitiveInfo = "true"
@@ -157,6 +162,7 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 			"lockoutDuration":   lockoutMinutes,
 			"jwtSecret":         jwtSecret,
 			"jwtExpiration":     jwtHours,
+			"adminUsername":     adminUsername, // 返回当前管理员用户名
 		},
 	})
 }
@@ -293,6 +299,11 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 	jwtSecret := ctx.Request().Input("jwtSecret")
 	jwtHours, _ := strconv.Atoi(ctx.Request().Input("jwtExpiration"))
 
+	newUsername := ctx.Request().Input("newUsername")
+	currentPassword := ctx.Request().Input("currentPassword")
+	newPassword := ctx.Request().Input("newPassword")
+	confirmPassword := ctx.Request().Input("confirmPassword")
+
 	sessionSeconds := sessionMinutes * 60
 	lockoutSeconds := lockoutMinutes * 60
 	jwtSeconds := jwtHours * 3600
@@ -353,7 +364,6 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 
 	// 处理访客密码hash
 	if enablePassword {
-		// 如果启用了密码且提供了新密码，更新hash
 		if guestPassword != "" {
 			hash, err := facades.Hash().Make(guestPassword)
 			if err != nil {
@@ -363,10 +373,106 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 				return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
 			}
 		}
-		// 如果启用了密码但没有提供新密码，保持现有hash不变
-	} else {
-		// 如果禁用了密码，不清除hash值，保留现有密码（用户可能稍后会重新启用）
-		// 这样用户重新启用密码访问时，之前的密码仍然有效
+	}
+
+	// 处理管理员用户名修改
+	if newUsername != "" && currentPassword != "" {
+		// 验证当前密码
+		var userPasswordHash string
+		if err := facades.DB().Table("system_settings").Where("setting_key", "admin_password_hash").Value("setting_value", &userPasswordHash); err != nil {
+			return ctx.Response().Status(500).Json(http.Json{
+				"status":  false,
+				"message": "查询密码配置失败",
+				"error":   err.Error(),
+			})
+		}
+
+		if userPasswordHash == "" {
+			return ctx.Response().Status(500).Json(http.Json{
+				"status":  false,
+				"message": "密码配置不存在",
+			})
+		}
+
+		// 验证当前密码
+		if !facades.Hash().Check(currentPassword, userPasswordHash) {
+			return ctx.Response().Status(401).Json(http.Json{
+				"status":  false,
+				"message": "当前密码错误",
+			})
+		}
+
+		// 查询当前用户名
+		var currentUsername string
+		if err := facades.DB().Table("system_settings").Where("setting_key", "admin_username").Value("setting_value", &currentUsername); err != nil {
+			currentUsername = ""
+		}
+
+		// 检查新用户名是否与当前用户名相同
+		if newUsername != currentUsername {
+			if err := write("admin_username", newUsername, "string"); err != nil {
+				return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新用户名失败", "error": err.Error()})
+			}
+		}
+	}
+
+	// 处理管理员密码修改
+	if newPassword != "" && confirmPassword != "" && currentPassword != "" {
+		// 验证新密码长度
+		if len(newPassword) < 6 {
+			return ctx.Response().Status(422).Json(http.Json{
+				"status":  false,
+				"message": "新密码长度至少为6位",
+			})
+		}
+
+		// 验证新密码与确认密码是否一致
+		if newPassword != confirmPassword {
+			return ctx.Response().Status(422).Json(http.Json{
+				"status":  false,
+				"message": "新密码与确认密码不一致",
+			})
+		}
+
+		// 验证当前密码
+		var userPasswordHash string
+		if err := facades.DB().Table("system_settings").Where("setting_key", "admin_password_hash").Value("setting_value", &userPasswordHash); err != nil {
+			return ctx.Response().Status(500).Json(http.Json{
+				"status":  false,
+				"message": "查询密码配置失败",
+				"error":   err.Error(),
+			})
+		}
+
+		if userPasswordHash == "" {
+			return ctx.Response().Status(500).Json(http.Json{
+				"status":  false,
+				"message": "密码配置不存在",
+			})
+		}
+
+		// 验证当前密码
+		if !facades.Hash().Check(currentPassword, userPasswordHash) {
+			return ctx.Response().Status(401).Json(http.Json{
+				"status":  false,
+				"message": "当前密码错误",
+			})
+		}
+
+		// 生成新密码hash
+		newPasswordHash, err := facades.Hash().Make(newPassword)
+		if err != nil {
+			return ctx.Response().Status(500).Json(http.Json{
+				"status":  false,
+				"message": "密码加密失败",
+				"error":   err.Error(),
+			})
+		}
+
+		// 更新密码hash
+		if err := write("admin_password_hash", newPasswordHash, "string"); err != nil {
+			return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新密码失败", "error": err.Error()})
+		}
 	}
 
 	return ctx.Response().Success().Json(http.Json{
