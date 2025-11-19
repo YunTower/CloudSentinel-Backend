@@ -31,8 +31,37 @@ func FormatMetricValue(value interface{}) float64 {
 }
 
 // CalculateUptime 计算运行时间
-// 接受多种类型的 boot_time 值（time.Time, string, int64, float64, int），返回格式化的运行时间字符串
-func CalculateUptime(bootTimeVal interface{}) string {
+func CalculateUptime(bootTimeVal interface{}, uptimeSeconds ...interface{}) string {
+	if len(uptimeSeconds) > 0 && uptimeSeconds[0] != nil {
+		var seconds uint64
+		switch v := uptimeSeconds[0].(type) {
+		case uint64:
+			seconds = v
+		case int64:
+			if v > 0 {
+				seconds = uint64(v)
+			}
+		case float64:
+			if v > 0 {
+				seconds = uint64(v)
+			}
+		case int:
+			if v > 0 {
+				seconds = uint64(v)
+			}
+		case string:
+			if parsed, err := strconv.ParseUint(v, 10, 64); err == nil && parsed > 0 {
+				seconds = parsed
+			}
+		}
+
+		if seconds > 0 {
+			duration := time.Duration(seconds) * time.Second
+			return formatUptime(duration)
+		}
+	}
+
+	// 如果没有uptime，则基于boot_time计算
 	if bootTimeVal == nil {
 		return "0天0时0分"
 	}
@@ -79,6 +108,12 @@ func CalculateUptime(bootTimeVal interface{}) string {
 	if duration <= 0 {
 		return "0天0时0分"
 	}
+
+	return formatUptime(duration)
+}
+
+// formatUptime 格式化运行时间
+func formatUptime(duration time.Duration) string {
 
 	days := int(duration.Hours() / 24)
 	hours := int(duration.Hours()) % 24
@@ -147,6 +182,14 @@ func (j *saveSystemInfoJob) Execute() error {
 		} else {
 			facades.Log().Warningf("解析 boot_time 失败: %v, 原始值: %s", err, v)
 		}
+	}
+
+	if v, ok := j.data["uptime"].(float64); ok && v > 0 {
+		updateData["uptime_seconds"] = uint64(v)
+	} else if v, ok := j.data["uptime"].(uint64); ok && v > 0 {
+		updateData["uptime_seconds"] = v
+	} else if v, ok := j.data["uptime"].(int64); ok && v > 0 {
+		updateData["uptime_seconds"] = uint64(v)
 	}
 
 	// 更新服务器记录
@@ -291,16 +334,16 @@ func (j *saveMetricsJob) Execute() error {
 	// 向前端推送性能指标更新
 	wsService := GetWebSocketService()
 
-	// 获取服务器boot_time以计算运行时间
+	// 获取服务器运行时间信息
 	var servers []map[string]interface{}
 	var uptimeStr string
 	err = facades.Orm().Query().Table("servers").
-		Select("boot_time").
+		Select("boot_time", "uptime_seconds").
 		Where("id", j.serverID).
 		Get(&servers)
 
 	if err == nil && len(servers) > 0 {
-		uptimeStr = CalculateUptime(servers[0]["boot_time"])
+		uptimeStr = CalculateUptime(servers[0]["boot_time"], servers[0]["uptime_seconds"])
 	} else {
 		uptimeStr = "0天0时0分"
 	}

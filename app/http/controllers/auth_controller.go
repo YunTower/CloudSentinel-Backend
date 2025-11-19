@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"goravel/app/http/requests/auth"
 	"goravel/app/models"
+	"goravel/app/services"
 	"time"
 
 	"github.com/goravel/framework/contracts/http"
@@ -86,6 +87,37 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 		})
 	}
 
+	// 获取客户端IP
+	ip := ctx.Request().Ip()
+	lockoutService := services.NewLoginLockoutService()
+
+	// 检查是否开启游客密码访问
+	var guestPasswordEnabled string
+	if loginPost.Type == "guest" {
+		guestPasswordErr := facades.DB().Table("system_settings").Where("setting_key", "guest_password_enabled").Value("setting_value", &guestPasswordEnabled)
+		if guestPasswordErr != nil {
+			guestPasswordEnabled = "false"
+		}
+	}
+
+	// 检查IP是否被锁定
+	// 管理员：始终检查锁定
+	// 游客：只有在开启密码访问时才检查锁定
+	shouldCheckLockout := loginPost.Type == "admin" || (loginPost.Type == "guest" && guestPasswordEnabled == "true")
+	if shouldCheckLockout {
+		isLocked, err := lockoutService.IsIPLocked(ip)
+		if err != nil {
+			// 如果检查锁定失败，记录错误但不阻止登录
+			facades.Log().Errorf("检查IP锁定状态失败: %v", err)
+		} else if isLocked {
+			return ctx.Response().Status(429).Json(http.Json{
+				"status":  false,
+				"message": "IP已被锁定，请稍后再试",
+				"code":    "IP_LOCKED",
+			})
+		}
+	}
+
 	if loginPost.Type == "admin" {
 
 		// 查询用户名
@@ -130,6 +162,10 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 
 		// 验证用户名
 		if loginPost.Username != userName {
+			// 登录失败，增加失败计数
+			if err := lockoutService.IncrementFailedAttempts(ip); err != nil {
+				facades.Log().Errorf("增加登录失败计数失败: %v", err)
+			}
 			return ctx.Response().Status(401).Json(http.Json{
 				"status":  false,
 				"message": "用户名错误",
@@ -138,6 +174,10 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 
 		// 验证密码哈希
 		if facades.Hash().Check(loginPost.Password, userPasswordHash) != true {
+			// 登录失败，增加失败计数
+			if err := lockoutService.IncrementFailedAttempts(ip); err != nil {
+				facades.Log().Errorf("增加登录失败计数失败: %v", err)
+			}
 			return ctx.Response().Status(401).Json(http.Json{
 				"status":  false,
 				"message": "密码错误",
@@ -175,6 +215,19 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 
 		// 如果开启密码访问，验证密码
 		if guestPasswordEnabled == "true" {
+			// 检查是否提供了密码
+			if loginPost.Password == "" {
+				// 登录失败，增加失败计数
+				if err := lockoutService.IncrementFailedAttempts(ip); err != nil {
+					facades.Log().Errorf("增加登录失败计数失败: %v", err)
+				}
+				return ctx.Response().Status(401).Json(http.Json{
+					"status":  false,
+					"message": "请输入访客访问密码",
+				})
+			}
+
+			// 从数据库读取密码hash
 			var guestPasswordHash string
 			guestPasswordHashErr := facades.DB().Table("system_settings").Where("setting_key", "guest_password_hash").Value("setting_value", &guestPasswordHash)
 			if guestPasswordHashErr != nil {
@@ -185,18 +238,23 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 				})
 			}
 
+			// 检查hash值是否存在
 			if guestPasswordHash == "" {
 				return ctx.Response().Status(500).Json(http.Json{
 					"status":  false,
-					"message": "游客密码配置不存在",
+					"message": "游客密码配置不存在，请先在设置中配置访客访问密码",
 				})
 			}
 
 			// 验证游客密码
-			if facades.Hash().Check(loginPost.Password, guestPasswordHash) != true {
+			if !facades.Hash().Check(loginPost.Password, guestPasswordHash) {
+				// 登录失败，增加失败计数
+				if err := lockoutService.IncrementFailedAttempts(ip); err != nil {
+					facades.Log().Errorf("增加登录失败计数失败: %v", err)
+				}
 				return ctx.Response().Status(401).Json(http.Json{
 					"status":  false,
-					"message": "游客密码错误",
+					"message": "访客访问密码错误",
 				})
 			}
 		}
@@ -206,7 +264,6 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 
 	// 创建用户模型用于认证
 	ua := ctx.Request().Header("User-Agent")
-	ip := ctx.Request().Ip()
 
 	// 创建 User 模型实例
 	user := &models.User{
@@ -231,6 +288,13 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 			"message": "Token生成失败",
 			"error":   tokenErr.Error(),
 		})
+	}
+
+	// 登录成功，清除失败计数
+	if shouldCheckLockout {
+		if err := lockoutService.ClearFailedAttempts(ip); err != nil {
+			facades.Log().Errorf("清除登录失败计数失败: %v", err)
+		}
 	}
 
 	return ctx.Response().Success().Json(http.Json{

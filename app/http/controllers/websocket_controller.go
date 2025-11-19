@@ -323,7 +323,7 @@ func (c *WebSocketController) pushInitialServerStates(frontendConn *ws.FrontendC
 	// 查询所有在线服务器
 	var servers []map[string]interface{}
 	err := facades.Orm().Query().Table("servers").
-		Select("id", "boot_time").
+		Select("id", "boot_time", "uptime_seconds").
 		Where("status", "online").
 		Get(&servers)
 
@@ -375,7 +375,7 @@ func (c *WebSocketController) pushInitialServerStates(frontendConn *ws.FrontendC
 		metric := latestMetrics[0]
 
 		// 计算运行时间
-		uptimeStr := services.CalculateUptime(server["boot_time"])
+		uptimeStr := services.CalculateUptime(server["boot_time"], server["uptime_seconds"])
 
 		// 格式化数值为两位小数
 		cpuUsage := services.FormatMetricValue(metric["cpu_usage"])
