@@ -2,6 +2,8 @@ package controllers
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"github.com/goravel/framework/contracts/http"
 	"github.com/goravel/framework/facades"
@@ -44,6 +46,7 @@ func (r *UpdateController) Check(ctx http.Context) http.Response {
 	}
 
 	responseBody, responseErr := response.Body()
+	fmt.Println(responseBody)
 	if responseErr != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  false,
@@ -89,14 +92,31 @@ func (r *UpdateController) Check(ctx http.Context) http.Response {
 		tagName = tagName[1:]
 	}
 
+	// 提取当前版本类型
+	currentVersion := facades.Config().GetString("app.version", "0.0.1-release")
+	currentVersionParts := strings.Split(currentVersion, "-")
+	currentVersionType := "release"
+	if len(currentVersionParts) > 1 {
+		currentVersionType = currentVersionParts[1]
+	}
+
+	// 提取最新版本类型
+	versionParts := strings.Split(tagName, "-")
+	versionType := "release"
+	if len(versionParts) > 1 {
+		versionType = versionParts[1]
+	}
+
 	return ctx.Response().Success().Json(http.Json{
 		"status":  true,
 		"message": "success",
 		"data": map[string]any{
-			"latest_version":  tagName,
-			"current_version": facades.Config().GetString("app.version", "0.0.1"),
-			"publish_time":    result["created_at"],
-			"change_log":      result["body"],
+			"latest_version":       tagName,
+			"latest_version_type":  versionType,
+			"current_version":      currentVersion,
+			"current_version_type": currentVersionType,
+			"publish_time":         result["created_at"],
+			"change_log":           result["body"],
 		},
 	})
 }
