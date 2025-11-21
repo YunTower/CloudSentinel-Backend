@@ -205,8 +205,7 @@ func (r *UpdateController) Check(ctx http.Context) http.Response {
 		"status":  true,
 		"message": "success",
 		"data": map[string]any{
-			"latest_version": "1.0.0",
-			//"latest_version":       tagName,
+			"latest_version":       tagName,
 			"latest_version_type":  versionType,
 			"current_version":      currentVersion,
 			"current_version_type": currentVersionType,

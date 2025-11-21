@@ -3,6 +3,7 @@ package controllers
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/goravel/framework/contracts/http"
@@ -72,12 +73,21 @@ func (r *SettingsController) GetPanelSettings(ctx http.Context) http.Response {
 		panelTitle = "CloudSentinel 云哨"
 	}
 
+	// 提取当前版本类型
+	currentVersion := facades.Config().GetString("app.version", "0.0.1-release")
+	currentVersionParts := strings.Split(currentVersion, "-")
+	currentVersionType := "release"
+	if len(currentVersionParts) > 1 {
+		currentVersionType = currentVersionParts[1]
+	}
+
 	return ctx.Response().Success().Json(http.Json{
 		"status":  true,
 		"message": "success",
 		"data": map[string]any{
-			"panel_title":     panelTitle,
-			"current_version": "0.0.1",
+			"panel_title":          panelTitle,
+			"current_version":      currentVersion,
+			"current_version_type": currentVersionType,
 		},
 	})
 }
