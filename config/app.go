@@ -42,7 +42,7 @@ func init() {
 		// framework needs to place the application's name in a notification or
 		// any other location as required by the application or its packages.
 		"name":    config.Env("APP_NAME", "Goravel"),
-		"version": "0.0.1",
+		"version": "0.0.1-release",
 
 		// Application Environment
 		//
