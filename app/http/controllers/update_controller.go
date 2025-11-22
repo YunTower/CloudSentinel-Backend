@@ -779,20 +779,20 @@ func (r *UpdateController) Update(ctx http.Context) http.Response {
 		}
 
 		// 替换文件
-		//if err := copyFile(extractedBinaryPath, currentExecPath); err != nil {
-		//	// 恢复备份
-		//	err := copyFile(backupPath, currentExecPath)
-		//	if err != nil {
-		//		return
-		//	}
-		//	setStatus("error", 0, fmt.Sprintf("替换文件失败: %v", err))
-		//	return
-		//}
+		if err := copyFile(extractedBinaryPath, currentExecPath); err != nil {
+			// 恢复备份
+			err := copyFile(backupPath, currentExecPath)
+			if err != nil {
+				return
+			}
+			setStatus("error", 0, fmt.Sprintf("替换文件失败: %v", err))
+			return
+		}
 
 		// 设置可执行权限
-		//if err := os.Chmod(currentExecPath, 0755); err != nil {
-		//	facades.Log().Warningf("设置可执行权限失败: %v", err)
-		//}
+		if err := os.Chmod(currentExecPath, 0755); err != nil {
+			facades.Log().Warningf("设置可执行权限失败: %v", err)
+		}
 
 		setStatus("unpacking", 98, "文件替换完成")
 
