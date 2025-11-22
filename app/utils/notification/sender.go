@@ -30,13 +30,10 @@ type WebhookConfig struct {
 }
 
 func SendEmail(config EmailConfig, subject, content string) error {
-	// 这里允许测试时强制发送，即使 Enabled 为 false（只要传入了配置）
-	// 但为了安全，还是检查一下基本字段
 	if config.SMTP == "" || config.From == "" || config.To == "" {
 		return fmt.Errorf("邮件配置不完整")
 	}
 
-	// 构建邮件内容
 	msg := bytes.Buffer{}
 	msg.WriteString(fmt.Sprintf("From: %s\r\n", config.From))
 	msg.WriteString(fmt.Sprintf("To: %s\r\n", config.To))
@@ -46,62 +43,80 @@ func SendEmail(config EmailConfig, subject, content string) error {
 	msg.WriteString(content)
 
 	addr := fmt.Sprintf("%s:%d", config.SMTP, config.Port)
+	var c *smtp.Client
+	var err error
 
-	// 根据安全类型选择发送方式
-	switch strings.ToUpper(config.Security) {
-	case "SSL", "TLS":
-		conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: config.SMTP})
+	// 建立连接
+	if strings.ToUpper(config.Security) == "SSL" || strings.ToUpper(config.Security) == "TLS" {
+		// SSL/TLS 模式
+		tlsConfig := &tls.Config{
+			ServerName:         config.SMTP,
+			InsecureSkipVerify: true, // 允许自签名证书
+		}
+		conn, err := tls.Dial("tcp", addr, tlsConfig)
 		if err != nil {
+			if strings.Contains(err.Error(), "first record does not look like a TLS handshake") {
+				return fmt.Errorf("TLS连接失败: 端口响应非TLS数据，请检查端口(通常465为SSL/TLS)或尝试STARTTLS模式: %v", err)
+			}
 			return fmt.Errorf("TLS连接失败: %v", err)
 		}
-		defer conn.Close()
-
-		c, err := smtp.NewClient(conn, config.SMTP)
-		if err != nil {
-			return fmt.Errorf("创建SMTP客户端失败: %v", err)
-		}
-		defer c.Quit()
-
-		if config.Password != "" {
-			auth := smtp.PlainAuth("", config.From, config.Password, config.SMTP)
-			if err = c.Auth(auth); err != nil {
-				return fmt.Errorf("SMTP认证失败: %v", err)
-			}
-		}
-
-		if err = c.Mail(config.From); err != nil {
-			return fmt.Errorf("设置发件人失败: %v", err)
-		}
-		if err = c.Rcpt(config.To); err != nil {
-			return fmt.Errorf("设置收件人失败: %v", err)
-		}
-		w, err := c.Data()
-		if err != nil {
-			return fmt.Errorf("创建数据写入器失败: %v", err)
-		}
-		_, err = w.Write(msg.Bytes())
-		if err != nil {
-			return fmt.Errorf("写入邮件内容失败: %v", err)
-		}
-		if err = w.Close(); err != nil {
-			return fmt.Errorf("关闭数据写入器失败: %v", err)
-		}
-		return nil
-	case "STARTTLS":
-		auth := smtp.PlainAuth("", config.From, config.Password, config.SMTP)
-		if config.Password == "" {
-			auth = nil
-		}
-		return smtp.SendMail(addr, auth, config.From, []string{config.To}, msg.Bytes())
-	case "NONE", "":
-		auth := smtp.PlainAuth("", config.From, config.Password, config.SMTP)
-		if config.Password == "" {
-			auth = nil
-		}
-		return smtp.SendMail(addr, auth, config.From, []string{config.To}, msg.Bytes())
-	default:
-		return fmt.Errorf("不支持的安全类型: %s", config.Security)
+		c, err = smtp.NewClient(conn, config.SMTP)
+	} else {
+		// STARTTLS 或 明文模式
+		c, err = smtp.Dial(addr)
 	}
+
+	if err != nil {
+		return fmt.Errorf("连接SMTP服务器失败: %v", err)
+	}
+
+	defer func() {
+		_ = c.Quit()
+		_ = c.Close()
+	}()
+
+	// STARTTLS 升级
+	if strings.ToUpper(config.Security) == "STARTTLS" {
+		tlsConfig := &tls.Config{
+			ServerName:         config.SMTP,
+			InsecureSkipVerify: true,
+		}
+		if err := c.StartTLS(tlsConfig); err != nil {
+			return fmt.Errorf("STARTTLS升级失败: %v", err)
+		}
+	}
+
+	// 认证
+	if config.Password != "" {
+		auth := smtp.PlainAuth("", config.From, config.Password, config.SMTP)
+		if err := c.Auth(auth); err != nil {
+			return fmt.Errorf("SMTP认证失败: %v", err)
+		}
+	}
+
+	// 发送邮件
+	if err = c.Mail(config.From); err != nil {
+		return fmt.Errorf("设置发件人失败: %v", err)
+	}
+	if err = c.Rcpt(config.To); err != nil {
+		return fmt.Errorf("设置收件人失败: %v", err)
+	}
+
+	w, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("创建数据写入器失败: %v", err)
+	}
+
+	_, err = w.Write(msg.Bytes())
+	if err != nil {
+		return fmt.Errorf("写入邮件内容失败: %v", err)
+	}
+
+	if err = w.Close(); err != nil {
+		return fmt.Errorf("发送邮件数据失败: %v", err)
+	}
+
+	return nil
 }
 
 func SendWebhook(config WebhookConfig, content string) error {
@@ -109,19 +124,13 @@ func SendWebhook(config WebhookConfig, content string) error {
 		return fmt.Errorf("webhook配置不完整")
 	}
 
-	// 构建消息体
 	message := map[string]interface{}{
-		"msgtype":  "text",
-		"msg_type": "text",
+		"msgtype": "text",
 		"text": map[string]interface{}{
 			"content": content,
 		},
-		"content": map[string]interface{}{
-			"text": content,
-		},
 	}
 
-	// 处理提及用户
 	if strings.Contains(config.Webhook, "open.feishu.cn") { // 飞书适配
 		if config.Mentioned != "" && config.Mentioned != "@all" {
 			// TODO: 还有问题，待优化
@@ -143,21 +152,17 @@ func SendWebhook(config WebhookConfig, content string) error {
 		}
 	}
 
-	// 序列化消息体
 	jsonData, err := json.Marshal(message)
 	if err != nil {
 		return err
 	}
 
-	// 使用 facades.Http 发送请求
 	resp, err := facades.Http().
 		WithHeaders(map[string]string{"Content-Type": "application/json"}).
 		Post(config.Webhook, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return err
 	}
-	fmt.Println(resp.Body())
-	fmt.Println(err)
 
 	if resp.Failed() {
 		body, _ := resp.Body()
