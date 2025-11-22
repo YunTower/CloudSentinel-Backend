@@ -142,10 +142,18 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 
 	// 判断是否需要隐藏敏感信息
 	shouldHideSensitive := userType == "guest" && hideSensitiveInfo
+	// 判断是否是管理员
+	isAdmin := userType == "admin"
 
 	var servers []map[string]interface{}
+	// 根据用户类型决定是否查询 agent_version
+	selectFields := []string{"id", "name", "ip", "port", "os", "architecture", "status", "location", "boot_time", "uptime_seconds", "cores", "created_at", "updated_at"}
+	if isAdmin {
+		selectFields = append(selectFields, "agent_version")
+	}
+	
 	err := facades.Orm().Query().Table("servers").
-		Select("id", "name", "ip", "port", "os", "architecture", "status", "location", "boot_time", "uptime_seconds", "cores", "created_at", "updated_at").
+		Select(selectFields...).
 		OrderBy("created_at", "desc").
 		Get(&servers)
 
@@ -236,6 +244,11 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 			servers[i]["ip"] = "***"
 			servers[i]["port"] = nil
 		}
+		
+		// 如果不是管理员，移除 agent_version 字段
+		if !isAdmin {
+			delete(servers[i], "agent_version")
+		}
 	}
 
 	return ctx.Response().Json(http.StatusOK, http.Json{
@@ -255,9 +268,22 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 		})
 	}
 
+	// 获取用户类型
+	userType, _ := ctx.Value("user_type").(string)
+	if userType == "" {
+		userType = "guest" // 默认为游客
+	}
+	isAdmin := userType == "admin"
+
 	var servers []map[string]interface{}
+	// 根据用户类型决定是否查询 agent_version
+	selectFields := []string{"id", "name", "ip", "port", "status", "location", "os", "architecture", "kernel", "hostname", "cores", "system_name", "boot_time", "uptime_seconds", "last_report_time", "uptime_days", "agent_key", "created_at", "updated_at"}
+	if isAdmin {
+		selectFields = append(selectFields, "agent_version")
+	}
+	
 	err := facades.Orm().Query().Table("servers").
-		Select("id", "name", "ip", "port", "status", "location", "os", "architecture", "kernel", "hostname", "cores", "agent_version", "system_name", "boot_time", "uptime_seconds", "last_report_time", "uptime_days", "agent_key", "created_at", "updated_at").
+		Select(selectFields...).
 		Where("id", serverID).
 		Get(&servers)
 
@@ -374,6 +400,11 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 			"upload_bytes":   0,
 			"download_bytes": 0,
 		}
+	}
+
+	// 如果不是管理员，移除 agent_version 字段
+	if !isAdmin {
+		delete(server, "agent_version")
 	}
 
 	return ctx.Response().Json(http.StatusOK, http.Json{

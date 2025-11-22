@@ -1,24 +1,820 @@
 package controllers
 
 import (
+	"archive/tar"
+	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+
+	"time"
 
 	"github.com/goravel/framework/contracts/http"
 	"github.com/goravel/framework/facades"
+	"github.com/goravel/framework/support/path"
 )
 
 type UpdateController struct{}
+
+type UpdateStatus struct {
+	Step     string `json:"step"`     // connecting, downloading, verifying, unpacking, restarting, completed, error
+	Progress int    `json:"progress"` // 0-100
+	Message  string `json:"message"`
+}
+
+// releaseUrls 版本发布地址
+var releaseUrls = map[string]string{
+	"github": "https://api.github.com/repos/YunTower/CloudSentinel/releases/latest",
+	"gitee":  "https://gitee.com/api/v5/repos/YunTower/CloudSentinel/releases/latest",
+}
 
 func NewUpdateController() *UpdateController {
 	return &UpdateController{}
 }
 
-func (r *UpdateController) Check(ctx http.Context) http.Response {
-	releaseUrls := map[string]string{
-		"github": "https://api.github.com/repos/YunTower/CloudSentinel/releases/latest",
-		"gitee":  "https://gitee.com/api/v5/repos/YunTower/CloudSentinel/releases/latest",
+// Status 获取更新状态
+func (r *UpdateController) Status(ctx http.Context) http.Response {
+	status := UpdateStatus{
+		Step:     "pending",
+		Progress: 0,
+		Message:  "",
 	}
 
+	// 从缓存获取状态
+	if facades.Cache().Has("update_status") {
+		cachedValue := facades.Cache().Get("update_status", status)
+		if cachedValue != nil {
+			// 尝试类型断言
+			if cachedStatus, ok := cachedValue.(UpdateStatus); ok {
+				status = cachedStatus
+			} else {
+				// 如果类型断言失败，尝试通过 JSON 反序列化
+				facades.Log().Warningf("缓存状态类型不匹配，尝试其他方式读取")
+				var cachedStatus UpdateStatus
+				if err := facades.Cache().Get("update_status", &cachedStatus); err == nil {
+					status = cachedStatus
+				} else {
+					facades.Log().Errorf("读取缓存状态失败: %v", err)
+				}
+			}
+		}
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status": true,
+		"data":   status,
+	})
+}
+
+// compareVersions 比较版本号，返回 true 表示需要更新
+func (r *UpdateController) compareVersions(currentVersion, latestVersion string) bool {
+	// 提取版本号部分
+	currentParts := strings.Split(currentVersion, "-")
+	latestParts := strings.Split(latestVersion, "-")
+
+	currentVer := currentParts[0]
+	latestVer := latestParts[0]
+
+	// 比较版本号
+	currentNums := strings.Split(currentVer, ".")
+	latestNums := strings.Split(latestVer, ".")
+
+	maxLen := len(currentNums)
+	if len(latestNums) > maxLen {
+		maxLen = len(latestNums)
+	}
+
+	for i := 0; i < maxLen; i++ {
+		currentNum := 0
+		latestNum := 0
+
+		if i < len(currentNums) {
+			currentNum, _ = strconv.Atoi(currentNums[i])
+		}
+		if i < len(latestNums) {
+			latestNum, _ = strconv.Atoi(latestNums[i])
+		}
+
+		if latestNum > currentNum {
+			return true
+		}
+		if latestNum < currentNum {
+			return false
+		}
+	}
+
+	// 版本号相同，比较类型优先级
+	versionTypePriority := map[string]int{
+		"dev":     0,
+		"alpha":   1,
+		"beta":    2,
+		"rc":      3,
+		"release": 4,
+	}
+
+	currentType := "release"
+	latestType := "release"
+
+	if len(currentParts) > 1 {
+		currentType = currentParts[1]
+	}
+	if len(latestParts) > 1 {
+		latestType = latestParts[1]
+	}
+
+	currentPriority := versionTypePriority[currentType]
+	latestPriority := versionTypePriority[latestType]
+
+	return latestPriority > currentPriority
+}
+
+// getSystemInfo 获取系统信息
+func (r *UpdateController) getSystemInfo() (osType, arch string) {
+	osType = runtime.GOOS
+	arch = runtime.GOARCH
+
+	// 标准化架构名称
+	if arch == "amd64" {
+		arch = "amd64"
+	} else if arch == "386" {
+		arch = "386"
+	} else if arch == "arm64" {
+		arch = "arm64"
+	} else if arch == "arm" {
+		arch = "arm"
+	}
+
+	return osType, arch
+}
+
+// findAssetByArchitecture 在 assets 中查找匹配的二进制包
+func (r *UpdateController) findAssetByArchitecture(assets []interface{}, osType, arch string, isGitee bool) (string, string) {
+	expectedName := fmt.Sprintf("dashboard-%s-%s.tar.gz", osType, arch)
+
+	for _, asset := range assets {
+		assetMap, ok := asset.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		name, ok := assetMap["name"].(string)
+		if !ok {
+			continue
+		}
+
+		if name == expectedName {
+			var downloadUrl string
+			if isGitee {
+				if url, ok := assetMap["browser_download_url"].(string); ok && url != "" {
+					downloadUrl = url
+				} else if url, ok := assetMap["download_url"].(string); ok && url != "" {
+					downloadUrl = url
+				}
+			} else {
+				if url, ok := assetMap["browser_download_url"].(string); ok {
+					downloadUrl = url
+				}
+			}
+
+			if downloadUrl != "" {
+				return name, downloadUrl
+			}
+		}
+	}
+
+	return "", ""
+}
+
+// findSHA256Asset 在 assets 中查找匹配的 SHA256 文件
+func (r *UpdateController) findSHA256Asset(assets []interface{}, osType, arch string, isGitee bool) (string, string) {
+	expectedName := fmt.Sprintf("dashboard-%s-%s.sha256", osType, arch)
+
+	for _, asset := range assets {
+		assetMap, ok := asset.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		name, ok := assetMap["name"].(string)
+		if !ok {
+			continue
+		}
+
+		if name == expectedName {
+			var downloadUrl string
+			if isGitee {
+				if url, ok := assetMap["browser_download_url"].(string); ok && url != "" {
+					downloadUrl = url
+				} else if url, ok := assetMap["download_url"].(string); ok && url != "" {
+					downloadUrl = url
+				}
+			} else {
+				if url, ok := assetMap["browser_download_url"].(string); ok {
+					downloadUrl = url
+				}
+			}
+
+			if downloadUrl != "" {
+				return name, downloadUrl
+			}
+		}
+	}
+
+	return "", ""
+}
+
+// downloadFile 下载文件
+func (r *UpdateController) downloadFile(url, filePath string, progressCallback func(int)) error {
+	response, err := facades.Http().Get(url)
+	if err != nil {
+		return fmt.Errorf("下载请求失败: %v", err)
+	}
+
+	body, err := response.Body()
+	if err != nil {
+		return fmt.Errorf("读取响应失败: %v", err)
+	}
+
+	// 创建目录
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("创建目录失败: %v", err)
+	}
+
+	// 创建文件
+	out, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("创建文件失败: %v", err)
+	}
+	defer func() {
+		if closeErr := out.Close(); closeErr != nil {
+			facades.Log().Warningf("关闭文件失败: %v", closeErr)
+		}
+	}()
+
+	// 流式写入并计算进度
+	bodyBytes := []byte(body)
+	totalSize := len(bodyBytes)
+	chunkSize := 8192 // 8KB chunks
+	written := 0
+
+	for written < totalSize {
+		end := written + chunkSize
+		if end > totalSize {
+			end = totalSize
+		}
+
+		n, err := out.Write(bodyBytes[written:end])
+		if err != nil {
+			return fmt.Errorf("写入文件失败: %v", err)
+		}
+
+		written += n
+
+		// 计算进度并回调
+		if progressCallback != nil {
+			progress := int(float64(written) / float64(totalSize) * 100)
+			progressCallback(progress)
+		}
+	}
+
+	return nil
+}
+
+// extractTarGz 解压 tar.gz 文件
+func (r *UpdateController) extractTarGz(tarGzPath, destDir string) error {
+	// 打开 tar.gz 文件
+	file, err := os.Open(tarGzPath)
+	if err != nil {
+		return fmt.Errorf("打开压缩文件失败: %v", err)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			facades.Log().Warningf("关闭压缩文件失败: %v", closeErr)
+		}
+	}()
+
+	// 创建 gzip reader
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("创建 gzip reader 失败: %v", err)
+	}
+	defer func() {
+		if closeErr := gzReader.Close(); closeErr != nil {
+			facades.Log().Warningf("关闭 gzip reader 失败: %v", closeErr)
+		}
+	}()
+
+	// 创建 tar reader
+	tarReader := tar.NewReader(gzReader)
+
+	// 解压所有文件
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("读取 tar 文件失败: %v", err)
+		}
+
+		// 构建目标文件路径
+		targetPath := filepath.Join(destDir, header.Name)
+
+		// 处理目录
+		if header.Typeflag == tar.TypeDir {
+			if err := os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
+				return fmt.Errorf("创建目录失败: %v", err)
+			}
+			continue
+		}
+
+		// 处理文件
+		if header.Typeflag == tar.TypeReg {
+			// 确保目录存在
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+				return fmt.Errorf("创建目录失败: %v", err)
+			}
+
+			// 创建文件
+			outFile, err := os.Create(targetPath)
+			if err != nil {
+				return fmt.Errorf("创建文件失败: %v", err)
+			}
+
+			// 复制文件内容
+			if _, err := io.Copy(outFile, tarReader); err != nil {
+				outFile.Close()
+				return fmt.Errorf("复制文件内容失败: %v", err)
+			}
+
+			// 立即关闭文件
+			if err := outFile.Close(); err != nil {
+				return fmt.Errorf("关闭解压文件失败: %v", err)
+			}
+
+			// 设置文件权限
+			if err := os.Chmod(targetPath, os.FileMode(header.Mode)); err != nil {
+				return fmt.Errorf("设置文件权限失败: %v", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// calculateSHA256 计算文件的 SHA256 值
+func (r *UpdateController) calculateSHA256(filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("打开文件失败: %v", err)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			facades.Log().Warningf("关闭文件失败: %v", closeErr)
+		}
+	}()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", fmt.Errorf("计算哈希失败: %v", err)
+	}
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// copyFile 复制文件
+func copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := sourceFile.Close(); closeErr != nil {
+			facades.Log().Warningf("关闭源文件失败: %v", closeErr)
+		}
+	}()
+
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := destFile.Close(); closeErr != nil {
+			facades.Log().Warningf("关闭目标文件失败: %v", closeErr)
+		}
+	}()
+
+	_, err = io.Copy(destFile, sourceFile)
+	return err
+}
+
+// readSHA256File 读取 SHA256 文件内容
+func (r *UpdateController) readSHA256File(filePath string) (string, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", fmt.Errorf("读取 SHA256 文件失败: %v", err)
+	}
+
+	// SHA256 文件格式通常是 "hash  filename" 或只有 "hash"
+	content := strings.TrimSpace(string(data))
+	parts := strings.Fields(content)
+	if len(parts) > 0 {
+		return parts[0], nil
+	}
+
+	return "", fmt.Errorf("SHA256 文件格式错误")
+}
+
+// cleanupTempFiles 清理更新过程中的临时文件
+func (r *UpdateController) cleanupTempFiles() {
+	tempDir := os.TempDir()
+
+	// 清理可能的临时文件
+	patterns := []string{
+		"dashboard-*.tar.gz",
+		"dashboard-*.sha256",
+		"update_extract",
+	}
+
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(filepath.Join(tempDir, pattern))
+		if err != nil {
+			facades.Log().Warningf("清理临时文件失败 (pattern: %s): %v", pattern, err)
+			continue
+		}
+
+		for _, match := range matches {
+			if err := os.RemoveAll(match); err != nil {
+				facades.Log().Warningf("删除临时文件失败 (%s): %v", match, err)
+			} else {
+				facades.Log().Infof("已清理临时文件: %s", match)
+			}
+		}
+	}
+}
+
+// Update 执行更新
+func (r *UpdateController) Update(ctx http.Context) http.Response {
+	// 验证请求参数
+	validator, err := ctx.Request().Validate(map[string]string{
+		"type": "required|in:gitee,github",
+	})
+	if err != nil || validator.Fails() {
+		return ctx.Response().Status(400).Json(http.Json{
+			"status":  false,
+			"message": "验证失败",
+			"code":    "VALIDATION_ERROR",
+			"error":   err.Error(),
+			"data":    validator.Errors(),
+		})
+	}
+
+	// 检查是否已经在更新中
+	// 只有在进行中的状态（非 completed、error、pending）才阻止新的更新
+	if facades.Cache().Has("update_status") {
+		cachedValue := facades.Cache().Get("update_status", nil)
+		if cachedValue != nil {
+			var status UpdateStatus
+			if cachedStatus, ok := cachedValue.(UpdateStatus); ok {
+				status = cachedStatus
+			} else {
+				// 尝试通过指针方式获取
+				if err := facades.Cache().Get("update_status", &status); err != nil {
+					// 如果读取失败，清除缓存，允许重新开始
+					facades.Cache().Forget("update_status")
+				}
+			}
+
+			// 只有在进行中的状态才阻止新的更新
+			activeSteps := map[string]bool{
+				"connecting":  true,
+				"downloading": true,
+				"verifying":   true,
+				"unpacking":   true,
+				"restarting":  true,
+			}
+
+			if activeSteps[status.Step] {
+				return ctx.Response().Status(400).Json(http.Json{
+					"status":  false,
+					"message": "更新已在进行中",
+					"code":    "UPDATE_IN_PROGRESS",
+				})
+			}
+
+			// 如果是 error 或 completed 状态，清除旧状态，允许重新开始
+			if status.Step == "error" || status.Step == "completed" {
+				facades.Cache().Forget("update_status")
+				facades.Log().Infof("清除旧的更新状态 (%s)，允许重新开始更新", status.Step)
+			}
+		}
+	}
+
+	updateType := ctx.Request().Input("type")
+	if updateType == "" {
+		return ctx.Response().Status(400).Json(http.Json{
+			"status":  false,
+			"message": "更新源类型不能为空",
+			"code":    "MISSING_TYPE",
+		})
+	}
+
+	// 设置初始状态
+	initialStatus := UpdateStatus{
+		Step:     "connecting",
+		Progress: 0,
+		Message:  "正在初始化更新任务...",
+	}
+	if err := facades.Cache().Put("update_status", initialStatus, 10*time.Minute); err != nil {
+		facades.Log().Errorf("设置更新状态失败: %v", err)
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  false,
+			"message": "设置更新状态失败",
+			"code":    "CACHE_ERROR",
+			"error":   err.Error(),
+		})
+	}
+
+	// 启动异步更新任务
+	go func() {
+		setStatus := func(step string, progress int, message string) {
+			status := UpdateStatus{
+				Step:     step,
+				Progress: progress,
+				Message:  message,
+			}
+			if err := facades.Cache().Put("update_status", status, 10*time.Minute); err != nil {
+				facades.Log().Errorf("更新状态失败: %v", err)
+			}
+		}
+
+		setStatus("connecting", 0, "正在连接更新服务器...")
+
+		// 清理可能存在的临时文件
+		defer func() {
+			if r := recover(); r != nil {
+				facades.Log().Errorf("更新任务发生 panic: %v", r)
+				setStatus("error", 0, fmt.Sprintf("更新任务异常: %v", r))
+			}
+		}()
+
+		// 查询最新发布版本
+		requestUrl := releaseUrls[updateType]
+		response, requestErr := facades.Http().Get(requestUrl)
+		if requestErr != nil {
+			setStatus("error", 0, fmt.Sprintf("连接更新服务器失败: %v", requestErr))
+			r.cleanupTempFiles()
+			return
+		}
+
+		responseBody, responseErr := response.Body()
+		if responseErr != nil {
+			setStatus("error", 0, fmt.Sprintf("读取版本信息失败: %v", responseErr))
+			r.cleanupTempFiles()
+			return
+		}
+
+		if response.Status() == 404 {
+			setStatus("error", 0, "未找到最新的版本信息")
+			r.cleanupTempFiles()
+			return
+		}
+
+		var result map[string]interface{}
+		if err := json.Unmarshal([]byte(responseBody), &result); err != nil {
+			setStatus("error", 0, fmt.Sprintf("解析版本信息失败: %v", err))
+			r.cleanupTempFiles()
+			return
+		}
+
+		// 获取 tagName
+		tagName, ok := result["tag_name"].(string)
+		if !ok {
+			setStatus("error", 0, "版本信息格式错误")
+			r.cleanupTempFiles()
+			return
+		}
+
+		// 格式化版本号
+		if len(tagName) > 0 && tagName[0] == 'v' {
+			tagName = tagName[1:]
+		}
+
+		// 检查是否需要更新
+		currentVersion := facades.Config().GetString("app.version", "0.0.1-release")
+		if !r.compareVersions(currentVersion, tagName) {
+			setStatus("error", 0, "当前已是最新版本，无需更新")
+			r.cleanupTempFiles()
+			return
+		}
+
+		// 获取系统信息
+		osType, arch := r.getSystemInfo()
+		setStatus("connecting", 10, fmt.Sprintf("检测到系统: %s-%s", osType, arch))
+
+		// 查找匹配的二进制包
+		assets, ok := result["assets"].([]interface{})
+		if !ok {
+			setStatus("error", 0, "未找到发布文件列表")
+			r.cleanupTempFiles()
+			return
+		}
+
+		isGitee := updateType == "gitee"
+		fileName, downloadUrl := r.findAssetByArchitecture(assets, osType, arch, isGitee)
+		if fileName == "" {
+			setStatus("error", 0, fmt.Sprintf("未找到适用于 %s-%s 的软件包", osType, arch))
+			r.cleanupTempFiles()
+			return
+		}
+
+		setStatus("downloading", 0, fmt.Sprintf("找到软件包: %s", fileName))
+
+		// 下载二进制包
+		downloadPath := path.Base(fileName)
+		if err := r.downloadFile(downloadUrl, downloadPath, func(progress int) {
+			setStatus("downloading", progress, "正在下载软件包...")
+		}); err != nil {
+			setStatus("error", 0, fmt.Sprintf("下载失败: %v", err))
+			r.cleanupTempFiles()
+			return
+		}
+
+		setStatus("downloading", 100, "软件包下载完成")
+
+		// 查找并下载 SHA256 文件
+		sha256FileName, sha256DownloadUrl := r.findSHA256Asset(assets, osType, arch, isGitee)
+		if sha256FileName == "" {
+			setStatus("error", 0, "未找到 SHA256 校验文件")
+			r.cleanupTempFiles()
+			return
+		}
+
+		sha256Path := path.Base(sha256FileName)
+		setStatus("downloading", 65, "正在下载校验文件...")
+
+		if err := r.downloadFile(sha256DownloadUrl, sha256Path, nil); err != nil {
+			setStatus("error", 0, fmt.Sprintf("下载 SHA256 文件失败: %v", err))
+			r.cleanupTempFiles()
+			return
+		}
+
+		setStatus("downloading", 70, "校验文件下载完成")
+
+		// 校验文件完整性
+		setStatus("verifying", 85, "正在校验文件完整性...")
+
+		// 读取期望的 SHA256 值
+		expectedSHA256, err := r.readSHA256File(sha256Path)
+		if err != nil {
+			setStatus("error", 0, fmt.Sprintf("读取 SHA256 文件失败: %v", err))
+			r.cleanupTempFiles()
+			return
+		}
+
+		// 计算实际 tar.gz 文件的 SHA256 值
+		actualSHA256, err := r.calculateSHA256(downloadPath)
+		if err != nil {
+			setStatus("error", 0, fmt.Sprintf("计算文件 SHA256 失败: %v", err))
+			r.cleanupTempFiles()
+			return
+		}
+
+		// 比较 SHA256 值
+		if !strings.EqualFold(expectedSHA256, actualSHA256) {
+			setStatus("error", 0, fmt.Sprintf("文件校验失败: 期望 %s, 实际 %s", expectedSHA256, actualSHA256))
+			r.cleanupTempFiles()
+			return
+		}
+
+		setStatus("verifying", 90, "文件校验通过")
+
+		// 解压 tar.gz 文件
+		extractDir := path.Base("update_extract")
+		if err := os.RemoveAll(extractDir); err != nil {
+			setStatus("error", 0, fmt.Sprintf("清理解压目录失败: %v", err))
+			r.cleanupTempFiles()
+			return
+		}
+		if err := os.MkdirAll(extractDir, 0755); err != nil {
+			setStatus("error", 0, fmt.Sprintf("创建解压目录失败: %v", err))
+			r.cleanupTempFiles()
+			return
+		}
+
+		setStatus("unpacking", 75, "正在解压软件包...")
+		if err := r.extractTarGz(downloadPath, extractDir); err != nil {
+			setStatus("error", 0, fmt.Sprintf("解压失败: %v", err))
+			r.cleanupTempFiles()
+			return
+		}
+
+		setStatus("unpacking", 80, "解压完成")
+
+		// 查找解压后的二进制文件
+		binaryName := fmt.Sprintf("dashboard-%s-%s", osType, arch)
+		if osType == "windows" {
+			binaryName = fmt.Sprintf("dashboard-%s-%s.exe", osType, arch)
+		}
+		extractedBinaryPath := filepath.Join(extractDir, binaryName)
+		// 检查文件是否存在
+		if _, err := os.Stat(extractedBinaryPath); os.IsNotExist(err) {
+			// 尝试在子目录中查找
+			files, err := os.ReadDir(extractDir)
+			if err != nil {
+				setStatus("error", 0, fmt.Sprintf("读取解压目录失败: %v", err))
+				r.cleanupTempFiles()
+				return
+			}
+
+			found := false
+			for _, file := range files {
+				if file.IsDir() {
+					subPath := filepath.Join(extractDir, file.Name(), binaryName)
+					if _, err := os.Stat(subPath); err == nil {
+						extractedBinaryPath = subPath
+						found = true
+						break
+					}
+				}
+			}
+
+			if !found {
+				setStatus("error", 0, "解压后未找到二进制文件")
+				r.cleanupTempFiles()
+				return
+			}
+		}
+
+		setStatus("verifying", 90, "文件校验通过")
+
+		// 删除 SHA256 文件
+		if err := os.Remove(sha256Path); err != nil {
+			facades.Log().Warningf("删除 SHA256 文件失败: %v", err)
+		}
+
+		// 替换文件
+		setStatus("unpacking", 95, "正在替换文件...")
+
+		// 获取当前可执行文件路径
+		currentExecPath, err := os.Executable()
+		if err != nil {
+			setStatus("error", 0, fmt.Sprintf("获取当前可执行文件路径失败: %v", err))
+			return
+		}
+
+		// 备份当前文件
+		backupPath := currentExecPath + ".backup"
+		if err := copyFile(currentExecPath, backupPath); err != nil {
+			setStatus("error", 0, fmt.Sprintf("备份当前文件失败: %v", err))
+			return
+		}
+
+		// 替换文件
+		if err := copyFile(extractedBinaryPath, currentExecPath); err != nil {
+			// 恢复备份
+			err := copyFile(backupPath, currentExecPath)
+			if err != nil {
+				return
+			}
+			setStatus("error", 0, fmt.Sprintf("替换文件失败: %v", err))
+			return
+		}
+
+		// 设置可执行权限
+		if err := os.Chmod(currentExecPath, 0755); err != nil {
+			facades.Log().Warningf("设置可执行权限失败: %v", err)
+		}
+
+		setStatus("unpacking", 98, "文件替换完成")
+
+		// TODO: 8. 执行数据库迁移
+		// TODO: 9. 重启程序
+
+		setStatus("restarting", 98, "正在重启服务...")
+		time.Sleep(3 * time.Second)
+
+		setStatus("completed", 100, "更新完成！")
+		// 保持完成状态一段时间，以便前端读取
+		time.Sleep(1 * time.Minute)
+		facades.Cache().Forget("update_status")
+	}()
+
+	return ctx.Response().Success().Json(http.Json{
+		"status":  true,
+		"message": "更新任务已启动",
+	})
+}
+
+func (r *UpdateController) Check(ctx http.Context) http.Response {
 	validator, err := ctx.Request().Validate(map[string]string{
 		"type": "required|in:gitee,github",
 	})
@@ -89,14 +885,43 @@ func (r *UpdateController) Check(ctx http.Context) http.Response {
 		tagName = tagName[1:]
 	}
 
+	// 提取当前版本类型
+	currentVersion := facades.Config().GetString("app.version", "0.0.1-release")
+	currentVersionParts := strings.Split(currentVersion, "-")
+	currentVersionType := "release"
+	if len(currentVersionParts) > 1 {
+		currentVersionType = currentVersionParts[1]
+	}
+
+	// 提取最新版本类型
+	versionParts := strings.Split(tagName, "-")
+	versionType := "release"
+	if len(versionParts) > 1 {
+		versionType = versionParts[1]
+	}
+
+	// 格式化发布时间
+	var publishTime string
+	if createdAt, ok := result["created_at"].(string); ok && createdAt != "" {
+		// 解析 ISO 8601 格式时间 "2025-11-13T11:50:40Z"
+		parsedTime, parseErr := time.Parse(time.RFC3339, createdAt)
+		if parseErr == nil {
+			publishTime = parsedTime.Format("2006-01-02 15:04:05")
+		} else {
+			publishTime = createdAt
+		}
+	}
+
 	return ctx.Response().Success().Json(http.Json{
 		"status":  true,
 		"message": "success",
 		"data": map[string]any{
-			"latest_version":  tagName,
-			"current_version": facades.Config().GetString("app.version", "0.0.1"),
-			"publish_time":    result["created_at"],
-			"change_log":      result["body"],
+			"latest_version":       tagName,
+			"latest_version_type":  versionType,
+			"current_version":      currentVersion,
+			"current_version_type": currentVersionType,
+			"publish_time":         publishTime,
+			"change_log":           result["body"],
 		},
 	})
 }

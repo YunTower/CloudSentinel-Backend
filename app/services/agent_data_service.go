@@ -387,6 +387,17 @@ func (j *saveMetricsJob) Execute() error {
 	}
 	wsService.BroadcastToFrontend(realtimeDataPoint)
 
+	// 检查并触发告警
+	alertService := NewAlertService()
+	alertMetrics := map[string]interface{}{
+		"cpu_usage":    cpuUsage,
+		"memory_usage": memoryUsage,
+		"disk_usage":   diskUsage,
+	}
+	if err := alertService.CheckAndAlert(j.serverID, alertMetrics); err != nil {
+		facades.Log().Warningf("告警检查失败: %v", err)
+	}
+
 	return nil
 }
 

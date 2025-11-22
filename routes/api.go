@@ -29,8 +29,11 @@ func Api() {
 		router.Prefix("/settings").Patch("/panel", settingsController.UpdatePanelSettings)
 		router.Prefix("/settings").Patch("/permissions", settingsController.UpdatePermissionsSettings)
 		router.Prefix("/settings").Patch("/alerts", settingsController.UpdateAlertsSettings)
+		router.Prefix("/settings").Post("/alerts/test", settingsController.TestAlertSettings)
 
 		router.Prefix("/update").Get("/check", updateController.Check)
+		router.Prefix("/update").Get("/status", updateController.Status)
+		router.Prefix("/update").Post("", updateController.Update)
 
 		router.Prefix("/auth").Get("/refresh", authController.Refresh)
 		router.Prefix("/auth").Get("/check", authController.Check)
