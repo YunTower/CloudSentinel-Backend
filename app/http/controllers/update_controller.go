@@ -201,6 +201,18 @@ func (r *UpdateController) Check(ctx http.Context) http.Response {
 		versionType = versionParts[1]
 	}
 
+	// 格式化发布时间
+	var publishTime string
+	if createdAt, ok := result["created_at"].(string); ok && createdAt != "" {
+		// 解析 ISO 8601 格式时间 "2025-11-13T11:50:40Z"
+		parsedTime, parseErr := time.Parse(time.RFC3339, createdAt)
+		if parseErr == nil {
+			publishTime = parsedTime.Format("2006-01-02 15:04:05")
+		} else {
+			publishTime = createdAt
+		}
+	}
+
 	return ctx.Response().Success().Json(http.Json{
 		"status":  true,
 		"message": "success",
@@ -209,7 +221,7 @@ func (r *UpdateController) Check(ctx http.Context) http.Response {
 			"latest_version_type":  versionType,
 			"current_version":      currentVersion,
 			"current_version_type": currentVersionType,
-			"publish_time":         result["created_at"],
+			"publish_time":         publishTime,
 			"change_log":           result["body"],
 		},
 	})
