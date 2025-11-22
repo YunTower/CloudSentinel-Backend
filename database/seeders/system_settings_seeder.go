@@ -21,7 +21,7 @@ func (s *SystemSettingsSeeder) Run() error {
 	adminSettings := []map[string]interface{}{
 		{
 			"setting_key":   "panel_title",
-			"setting_value": "CloudSentinel 云哨",
+			"setting_value": "云哨 CloudSentinel - 轻量的服务器运维探针",
 			"setting_type":  "string",
 			"description":   "面板标题",
 		},
@@ -36,12 +36,6 @@ func (s *SystemSettingsSeeder) Run() error {
 			"setting_value": hashedAdminPassword,
 			"setting_type":  "string",
 			"description":   "管理员密码哈希",
-		},
-		{
-			"setting_key":   "version",
-			"setting_value": "1.0.0",
-			"setting_type":  "string",
-			"description":   "当前版本号",
 		},
 		// 权限相关设置
 		{
