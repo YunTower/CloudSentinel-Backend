@@ -34,6 +34,7 @@ func Api() {
 		router.Prefix("/update").Get("/check", updateController.Check)
 		router.Prefix("/update").Get("/status", updateController.Status)
 		router.Prefix("/update").Post("", updateController.Update)
+		router.Prefix("/update").Get("/agent/check", updateController.CheckAgent)
 
 		router.Prefix("/auth").Get("/refresh", authController.Refresh)
 		router.Prefix("/auth").Get("/check", authController.Check)
@@ -48,5 +49,6 @@ func Api() {
 		router.Prefix("/servers").Patch("/:id", serverController.UpdateServer)
 		router.Prefix("/servers").Delete("/:id", serverController.DeleteServer)
 		router.Prefix("/servers").Post("/:id/restart", serverController.RestartServer)
+		router.Prefix("/servers").Post("/:id/update-agent", serverController.UpdateAgent)
 	})
 }
