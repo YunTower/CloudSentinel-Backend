@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -796,11 +798,27 @@ func (r *UpdateController) Update(ctx http.Context) http.Response {
 
 		setStatus("unpacking", 98, "文件替换完成")
 
-		// TODO: 8. 执行数据库迁移
-		// TODO: 9. 重启程序
+		// 执行数据库迁移
+		setStatus("migrating", 99, "正在执行数据库迁移...")
+		if err := r.runMigrations(); err != nil {
+			facades.Log().Errorf("执行数据库迁移失败: %v", err)
+			setStatus("migrating", 99, fmt.Sprintf("数据库迁移警告: %v（更新将继续）", err))
+		} else {
+			setStatus("migrating", 99, "数据库迁移完成")
+		}
 
-		setStatus("restarting", 98, "正在重启服务...")
-		time.Sleep(3 * time.Second)
+		// 重启程序
+		setStatus("restarting", 99, "正在重启服务...")
+
+		// 延迟一下，确保状态已保存
+		time.Sleep(1 * time.Second)
+
+		// 执行重启
+		if err := r.restartApplication(); err != nil {
+			facades.Log().Errorf("重启应用失败: %v", err)
+			setStatus("error", 0, fmt.Sprintf("重启失败: %v", err))
+			return
+		}
 
 		setStatus("completed", 100, "更新完成！")
 		// 保持完成状态一段时间，以便前端读取
@@ -924,4 +942,111 @@ func (r *UpdateController) Check(ctx http.Context) http.Response {
 			"change_log":           result["body"],
 		},
 	})
+}
+
+// runMigrations 执行数据库迁移
+func (r *UpdateController) runMigrations() error {
+	// 获取当前可执行文件路径
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取可执行文件路径失败: %v", err)
+	}
+
+	// 获取可执行文件所在目录
+	execDir := filepath.Dir(execPath)
+
+	cmd := exec.Command(execPath, "artisan", "migrate")
+
+	// 设置工作目录
+	cmd.Dir = execDir
+
+	// 设置环境变量
+	cmd.Env = os.Environ()
+
+	// 捕获输出
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	// 执行命令
+	facades.Log().Info("开始执行数据库迁移...")
+	if err := cmd.Run(); err != nil {
+		output := stdout.String()
+		errOutput := stderr.String()
+		facades.Log().Errorf("执行迁移命令失败: %v\n标准输出: %s\n错误输出: %s", err, output, errOutput)
+		return fmt.Errorf("执行迁移命令失败: %v\n输出: %s\n错误: %s", err, output, errOutput)
+	}
+
+	output := stdout.String()
+	if output != "" {
+		facades.Log().Infof("迁移执行输出: %s", output)
+	}
+
+	facades.Log().Info("数据库迁移执行完成")
+	return nil
+}
+
+// restartApplication 重启应用程序
+func (r *UpdateController) restartApplication() error {
+	// 获取当前可执行文件路径
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取可执行文件路径失败: %v", err)
+	}
+
+	// 获取当前进程的 PID
+	pid := os.Getpid()
+
+	// 构建重启命令
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		// Windows
+		cmd = exec.Command("cmd", "/C", "timeout", "/t", "2", "/nobreak", ">nul", "&", execPath)
+	} else {
+		// Linux/Unix
+		cmd = exec.Command("sh", "-c", fmt.Sprintf("sleep 2 && %s &", execPath))
+	}
+
+	// 设置工作目录
+	cmd.Dir = filepath.Dir(execPath)
+
+	// 设置环境变量
+	cmd.Env = os.Environ()
+
+	// 启动新进程
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("启动新进程失败: %v", err)
+	}
+
+	facades.Log().Infof("新进程已启动，PID: %d，正在终止当前进程 PID: %d", cmd.Process.Pid, pid)
+
+	time.Sleep(500 * time.Millisecond)
+
+	// 终止当前进程
+	if runtime.GOOS == "windows" {
+		// Windows
+		killCmd := exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid))
+		if err := killCmd.Run(); err != nil {
+			facades.Log().Warningf("终止当前进程失败: %v，将使用 os.Exit", err)
+			os.Exit(0)
+		}
+	} else {
+		// Linux/Unix
+		process, err := os.FindProcess(pid)
+		if err != nil {
+			facades.Log().Warningf("查找当前进程失败: %v，将使用 os.Exit", err)
+			os.Exit(0)
+		}
+
+		if err := process.Signal(os.Interrupt); err != nil {
+			facades.Log().Warningf("发送终止信号失败: %v，将使用 os.Exit", err)
+			os.Exit(0)
+		}
+
+		// 等待进程退出，如果 5 秒后还没退出，强制退出
+		time.Sleep(5 * time.Second)
+		os.Exit(0)
+	}
+
+	return nil
 }
