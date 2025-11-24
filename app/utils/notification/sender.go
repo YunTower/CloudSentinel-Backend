@@ -38,7 +38,15 @@ func SendEmail(config EmailConfig, subject, content string) error {
 	msg.WriteString(fmt.Sprintf("From: %s\r\n", config.From))
 	msg.WriteString(fmt.Sprintf("To: %s\r\n", config.To))
 	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
-	msg.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
+
+	// 根据内容自动判断是 HTML 还是纯文本
+	contentType := "text/plain; charset=UTF-8"
+	if strings.HasPrefix(strings.TrimSpace(content), "<") {
+		// 如果内容以 HTML 标签开头，则认为是 HTML
+		contentType = "text/html; charset=UTF-8"
+	}
+
+	msg.WriteString(fmt.Sprintf("Content-Type: %s\r\n", contentType))
 	msg.WriteString("\r\n")
 	msg.WriteString(content)
 
@@ -124,31 +132,57 @@ func SendWebhook(config WebhookConfig, content string) error {
 		return fmt.Errorf("webhook配置不完整")
 	}
 
-	message := map[string]interface{}{
-		"msgtype": "text",
-		"text": map[string]interface{}{
-			"content": content,
-		},
-	}
+	var message map[string]interface{}
 
-	if strings.Contains(config.Webhook, "open.feishu.cn") { // 飞书适配
-		if config.Mentioned != "" && config.Mentioned != "@all" {
-			// TODO: 还有问题，待优化
-			userID := strings.Split(config.Mentioned, ",")
-			for _, id := range userID {
-				message["content"].(map[string]interface{})["text"] = "<at user_id=\"" + id + "\">fish</at>" + message["content"].(map[string]interface{})["text"].(string)
+	if strings.Contains(config.Webhook, "open.feishu.cn") {
+		// 飞书
+		// 结构: {"msg_type": "text", "content": {"text": "..."}}
+		text := content
+
+		if config.Mentioned == "@all" {
+			text += "\n<at user_id=\"all\">所有人</at>"
+		} else if config.Mentioned != "" {
+			userIDs := strings.Split(config.Mentioned, ",")
+			for _, id := range userIDs {
+				id = strings.TrimSpace(id)
+				if id != "" {
+					text += fmt.Sprintf("<at user_id=\"%s\"></at>", id)
+				}
 			}
-		} else if config.Mentioned == "@all" {
-			message["content"].(map[string]interface{})["text"] = "<at user_id=\"all\">所有人</at>" + message["content"].(map[string]interface{})["text"].(string)
+		}
+
+		message = map[string]interface{}{
+			"msg_type": "text",
+			"content": map[string]interface{}{
+				"text": text,
+			},
 		}
 	} else {
-		if config.Mentioned != "" && config.Mentioned != "@all" {
-			userID := strings.Split(config.Mentioned, ",")
-			for _, id := range userID {
-				message["text"].(map[string]interface{})["mentioned_list"] = append(message["text"].(map[string]interface{})["mentioned_list"].([]string), id)
+		// 企业微信 / 通用
+		// 结构: {"msgtype": "text", "text": {"content": "...", "mentioned_list": [...]}}
+		message = map[string]interface{}{
+			"msgtype": "text",
+			"text": map[string]interface{}{
+				"content": content,
+			},
+		}
+
+		if config.Mentioned == "@all" {
+			// 兼容处理
+			message["text"].(map[string]interface{})["mentioned_list"] = []string{"@all"}
+			message["text"].(map[string]interface{})["content"] = content + "\n@all"
+		} else if config.Mentioned != "" {
+			userIDs := strings.Split(config.Mentioned, ",")
+			trimmedIDs := make([]string, 0, len(userIDs))
+			for _, id := range userIDs {
+				id = strings.TrimSpace(id)
+				if id != "" {
+					trimmedIDs = append(trimmedIDs, id)
+				}
 			}
-		} else if config.Mentioned == "@all" {
-			message["text"].(map[string]interface{})["content"] = content + "\n<@all>"
+			if len(trimmedIDs) > 0 {
+				message["text"].(map[string]interface{})["mentioned_list"] = trimmedIDs
+			}
 		}
 	}
 

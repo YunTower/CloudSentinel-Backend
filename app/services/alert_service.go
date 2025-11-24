@@ -1,13 +1,16 @@
 package services
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"goravel/app/jobs"
 	"goravel/app/utils/notification"
+	"html/template"
 	"time"
 
 	"github.com/goravel/framework/facades"
+	"github.com/goravel/framework/support/path"
 )
 
 // AlertService 告警服务
@@ -141,32 +144,38 @@ func (s *AlertService) evaluateRule(serverID, metricName string, value float64, 
 				// 还在冷却期内，不发送
 				return nil
 			}
-			// 设置冷却期（5分钟）
-			facades.Cache().Put(cooldownKey, true, 5*time.Minute)
+			// 设置冷却期（2分钟）
+			err := facades.Cache().Put(cooldownKey, true, 2*time.Minute)
+			if err != nil {
+				return err
+			}
 		} else {
 			return nil
 		}
 	}
 
 	// 更新状态
-	facades.Cache().Put(cacheKey, string(newState), 24*time.Hour)
+	err := facades.Cache().Put(cacheKey, string(newState), 24*time.Hour)
+	if err != nil {
+		return err
+	}
 
 	// 如果恢复到正常状态，发送恢复通知
 	if newState == AlertStateNormal && currentState != AlertStateNormal {
-		s.sendNotification(serverID, metricName, value, newState, severity, true)
+		s.sendNotification(serverID, metricName, value, newState, severity, true, rule)
 		return nil
 	}
 
 	// 如果进入告警状态，发送告警通知
 	if newState != AlertStateNormal {
-		s.sendNotification(serverID, metricName, value, newState, severity, false)
+		s.sendNotification(serverID, metricName, value, newState, severity, false, rule)
 	}
 
 	return nil
 }
 
 // sendNotification 发送通知
-func (s *AlertService) sendNotification(serverID, metricName string, value float64, state AlertState, severity string, isRecovery bool) {
+func (s *AlertService) sendNotification(serverID, metricName string, value float64, state AlertState, severity string, isRecovery bool, rule Rule) {
 	// 获取服务器名称
 	var serverName string
 	var serverIP string
@@ -197,13 +206,78 @@ func (s *AlertService) sendNotification(serverID, metricName string, value float
 		"disk":   "磁盘使用率",
 	}[metricName]
 
-	var title, message string
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	var title, message, webhookMessage string
+	var threshold float64
+	if severity == "警告" {
+		threshold = rule.Warning
+	} else {
+		threshold = rule.Critical
+	}
+
 	if isRecovery {
 		title = fmt.Sprintf("[恢复] %s - %s", serverName, metricLabel)
-		message = fmt.Sprintf("服务器 %s (%s) 的 %s 已恢复正常，当前值: %.2f%%", serverName, serverIP, metricLabel, value)
+		webhookMessage = fmt.Sprintf("✅ 告警恢复\n\n服务器: %s (%s)\n指标: %s\n当前值: %.2f%%\n恢复时间: %s",
+			serverName, serverIP, metricLabel, value, timestamp)
 	} else {
 		title = fmt.Sprintf("[%s] %s - %s", severity, serverName, metricLabel)
-		message = fmt.Sprintf("服务器 %s (%s) 的 %s 达到 %s 阈值，当前值: %.2f%%", serverName, serverIP, metricLabel, severity, value)
+		webhookMessage = fmt.Sprintf("🚨 发生告警 (%s)\n\n服务器: %s (%s)\n指标: %s\n当前值: %.2f%%\n阈值: %.2f%%\n触发时间: %s",
+			severity, serverName, serverIP, metricLabel, value, threshold, timestamp)
+	}
+
+	color := "#ff4d4f" // 红色
+	if severity == "警告" {
+		color = "#faad14" // 橙色
+	}
+	if isRecovery {
+		color = "#52c41a" // 绿色
+	}
+
+	statusText := severity
+	if isRecovery {
+		statusText = "恢复正常"
+	}
+
+	templateData := map[string]interface{}{
+		"Title":        title,
+		"Timestamp":    timestamp,
+		"ServerName":   serverName,
+		"ServerIP":     serverIP,
+		"MetricLabel":  metricLabel,
+		"StatusText":   statusText,
+		"Color":        color,
+		"CurrentValue": value,
+		"Threshold":    threshold,
+	}
+
+	var tmpl *template.Template
+	var templateErr error
+
+	tmpl, templateErr = template.ParseFiles(path.Resource("views/emails/alert.tmpl"))
+	if templateErr != nil {
+		facades.Log().Warningf("解析邮件模板失败: %v", templateErr)
+		if isRecovery {
+			message = fmt.Sprintf("告警恢复通知\n\n服务器: %s (%s)\n指标: %s\n当前值: %.2f%%\n恢复时间: %s\n\n此邮件由云哨监控系统自动发送，请勿回复。",
+				serverName, serverIP, metricLabel, value, timestamp)
+		} else {
+			message = fmt.Sprintf("告警通知 (%s)\n\n服务器: %s (%s)\n指标: %s\n当前状态: %s\n当前值: %.2f%%\n触发阈值: %.2f%%\n触发时间: %s\n\n此邮件由云哨监控系统自动发送，请勿回复。",
+				severity, serverName, serverIP, metricLabel, statusText, value, threshold, timestamp)
+		}
+	} else {
+		var buf bytes.Buffer
+		templateName := "emails/alert.tmpl"
+		if execErr := tmpl.ExecuteTemplate(&buf, templateName, templateData); execErr != nil {
+			facades.Log().Errorf("渲染邮件模板失败: %v", execErr)
+			if isRecovery {
+				message = fmt.Sprintf("告警恢复通知\n\n服务器: %s (%s)\n指标: %s\n当前值: %.2f%%\n恢复时间: %s\n\n此邮件由云哨监控系统自动发送，请勿回复。",
+					serverName, serverIP, metricLabel, value, timestamp)
+			} else {
+				message = fmt.Sprintf("告警通知 (%s)\n\n服务器: %s (%s)\n指标: %s\n当前状态: %s\n当前值: %.2f%%\n触发阈值: %.2f%%\n触发时间: %s\n\n此邮件由云哨监控系统自动发送，请勿回复。",
+					severity, serverName, serverIP, metricLabel, statusText, value, threshold, timestamp)
+			}
+		} else {
+			message = buf.String()
+		}
 	}
 
 	// 获取通知配置并发送
@@ -233,7 +307,7 @@ func (s *AlertService) sendNotification(serverID, metricName string, value float
 			Channel: "webhook",
 			Config:  string(configJson),
 			Subject: title,
-			Content: title + "\n" + message,
+			Content: webhookMessage,
 		}).Dispatch(); err != nil {
 			facades.Log().Errorf("分发Webhook发送任务失败: %v", err)
 		}

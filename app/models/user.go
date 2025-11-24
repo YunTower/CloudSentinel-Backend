@@ -35,7 +35,7 @@ func (u *User) GetAuthIdentifier() any {
 	return u.ID
 }
 
-// GetAuthPassword 获取认证密码（这里不需要实现）
+// GetAuthPassword 获取认证密码
 func (u *User) GetAuthPassword() string {
 	return ""
 }
