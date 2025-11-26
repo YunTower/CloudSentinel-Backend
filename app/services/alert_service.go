@@ -2,6 +2,7 @@ package services
 
 import (
 	"bytes"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"goravel/app/jobs"
@@ -10,7 +11,10 @@ import (
 	"time"
 
 	"github.com/goravel/framework/facades"
-	"github.com/goravel/framework/support/path"
+)
+
+var (
+	ResourceFiles embed.FS
 )
 
 // AlertService 告警服务
@@ -253,7 +257,12 @@ func (s *AlertService) sendNotification(serverID, metricName string, value float
 	var tmpl *template.Template
 	var templateErr error
 
-	tmpl, templateErr = template.ParseFiles(path.Resource("views/emails/alert.tmpl"))
+	templateContent, err := ResourceFiles.ReadFile("resources/views/emails/alert.tmpl")
+	if err == nil {
+		tmpl, templateErr = template.New("emails/alert.tmpl").Parse(string(templateContent))
+	} else {
+		templateErr = err
+	}
 	if templateErr != nil {
 		facades.Log().Warningf("解析邮件模板失败: %v", templateErr)
 		if isRecovery {

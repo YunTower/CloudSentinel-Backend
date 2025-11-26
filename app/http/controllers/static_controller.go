@@ -24,9 +24,7 @@ func NewStaticController() *StaticController {
 func (r *StaticController) ServeStatic(ctx goravelhttp.Context) goravelhttp.Response {
 	path := ctx.Request().Path()
 
-	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/ws/") ||
-		strings.HasPrefix(path, "/auth/") || strings.HasPrefix(path, "/settings/") ||
-		strings.HasPrefix(path, "/update/") || strings.HasPrefix(path, "/servers/") {
+	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/ws/") {
 		return ctx.Response().Status(http.StatusNotFound).Json(goravelhttp.Json{
 			"error": "Not found",
 		})
@@ -38,6 +36,21 @@ func (r *StaticController) ServeStatic(ctx goravelhttp.Context) goravelhttp.Resp
 	// 如果路径为空，默认为 index.html
 	if path == "" {
 		path = "index.html"
+	}
+
+	// 检查 PublicFiles 是否已初始化并包含文件
+	entries, listErr := PublicFiles.ReadDir("public")
+	if listErr != nil {
+		// 如果连目录都读不到，说明 PublicFiles 可能没有被正确初始化
+		return ctx.Response().Status(http.StatusInternalServerError).Json(goravelhttp.Json{
+			"error": "Static files not embedded. PublicFiles not initialized. Please rebuild the application.",
+		})
+	}
+	if len(entries) == 0 {
+		// 目录存在但为空，说明编译时 public 目录是空的
+		return ctx.Response().Status(http.StatusInternalServerError).Json(goravelhttp.Json{
+			"error": "Static files not embedded. Public directory was empty during compilation. Please build frontend first (pnpm run build) and rebuild the backend.",
+		})
 	}
 
 	fsPath := "public/" + strings.ReplaceAll(path, "\\", "/")
@@ -56,8 +69,19 @@ func (r *StaticController) ServeStatic(ctx goravelhttp.Context) goravelhttp.Resp
 
 		indexData, indexErr := PublicFiles.ReadFile("public/index.html")
 		if indexErr != nil {
+			entries, listErr := PublicFiles.ReadDir("public")
+			if listErr != nil {
+				return ctx.Response().Status(http.StatusInternalServerError).Json(goravelhttp.Json{
+					"error": "Embedded files not available. Please ensure frontend is built and rebuild the backend.",
+				})
+			}
+			if len(entries) == 0 {
+				return ctx.Response().Status(http.StatusInternalServerError).Json(goravelhttp.Json{
+					"error": "Public directory is empty. Please build frontend first.",
+				})
+			}
 			return ctx.Response().Status(http.StatusNotFound).Json(goravelhttp.Json{
-				"error": "Not found",
+				"error": "index.html not found in embedded files",
 			})
 		}
 
