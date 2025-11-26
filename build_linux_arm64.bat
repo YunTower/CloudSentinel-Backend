@@ -47,7 +47,7 @@ if exist public\assets (
 )
 
 set GOOS=linux
-set GOARCH=amd64
+set GOARCH=arm64
 set CGO_ENABLED=0
 REM Build all .go files including embed.go
 go build -o dashboard .
@@ -57,8 +57,8 @@ if not exist dashboard (
     exit /b 1
 )
 
-REM Rename file to dashboard-linux-amd64
-set BINARY_NAME=dashboard-linux-amd64
+REM Rename file to dashboard-linux-arm64
+set BINARY_NAME=dashboard-linux-arm64
 if exist %BINARY_NAME% (
     del %BINARY_NAME%
 )
@@ -66,7 +66,7 @@ ren dashboard %BINARY_NAME%
 echo File renamed to: %BINARY_NAME%
 
 REM Package as tar.gz
-set TAR_GZ_NAME=dashboard-linux-amd64.tar.gz
+set TAR_GZ_NAME=dashboard-linux-arm64.tar.gz
 if exist %TAR_GZ_NAME% (
     del %TAR_GZ_NAME%
 )
@@ -79,7 +79,7 @@ if errorlevel 1 (
 echo Archive created: %TAR_GZ_NAME%
 
 REM Generate SHA256 file (for tar.gz file)
-set SHA256_FILE=dashboard-linux-amd64.sha256
+set SHA256_FILE=dashboard-linux-arm64.sha256
 powershell -Command "$hash = (Get-FileHash -Path '%TAR_GZ_NAME%' -Algorithm SHA256).Hash; Set-Content -Path '%SHA256_FILE%' -Value $hash"
 if errorlevel 1 (
     echo Error: Failed to generate SHA256 file
@@ -92,3 +92,4 @@ echo Files created:
 echo   - %BINARY_NAME%
 echo   - %TAR_GZ_NAME%
 echo   - %SHA256_FILE%
+
