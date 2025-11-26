@@ -5,26 +5,17 @@ import (
 	"github.com/goravel/framework/cache"
 	"github.com/goravel/framework/console"
 	"github.com/goravel/framework/contracts/foundation"
-	"github.com/goravel/framework/crypt"
 	"github.com/goravel/framework/database"
-	"github.com/goravel/framework/event"
 	"github.com/goravel/framework/facades"
-	"github.com/goravel/framework/filesystem"
-	"github.com/goravel/framework/grpc"
 	"github.com/goravel/framework/hash"
 	"github.com/goravel/framework/http"
 	"github.com/goravel/framework/log"
-	"github.com/goravel/framework/mail"
 	"github.com/goravel/framework/queue"
 	"github.com/goravel/framework/route"
 	"github.com/goravel/framework/schedule"
-	"github.com/goravel/framework/session"
 	"github.com/goravel/framework/support/carbon"
-	"github.com/goravel/framework/testing"
-	"github.com/goravel/framework/translation"
 	"github.com/goravel/framework/validation"
 	"github.com/goravel/gin"
-	"github.com/goravel/postgres"
 	"github.com/goravel/sqlite"
 
 	"goravel/app/providers"
@@ -95,31 +86,31 @@ func init() {
 		"providers": []foundation.ServiceProvider{
 			&log.ServiceProvider{},
 			&console.ServiceProvider{},
-			&postgres.ServiceProvider{},
+			//&postgres.ServiceProvider{},
 			&sqlite.ServiceProvider{},
 			&database.ServiceProvider{},
 			&cache.ServiceProvider{},
 			&http.ServiceProvider{},
 			&route.ServiceProvider{},
 			&schedule.ServiceProvider{},
-			&event.ServiceProvider{},
+			//&event.ServiceProvider{},
 			&queue.ServiceProvider{},
-			&grpc.ServiceProvider{},
-			&mail.ServiceProvider{},
+			//&grpc.ServiceProvider{},
+			//&mail.ServiceProvider{},
 			&auth.ServiceProvider{},
 			&hash.ServiceProvider{},
-			&crypt.ServiceProvider{},
-			&filesystem.ServiceProvider{},
+			//&crypt.ServiceProvider{},
+			//&filesystem.ServiceProvider{},
 			&validation.ServiceProvider{},
-			&session.ServiceProvider{},
-			&translation.ServiceProvider{},
-			&testing.ServiceProvider{},
+			//&session.ServiceProvider{},
+			//&translation.ServiceProvider{},
+			//&testing.ServiceProvider{},
 			&providers.AppServiceProvider{},
 			&providers.AuthServiceProvider{},
 			&providers.RouteServiceProvider{},
 			&providers.ConsoleServiceProvider{},
 			&providers.QueueServiceProvider{},
-			&providers.EventServiceProvider{},
+			//&providers.EventServiceProvider{},
 			&providers.ValidationServiceProvider{},
 			&providers.DatabaseServiceProvider{},
 			&providers.CleanupServiceProvider{},
