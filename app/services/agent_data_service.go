@@ -196,7 +196,7 @@ func (j *saveSystemInfoJob) Execute() error {
 	}
 
 	// 更新服务器记录
-	serverRepo := repositories.NewServerRepository()
+	serverRepo := repositories.GetServerRepository()
 	if err := serverRepo.Update(j.serverID, updateData); err != nil {
 		facades.Log().Errorf("保存系统信息失败: %v", err)
 		return err
@@ -325,7 +325,7 @@ func (j *saveMetricsJob) Execute() error {
 		metric.NetworkDownload = 0.0
 	}
 
-	metricRepo := repositories.NewServerMetricRepository()
+	metricRepo := repositories.GetServerMetricRepository()
 	if err := metricRepo.Create(metric); err != nil {
 		facades.Log().Errorf("保存性能指标失败: %v", err)
 		return err

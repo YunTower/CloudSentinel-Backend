@@ -91,7 +91,7 @@ func (s *AlertService) getRules() (*Rules, error) {
 	}
 
 	// 批量获取所有告警规则
-	settingRepo := repositories.NewSystemSettingRepository()
+	settingRepo := repositories.GetSystemSettingRepository()
 	keys := []string{"alert_rule_cpu", "alert_rule_memory", "alert_rule_disk"}
 	settings, err := settingRepo.GetByKeys(keys)
 
@@ -199,7 +199,7 @@ func (s *AlertService) evaluateRule(serverID, metricName string, value float64, 
 // sendNotification 发送通知
 func (s *AlertService) sendNotification(serverID, metricName string, value float64, state AlertState, severity string, isRecovery bool, rule Rule) {
 	// 获取服务器名称
-	serverRepo := repositories.NewServerRepository()
+	serverRepo := repositories.GetServerRepository()
 	server, err := serverRepo.GetByID(serverID)
 	serverName := serverID
 	serverIP := "未知"
@@ -333,7 +333,7 @@ func (s *AlertService) getNotificationConfigs() (*notification.EmailConfig, *not
 	emailConfig := &notification.EmailConfig{Enabled: false}
 	webhookConfig := &notification.WebhookConfig{Enabled: false}
 
-	notificationRepo := repositories.NewAlertNotificationRepository()
+	notificationRepo := repositories.GetAlertNotificationRepository()
 	notifications, err := notificationRepo.GetAll()
 
 	if err != nil {
