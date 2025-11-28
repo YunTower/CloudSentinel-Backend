@@ -323,8 +323,8 @@ func (c *WebSocketController) pushInitialServerStates(frontendConn *ws.FrontendC
 	}
 
 	// 查询所有在线服务器
-	serverRepo := repositories.NewServerRepository()
-	metricRepo := repositories.NewServerMetricRepository()
+	serverRepo := repositories.GetServerRepository()
+	metricRepo := repositories.GetServerMetricRepository()
 
 	servers, err := serverRepo.GetOnline()
 	if err != nil {

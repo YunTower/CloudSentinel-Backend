@@ -33,12 +33,7 @@ func (r *SystemSettingRepository) GetByKeys(keys []string) (map[string]*models.S
 	}
 
 	var settings []models.SystemSetting
-	keysInterface := make([]interface{}, len(keys))
-	for i, k := range keys {
-		keysInterface[i] = k
-	}
-
-	err := facades.Orm().Query().WhereIn("setting_key", keysInterface).Get(&settings)
+	err := facades.Orm().Query().WhereIn("setting_key", stringsToInterfaceSlice(keys)).Get(&settings)
 	if err != nil {
 		return nil, err
 	}

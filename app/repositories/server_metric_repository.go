@@ -40,11 +40,8 @@ func (r *ServerMetricRepository) GetLatestByServerIDs(serverIDs []string) (map[s
 	result := make(map[string]*models.ServerMetric)
 
 	// 获取每个服务器的最新指标
+	serverIDsInterface := stringsToInterfaceSlice(serverIDs)
 	placeholders := strings.Repeat("?,", len(serverIDs)-1) + "?"
-	serverIDsInterface := make([]interface{}, len(serverIDs))
-	for i, id := range serverIDs {
-		serverIDsInterface[i] = id
-	}
 
 	sql := `SELECT server_id, cpu_usage, memory_usage, disk_usage, network_upload, network_download, uptime, timestamp
 		FROM (

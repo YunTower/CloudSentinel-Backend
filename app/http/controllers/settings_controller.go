@@ -104,8 +104,8 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 }
 
 func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
-	settingRepo := repositories.NewSystemSettingRepository()
-	notificationRepo := repositories.NewAlertNotificationRepository()
+	settingRepo := repositories.GetSystemSettingRepository()
+	notificationRepo := repositories.GetAlertNotificationRepository()
 
 	fetchRule := func(metric string) map[string]any {
 		// 默认值
@@ -209,7 +209,7 @@ func (r *SettingsController) UpdatePanelSettings(ctx http.Context) http.Response
 		return utils.ErrorResponse(ctx, 422, "缺少标题参数")
 	}
 
-	settingRepo := repositories.NewSystemSettingRepository()
+	settingRepo := repositories.GetSystemSettingRepository()
 	if err := settingRepo.SetValue("panel_title", title); err != nil {
 		return utils.ErrorResponseWithError(ctx, 500, "更新失败", err)
 	}
@@ -238,7 +238,7 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 	lockoutSeconds := lockoutMinutes * 60
 	jwtSeconds := jwtHours * 3600
 
-	settingRepo := repositories.NewSystemSettingRepository()
+	settingRepo := repositories.GetSystemSettingRepository()
 	write := func(key, val, typ string) error {
 		return settingRepo.SetValue(key, val)
 	}
@@ -378,8 +378,8 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 }
 
 func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Response {
-	settingRepo := repositories.NewSystemSettingRepository()
-	notificationRepo := repositories.NewAlertNotificationRepository()
+	settingRepo := repositories.GetSystemSettingRepository()
+	notificationRepo := repositories.GetAlertNotificationRepository()
 
 	type rule struct {
 		Enabled  bool
@@ -468,7 +468,7 @@ func (r *SettingsController) TestAlertSettings(ctx http.Context) http.Response {
 		return utils.ErrorResponse(ctx, 422, "测试类型不能为空")
 	}
 
-	notificationRepo := repositories.NewAlertNotificationRepository()
+	notificationRepo := repositories.GetAlertNotificationRepository()
 
 	// 解析配置
 	var configJson map[string]interface{}

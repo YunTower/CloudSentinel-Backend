@@ -76,7 +76,7 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 		UpdatedAt: time.Now(),
 	}
 
-	serverRepo := repositories.NewServerRepository()
+	serverRepo := repositories.GetServerRepository()
 	if err := serverRepo.Create(server); err != nil {
 		facades.Log().Errorf("创建服务器失败: %v", err)
 		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "创建服务器失败", err)
@@ -104,9 +104,9 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 		userType = "guest" // 默认为游客
 	}
 
-	settingRepo := repositories.NewSystemSettingRepository()
-	serverRepo := repositories.NewServerRepository()
-	metricRepo := repositories.NewServerMetricRepository()
+	settingRepo := repositories.GetSystemSettingRepository()
+	serverRepo := repositories.GetServerRepository()
+	metricRepo := repositories.GetServerMetricRepository()
 
 	// 获取敏感信息隐藏设置
 	hideSensitiveInfo := settingRepo.GetBool("hide_sensitive_info", true)
@@ -215,7 +215,7 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 	}
 	isAdmin := userType == "admin"
 
-	serverRepo := repositories.NewServerRepository()
+	serverRepo := repositories.GetServerRepository()
 	server, err := serverRepo.GetByIDWithRelations(serverID)
 	if err != nil {
 		facades.Log().Errorf("获取服务器详情失败: %v", err)
@@ -761,7 +761,7 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 	updateData["updated_at"] = time.Now()
 
 	// 更新数据库
-	if err := repositories.NewServerRepository().Update(serverID, updateData); err != nil {
+	if err := repositories.GetServerRepository().Update(serverID, updateData); err != nil {
 		facades.Log().Errorf("更新服务器失败: %v", err)
 		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "更新服务器失败", err)
 	}

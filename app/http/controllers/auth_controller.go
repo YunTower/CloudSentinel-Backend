@@ -84,7 +84,7 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 	lockoutService := services.NewLoginLockoutService()
 
 	// 检查是否开启游客密码访问
-	settingRepo := repositories.NewSystemSettingRepository()
+	settingRepo := repositories.GetSystemSettingRepository()
 	guestPasswordEnabled := "false"
 	if loginPost.Type == "guest" {
 		guestPasswordEnabled = settingRepo.GetValue("guest_password_enabled", "false")

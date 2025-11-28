@@ -51,14 +51,10 @@ func (r *ServerRepository) GetWithMetrics(serverIDs []string) ([]*models.Server,
 	}
 
 	var servers []*models.Server
-	serverIDsInterface := make([]interface{}, len(serverIDs))
-	for i, id := range serverIDs {
-		serverIDsInterface[i] = id
-	}
 
 	// 使用预加载获取指标
 	err := facades.Orm().Query().
-		WhereIn("id", serverIDsInterface).
+		WhereIn("id", stringsToInterfaceSlice(serverIDs)).
 		With("ServerMetrics").
 		Get(&servers)
 
@@ -76,13 +72,9 @@ func (r *ServerRepository) GetWithDisks(serverIDs []string) ([]*models.Server, e
 	}
 
 	var servers []*models.Server
-	serverIDsInterface := make([]interface{}, len(serverIDs))
-	for i, id := range serverIDs {
-		serverIDsInterface[i] = id
-	}
 
 	err := facades.Orm().Query().
-		WhereIn("id", serverIDsInterface).
+		WhereIn("id", stringsToInterfaceSlice(serverIDs)).
 		With("ServerDisks").
 		Get(&servers)
 
@@ -100,14 +92,10 @@ func (r *ServerRepository) GetWithMetricsAndDisks(serverIDs []string) ([]*models
 	}
 
 	var servers []*models.Server
-	serverIDsInterface := make([]interface{}, len(serverIDs))
-	for i, id := range serverIDs {
-		serverIDsInterface[i] = id
-	}
 
 	// 使用预加载获取指标和磁盘信息
 	err := facades.Orm().Query().
-		WhereIn("id", serverIDsInterface).
+		WhereIn("id", stringsToInterfaceSlice(serverIDs)).
 		With("ServerMetrics").
 		With("ServerDisks").
 		Get(&servers)
