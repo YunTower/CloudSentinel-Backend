@@ -4,3 +4,7 @@
 .env.*
 !.env.example
 storage/framework
+public
+*.exe
+*.zip
+*.sha256
