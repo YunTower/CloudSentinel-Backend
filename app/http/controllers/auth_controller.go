@@ -1,10 +1,11 @@
 package controllers
 
 import (
-	"fmt"
 	"goravel/app/http/requests/auth"
 	"goravel/app/models"
+	"goravel/app/repositories"
 	"goravel/app/services"
+	"goravel/app/utils"
 	"time"
 
 	"github.com/goravel/framework/contracts/http"
@@ -36,9 +37,6 @@ func getUserInfo(ctx http.Context) *UserInfo {
 	guard, _ := ctx.Value("guard").(string)
 	isAuthenticated, _ := ctx.Value("is_authenticated").(bool)
 
-	fmt.Printf("Debug - user_id: %v, user_type: %v, guard: %v, is_authenticated: %v\n",
-		userID, userType, guard, isAuthenticated)
-
 	return &UserInfo{
 		ID:              userID,
 		Type:            userType,
@@ -51,15 +49,9 @@ func getUserInfo(ctx http.Context) *UserInfo {
 func requireAuth(ctx http.Context) (*UserInfo, http.Response) {
 	// 检查是否已认证
 	isAuthenticated, ok := ctx.Value("is_authenticated").(bool)
-	fmt.Printf("Debug - is_authenticated: %v, ok: %v\n", isAuthenticated, ok)
 
 	if !ok || !isAuthenticated {
-		return nil, ctx.Response().Status(401).Json(http.Json{
-			"status":  false,
-			"message": "用户未认证",
-			"code":    "UNAUTHENTICATED",
-			"error":   "User not authenticated",
-		})
+		return nil, utils.ErrorResponse(ctx, 401, "用户未认证", "UNAUTHENTICATED")
 	}
 
 	userInfo := getUserInfo(ctx)
@@ -92,12 +84,10 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 	lockoutService := services.NewLoginLockoutService()
 
 	// 检查是否开启游客密码访问
-	var guestPasswordEnabled string
+	settingRepo := repositories.GetSystemSettingRepository()
+	guestPasswordEnabled := "false"
 	if loginPost.Type == "guest" {
-		guestPasswordErr := facades.DB().Table("system_settings").Where("setting_key", "guest_password_enabled").Value("setting_value", &guestPasswordEnabled)
-		if guestPasswordErr != nil {
-			guestPasswordEnabled = "false"
-		}
+		guestPasswordEnabled = settingRepo.GetValue("guest_password_enabled", "false")
 	}
 
 	// 检查IP是否被锁定
@@ -122,12 +112,13 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 
 		// 查询用户名
 		var userName string
-		userNameErr := facades.DB().Table("system_settings").Where("setting_key", "admin_username").Value("setting_value", &userName)
-		if userNameErr != nil {
+		userName = settingRepo.GetValue("admin_username", "admin")
+		if userName == "" {
 			return ctx.Response().Status(500).Json(http.Json{
 				"status":  false,
-				"message": "查询用户名失败",
-				"error":   userNameErr.Error(),
+				"message": "用户名配置不存在",
+				"code":    "CONFIG_ERROR",
+				"error":   "Admin username not configured",
 			})
 		}
 
@@ -143,12 +134,11 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 
 		// 查询密码哈希
 		var userPasswordHash string
-		userPasswordErr := facades.DB().Table("system_settings").Where("setting_key", "admin_password_hash").Value("setting_value", &userPasswordHash)
-		if userPasswordErr != nil {
+		userPasswordHash = settingRepo.GetValue("admin_password_hash", "")
+		if userPasswordHash == "" {
 			return ctx.Response().Status(500).Json(http.Json{
 				"status":  false,
-				"message": "查询密码配置失败",
-				"error":   userPasswordErr.Error(),
+				"message": "密码配置不存在",
 			})
 		}
 
@@ -186,13 +176,9 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 	} else {
 		// 检查是否允许游客登录
 		var allowGuestLogin string
-		guestLoginErr := facades.DB().Table("system_settings").Where("setting_key", "allow_guest_login").Value("setting_value", &allowGuestLogin)
-		if guestLoginErr != nil {
-			return ctx.Response().Status(500).Json(http.Json{
-				"status":  false,
-				"message": "查询游客登录配置失败",
-				"error":   guestLoginErr.Error(),
-			})
+		allowGuestLogin = settingRepo.GetValue("allow_guest_login", "false")
+		if allowGuestLogin == "" {
+			allowGuestLogin = "false"
 		}
 
 		if allowGuestLogin != "true" {
@@ -204,13 +190,9 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 
 		// 检查是否开启游客密码访问
 		var guestPasswordEnabled string
-		guestPasswordErr := facades.DB().Table("system_settings").Where("setting_key", "guest_password_enabled").Value("setting_value", &guestPasswordEnabled)
-		if guestPasswordErr != nil {
-			return ctx.Response().Status(500).Json(http.Json{
-				"status":  false,
-				"message": "查询游客密码配置失败",
-				"error":   guestPasswordErr.Error(),
-			})
+		guestPasswordEnabled = settingRepo.GetValue("guest_password_enabled", "false")
+		if guestPasswordEnabled == "" {
+			guestPasswordEnabled = "false"
 		}
 
 		// 如果开启密码访问，验证密码
@@ -229,12 +211,11 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 
 			// 从数据库读取密码hash
 			var guestPasswordHash string
-			guestPasswordHashErr := facades.DB().Table("system_settings").Where("setting_key", "guest_password_hash").Value("setting_value", &guestPasswordHash)
-			if guestPasswordHashErr != nil {
+			guestPasswordHash = settingRepo.GetValue("guest_password_hash", "")
+			if guestPasswordHash == "" {
 				return ctx.Response().Status(500).Json(http.Json{
 					"status":  false,
-					"message": "查询游客密码配置失败",
-					"error":   guestPasswordHashErr.Error(),
+					"message": "游客密码配置不存在，请先在设置中配置访客访问密码",
 				})
 			}
 

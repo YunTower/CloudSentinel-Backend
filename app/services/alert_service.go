@@ -1,13 +1,21 @@
 package services
 
 import (
+	"bytes"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"goravel/app/jobs"
+	"goravel/app/repositories"
 	"goravel/app/utils/notification"
+	"html/template"
 	"time"
 
 	"github.com/goravel/framework/facades"
+)
+
+var (
+	ResourceFiles embed.FS
 )
 
 // AlertService 告警服务
@@ -82,22 +90,39 @@ func (s *AlertService) getRules() (*Rules, error) {
 		Disk:   Rule{Enabled: true, Warning: 85, Critical: 95},
 	}
 
-	// 从 system_settings 读取规则
-	for _, metric := range []string{"cpu", "memory", "disk"} {
-		var ruleJson string
-		key := fmt.Sprintf("alert_rule_%s", metric)
-		if err := facades.DB().Table("system_settings").Where("setting_key", key).Value("setting_value", &ruleJson); err == nil && ruleJson != "" {
-			var rule Rule
-			if err := json.Unmarshal([]byte(ruleJson), &rule); err == nil {
-				switch metric {
-				case "cpu":
-					rules.CPU = rule
-				case "memory":
-					rules.Memory = rule
-				case "disk":
-					rules.Disk = rule
-				}
-			}
+	// 批量获取所有告警规则
+	settingRepo := repositories.GetSystemSettingRepository()
+	keys := []string{"alert_rule_cpu", "alert_rule_memory", "alert_rule_disk"}
+	settings, err := settingRepo.GetByKeys(keys)
+
+	if err != nil {
+		return rules, nil // 使用默认规则
+	}
+
+	// 解析规则
+	for key, setting := range settings {
+		if setting == nil {
+			continue
+		}
+		ruleJson := setting.GetValue()
+
+		if ruleJson == "" {
+			continue
+		}
+
+		var rule Rule
+		if err := json.Unmarshal([]byte(ruleJson), &rule); err != nil {
+			continue
+		}
+
+		// 根据key设置对应的规则
+		switch key {
+		case "alert_rule_cpu":
+			rules.CPU = rule
+		case "alert_rule_memory":
+			rules.Memory = rule
+		case "alert_rule_disk":
+			rules.Disk = rule
 		}
 	}
 
@@ -141,53 +166,46 @@ func (s *AlertService) evaluateRule(serverID, metricName string, value float64, 
 				// 还在冷却期内，不发送
 				return nil
 			}
-			// 设置冷却期（5分钟）
-			facades.Cache().Put(cooldownKey, true, 5*time.Minute)
+			// 设置冷却期（2分钟）
+			err := facades.Cache().Put(cooldownKey, true, 2*time.Minute)
+			if err != nil {
+				return err
+			}
 		} else {
 			return nil
 		}
 	}
 
 	// 更新状态
-	facades.Cache().Put(cacheKey, string(newState), 24*time.Hour)
+	err := facades.Cache().Put(cacheKey, string(newState), 24*time.Hour)
+	if err != nil {
+		return err
+	}
 
 	// 如果恢复到正常状态，发送恢复通知
 	if newState == AlertStateNormal && currentState != AlertStateNormal {
-		s.sendNotification(serverID, metricName, value, newState, severity, true)
+		s.sendNotification(serverID, metricName, value, newState, severity, true, rule)
 		return nil
 	}
 
 	// 如果进入告警状态，发送告警通知
 	if newState != AlertStateNormal {
-		s.sendNotification(serverID, metricName, value, newState, severity, false)
+		s.sendNotification(serverID, metricName, value, newState, severity, false, rule)
 	}
 
 	return nil
 }
 
 // sendNotification 发送通知
-func (s *AlertService) sendNotification(serverID, metricName string, value float64, state AlertState, severity string, isRecovery bool) {
+func (s *AlertService) sendNotification(serverID, metricName string, value float64, state AlertState, severity string, isRecovery bool, rule Rule) {
 	// 获取服务器名称
-	var serverName string
-	var serverIP string
-	var servers []map[string]interface{}
-	err := facades.Orm().Query().Table("servers").
-		Select("name", "ip").
-		Where("id", serverID).
-		Get(&servers)
-	if err == nil && len(servers) > 0 {
-		if name, ok := servers[0]["name"].(string); ok {
-			serverName = name
-		}
-		if ip, ok := servers[0]["ip"].(string); ok {
-			serverIP = ip
-		}
-	}
-	if serverName == "" {
-		serverName = serverID
-	}
-	if serverIP == "" {
-		serverIP = "未知"
+	serverRepo := repositories.GetServerRepository()
+	server, err := serverRepo.GetByID(serverID)
+	serverName := serverID
+	serverIP := "未知"
+	if err == nil && server != nil {
+		serverName = server.Name
+		serverIP = server.IP
 	}
 
 	// 构建消息
@@ -197,13 +215,83 @@ func (s *AlertService) sendNotification(serverID, metricName string, value float
 		"disk":   "磁盘使用率",
 	}[metricName]
 
-	var title, message string
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	var title, message, webhookMessage string
+	var threshold float64
+	if severity == "警告" {
+		threshold = rule.Warning
+	} else {
+		threshold = rule.Critical
+	}
+
 	if isRecovery {
 		title = fmt.Sprintf("[恢复] %s - %s", serverName, metricLabel)
-		message = fmt.Sprintf("服务器 %s (%s) 的 %s 已恢复正常，当前值: %.2f%%", serverName, serverIP, metricLabel, value)
+		webhookMessage = fmt.Sprintf("✅ 告警恢复\n\n服务器: %s (%s)\n指标: %s\n当前值: %.2f%%\n恢复时间: %s",
+			serverName, serverIP, metricLabel, value, timestamp)
 	} else {
 		title = fmt.Sprintf("[%s] %s - %s", severity, serverName, metricLabel)
-		message = fmt.Sprintf("服务器 %s (%s) 的 %s 达到 %s 阈值，当前值: %.2f%%", serverName, serverIP, metricLabel, severity, value)
+		webhookMessage = fmt.Sprintf("🚨 发生告警 (%s)\n\n服务器: %s (%s)\n指标: %s\n当前值: %.2f%%\n阈值: %.2f%%\n触发时间: %s",
+			severity, serverName, serverIP, metricLabel, value, threshold, timestamp)
+	}
+
+	color := "#ff4d4f" // 红色
+	if severity == "警告" {
+		color = "#faad14" // 橙色
+	}
+	if isRecovery {
+		color = "#52c41a" // 绿色
+	}
+
+	statusText := severity
+	if isRecovery {
+		statusText = "恢复正常"
+	}
+
+	templateData := map[string]interface{}{
+		"Title":        title,
+		"Timestamp":    timestamp,
+		"ServerName":   serverName,
+		"ServerIP":     serverIP,
+		"MetricLabel":  metricLabel,
+		"StatusText":   statusText,
+		"Color":        color,
+		"CurrentValue": value,
+		"Threshold":    threshold,
+	}
+
+	var tmpl *template.Template
+	var templateErr error
+
+	templateContent, err := ResourceFiles.ReadFile("resources/views/emails/alert.tmpl")
+	if err == nil {
+		tmpl, templateErr = template.New("emails/alert.tmpl").Parse(string(templateContent))
+	} else {
+		templateErr = err
+	}
+	if templateErr != nil {
+		facades.Log().Warningf("解析邮件模板失败: %v", templateErr)
+		if isRecovery {
+			message = fmt.Sprintf("告警恢复通知\n\n服务器: %s (%s)\n指标: %s\n当前值: %.2f%%\n恢复时间: %s\n\n此邮件由云哨监控系统自动发送，请勿回复。",
+				serverName, serverIP, metricLabel, value, timestamp)
+		} else {
+			message = fmt.Sprintf("告警通知 (%s)\n\n服务器: %s (%s)\n指标: %s\n当前状态: %s\n当前值: %.2f%%\n触发阈值: %.2f%%\n触发时间: %s\n\n此邮件由云哨监控系统自动发送，请勿回复。",
+				severity, serverName, serverIP, metricLabel, statusText, value, threshold, timestamp)
+		}
+	} else {
+		var buf bytes.Buffer
+		templateName := "emails/alert.tmpl"
+		if execErr := tmpl.ExecuteTemplate(&buf, templateName, templateData); execErr != nil {
+			facades.Log().Errorf("渲染邮件模板失败: %v", execErr)
+			if isRecovery {
+				message = fmt.Sprintf("告警恢复通知\n\n服务器: %s (%s)\n指标: %s\n当前值: %.2f%%\n恢复时间: %s\n\n此邮件由云哨监控系统自动发送，请勿回复。",
+					serverName, serverIP, metricLabel, value, timestamp)
+			} else {
+				message = fmt.Sprintf("告警通知 (%s)\n\n服务器: %s (%s)\n指标: %s\n当前状态: %s\n当前值: %.2f%%\n触发阈值: %.2f%%\n触发时间: %s\n\n此邮件由云哨监控系统自动发送，请勿回复。",
+					severity, serverName, serverIP, metricLabel, statusText, value, threshold, timestamp)
+			}
+		} else {
+			message = buf.String()
+		}
 	}
 
 	// 获取通知配置并发送
@@ -233,7 +321,7 @@ func (s *AlertService) sendNotification(serverID, metricName string, value float
 			Channel: "webhook",
 			Config:  string(configJson),
 			Subject: title,
-			Content: title + "\n" + message,
+			Content: webhookMessage,
 		}).Dispatch(); err != nil {
 			facades.Log().Errorf("分发Webhook发送任务失败: %v", err)
 		}
@@ -245,27 +333,28 @@ func (s *AlertService) getNotificationConfigs() (*notification.EmailConfig, *not
 	emailConfig := &notification.EmailConfig{Enabled: false}
 	webhookConfig := &notification.WebhookConfig{Enabled: false}
 
-	// 获取邮件配置
-	var emailEnabled bool
-	var emailConfigJson string
-	facades.DB().Table("alert_notifications").Where("notification_type", "email").Value("enabled", &emailEnabled)
-	facades.DB().Table("alert_notifications").Where("notification_type", "email").Value("config_json", &emailConfigJson)
+	notificationRepo := repositories.GetAlertNotificationRepository()
+	notifications, err := notificationRepo.GetAll()
 
-	if emailEnabled && emailConfigJson != "" {
-		if err := json.Unmarshal([]byte(emailConfigJson), &emailConfig); err == nil {
-			emailConfig.Enabled = true
-		}
+	if err != nil {
+		return emailConfig, webhookConfig, err
 	}
 
-	// 获取Webhook配置
-	var webhookEnabled bool
-	var webhookConfigJson string
-	facades.DB().Table("alert_notifications").Where("notification_type", "webhook").Value("enabled", &webhookEnabled)
-	facades.DB().Table("alert_notifications").Where("notification_type", "webhook").Value("config_json", &webhookConfigJson)
+	// 解析配置
+	for _, notif := range notifications {
+		if !notif.Enabled || notif.ConfigJson == "" {
+			continue
+		}
 
-	if webhookEnabled && webhookConfigJson != "" {
-		if err := json.Unmarshal([]byte(webhookConfigJson), &webhookConfig); err == nil {
-			webhookConfig.Enabled = true
+		switch notif.NotificationType {
+		case "email":
+			if err := json.Unmarshal([]byte(notif.ConfigJson), &emailConfig); err == nil {
+				emailConfig.Enabled = true
+			}
+		case "webhook":
+			if err := json.Unmarshal([]byte(notif.ConfigJson), &webhookConfig); err == nil {
+				webhookConfig.Enabled = true
+			}
 		}
 	}
 
