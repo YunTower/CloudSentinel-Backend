@@ -49,8 +49,9 @@ if exist public\assets (
 set GOOS=linux
 set GOARCH=arm64
 set CGO_ENABLED=0
-REM Build all .go files including embed.go
-go build -o dashboard .
+REM Build all .go files including embed.go with optimization flags to reduce binary size
+REM -s: remove symbol table, -w: remove DWARF symbol table, -trimpath: remove file system paths
+go build -ldflags "-s -w" -trimpath -o dashboard .
 
 if not exist dashboard (
     echo Error: dashboard file not found, build failed

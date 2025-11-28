@@ -53,8 +53,9 @@ export GOOS=windows
 export GOARCH=amd64
 export CGO_ENABLED=0
 
-# Build all .go files including embed.go
-go build -o dashboard.exe .
+# Build all .go files including embed.go with optimization flags to reduce binary size
+# -s: remove symbol table, -w: remove DWARF symbol table, -trimpath: remove file system paths
+go build -ldflags "-s -w" -trimpath -o dashboard.exe .
 
 if [ ! -f "dashboard.exe" ]; then
     echo "Error: dashboard.exe file not found, build failed"
