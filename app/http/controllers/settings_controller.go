@@ -3,6 +3,7 @@ package controllers
 import (
 	"encoding/json"
 	"fmt"
+	"goravel/app/repositories"
 	"goravel/app/utils"
 	"goravel/app/utils/notification"
 	"strconv"
@@ -103,6 +104,9 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 }
 
 func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
+	settingRepo := repositories.NewSystemSettingRepository()
+	notificationRepo := repositories.NewAlertNotificationRepository()
+
 	fetchRule := func(metric string) map[string]any {
 		// 默认值
 		defaultRule := map[string]any{
@@ -115,11 +119,11 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 			defaultRule["critical"] = 95.0
 		}
 
-		var ruleJson string
 		key := fmt.Sprintf("alert_rule_%s", metric)
-		if err := facades.DB().Table("system_settings").Where("setting_key", key).Value("setting_value", &ruleJson); err == nil && ruleJson != "" {
+		setting, err := settingRepo.GetByKey(key)
+		if err == nil && setting != nil {
 			var rule map[string]any
-			if err := json.Unmarshal([]byte(ruleJson), &rule); err == nil {
+			if err := json.Unmarshal([]byte(setting.GetValue()), &rule); err == nil {
 				// 确保所有字段都存在
 				if enabled, ok := rule["enabled"].(bool); ok {
 					defaultRule["enabled"] = enabled
@@ -150,16 +154,16 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 	}
 
 	fetchNotify := func(nType string) notifyConfig {
-		var enabled bool
-		var configJson string
-		_ = facades.DB().Table("alert_notifications").Where("notification_type", nType).Value("enabled", &enabled)
-		_ = facades.DB().Table("alert_notifications").Where("notification_type", nType).Value("config_json", &configJson)
+		notification, err := notificationRepo.GetByType(nType)
+		if err != nil || notification == nil {
+			return notifyConfig{Enabled: false, Config: map[string]any{}}
+		}
 
 		cfg := map[string]any{}
-		if configJson != "" {
-			_ = json.Unmarshal([]byte(configJson), &cfg)
+		if notification.ConfigJson != "" {
+			_ = json.Unmarshal([]byte(notification.ConfigJson), &cfg)
 		}
-		return notifyConfig{Enabled: enabled, Config: cfg}
+		return notifyConfig{Enabled: notification.Enabled, Config: cfg}
 	}
 
 	cpu := fetchRule("cpu")
@@ -202,46 +206,15 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 func (r *SettingsController) UpdatePanelSettings(ctx http.Context) http.Response {
 	title := ctx.Request().Input("title")
 	if title == "" {
-		return ctx.Response().Status(422).Json(http.Json{
-			"status":  false,
-			"message": "缺少标题参数",
-		})
+		return utils.ErrorResponse(ctx, 422, "缺少标题参数")
 	}
 
-	now := time.Now().Unix()
-	var exists string
-	_ = facades.DB().Table("system_settings").Where("setting_key", "panel_title").Value("setting_value", &exists)
-	if exists == "" {
-		if err := facades.Orm().Query().Table("system_settings").Create(map[string]any{
-			"setting_key":   "panel_title",
-			"setting_value": title,
-			"setting_type":  "string",
-			"created_at":    now,
-			"updated_at":    now,
-		}); err != nil {
-			return ctx.Response().Status(500).Json(http.Json{
-				"status":  false,
-				"message": "创建失败",
-				"error":   err.Error(),
-			})
-		}
-	} else {
-		if _, err := facades.Orm().Query().Table("system_settings").Where("setting_key", "panel_title").Update(map[string]any{
-			"setting_value": title,
-			"updated_at":    now,
-		}); err != nil {
-			return ctx.Response().Status(500).Json(http.Json{
-				"status":  false,
-				"message": "更新失败",
-				"error":   err.Error(),
-			})
-		}
+	settingRepo := repositories.NewSystemSettingRepository()
+	if err := settingRepo.SetValue("panel_title", title); err != nil {
+		return utils.ErrorResponseWithError(ctx, 500, "更新失败", err)
 	}
 
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "success",
-	})
+	return utils.SuccessResponse(ctx, "success")
 }
 
 func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Response {
@@ -265,29 +238,9 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 	lockoutSeconds := lockoutMinutes * 60
 	jwtSeconds := jwtHours * 3600
 
-	now := time.Now().Unix()
+	settingRepo := repositories.NewSystemSettingRepository()
 	write := func(key, val, typ string) error {
-		var exists string
-		_ = facades.DB().Table("system_settings").Where("setting_key", key).Value("setting_value", &exists)
-		if exists == "" {
-			if err := facades.Orm().Query().Table("system_settings").Create(map[string]any{
-				"setting_key":   key,
-				"setting_value": val,
-				"setting_type":  typ,
-				"created_at":    now,
-				"updated_at":    now,
-			}); err != nil {
-				return err
-			}
-			return nil
-		}
-		if _, err := facades.Orm().Query().Table("system_settings").Where("setting_key", key).Update(map[string]any{
-			"setting_value": val,
-			"updated_at":    now,
-		}); err != nil {
-			return err
-		}
-		return nil
+		return settingRepo.SetValue(key, val)
 	}
 
 	if err := write("allow_guest_login", map[bool]string{true: "true", false: "false"}[allowGuest], "boolean"); err != nil {
@@ -335,13 +288,9 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 	// 处理管理员用户名修改
 	if newUsername != "" && currentPassword != "" {
 		// 验证当前密码
-		var userPasswordHash string
-		if err := facades.DB().Table("system_settings").Where("setting_key", "admin_password_hash").Value("setting_value", &userPasswordHash); err != nil {
-			return ctx.Response().Status(500).Json(http.Json{
-				"status":  false,
-				"message": "查询密码配置失败",
-				"error":   err.Error(),
-			})
+		userPasswordHash := settingRepo.GetValue("admin_password_hash", "")
+		if userPasswordHash == "" {
+			return utils.ErrorResponse(ctx, 500, "查询密码配置失败")
 		}
 
 		if userPasswordHash == "" {
@@ -410,36 +359,27 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 
 		// 验证当前密码
 		if !facades.Hash().Check(currentPassword, userPasswordHash) {
-			return ctx.Response().Status(401).Json(http.Json{
-				"status":  false,
-				"message": "当前密码错误",
-			})
+			return utils.ErrorResponse(ctx, 401, "当前密码错误")
 		}
 
 		// 生成新密码hash
 		newPasswordHash, err := facades.Hash().Make(newPassword)
 		if err != nil {
-			return ctx.Response().Status(500).Json(http.Json{
-				"status":  false,
-				"message": "密码加密失败",
-				"error":   err.Error(),
-			})
+			return utils.ErrorResponseWithError(ctx, 500, "密码加密失败", err)
 		}
 
 		// 更新密码hash
 		if err := write("admin_password_hash", newPasswordHash, "string"); err != nil {
-			return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新密码失败", "error": err.Error()})
+			return utils.ErrorResponseWithError(ctx, 500, "更新密码失败", err)
 		}
 	}
 
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "success",
-	})
+	return utils.SuccessResponse(ctx, "success")
 }
 
 func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Response {
-	now := time.Now().Unix()
+	settingRepo := repositories.NewSystemSettingRepository()
+	notificationRepo := repositories.NewAlertNotificationRepository()
 
 	type rule struct {
 		Enabled  bool
@@ -466,36 +406,16 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 
 		// 保存到 system_settings 表
 		key := fmt.Sprintf("alert_rule_%s", metric)
-		var exists string
-		_ = facades.DB().Table("system_settings").Where("setting_key", key).Value("setting_value", &exists)
-		if exists == "" {
-			if err := facades.Orm().Query().Table("system_settings").Create(map[string]any{
-				"setting_key":   key,
-				"setting_value": string(ruleJson),
-				"setting_type":  "json",
-				"created_at":    now,
-				"updated_at":    now,
-			}); err != nil {
-				return err
-			}
-			return nil
-		}
-		if _, err := facades.Orm().Query().Table("system_settings").Where("setting_key", key).Update(map[string]any{
-			"setting_value": string(ruleJson),
-			"updated_at":    now,
-		}); err != nil {
-			return err
-		}
-		return nil
+		return settingRepo.SetValue(key, string(ruleJson))
 	}
 	if err := writeRule("cpu", readRule("cpu")); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新CPU规则失败", "error": err.Error()})
+		return utils.ErrorResponseWithError(ctx, 500, "更新CPU规则失败", err)
 	}
 	if err := writeRule("memory", readRule("memory")); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新内存规则失败", "error": err.Error()})
+		return utils.ErrorResponseWithError(ctx, 500, "更新内存规则失败", err)
 	}
 	if err := writeRule("disk", readRule("disk")); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新磁盘规则失败", "error": err.Error()})
+		return utils.ErrorResponseWithError(ctx, 500, "更新磁盘规则失败", err)
 	}
 
 	emailEnabled := ctx.Request().Input("notifications.email.enabled") == "true"
@@ -518,11 +438,10 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 			password, _ := cfg["password"].(string)
 			// 如果密码为空，尝试读取旧配置中的密码
 			if password == "" {
-				var oldConfigJson string
-				_ = facades.DB().Table("alert_notifications").Where("notification_type", "email").Value("config_json", &oldConfigJson)
-				if oldConfigJson != "" {
+				oldNotification, err := notificationRepo.GetByType("email")
+				if err == nil && oldNotification != nil && oldNotification.ConfigJson != "" {
 					var oldCfg map[string]any
-					if err := json.Unmarshal([]byte(oldConfigJson), &oldCfg); err == nil {
+					if err := json.Unmarshal([]byte(oldNotification.ConfigJson), &oldCfg); err == nil {
 						if oldPwd, ok := oldCfg["password"].(string); ok {
 							cfg["password"] = oldPwd
 						}
@@ -531,79 +450,56 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 			}
 		}
 
-		cfgBytes, _ := json.Marshal(cfg)
-		var exists string
-		// 先检查是否存在该类型的配置
-		_ = facades.DB().Table("alert_notifications").Where("notification_type", nType).Value("notification_type", &exists)
-
-		data := map[string]any{
-			"notification_type": nType,
-			"enabled":           enabled,
-			"config_json":       string(cfgBytes),
-			"updated_at":        now,
-		}
-		if exists == "" {
-			data["created_at"] = now
-			if err := facades.Orm().Query().Table("alert_notifications").Create(data); err != nil {
-				return err
-			}
-			return nil
-		}
-		if _, err := facades.Orm().Query().Table("alert_notifications").Where("notification_type", nType).Update(data); err != nil {
-			return err
-		}
-		return nil
+		return notificationRepo.UpdateConfig(nType, cfg)
 	}
 	if err := writeNotify("email", emailEnabled, emailCfg); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新邮件通知失败", "error": err.Error()})
+		return utils.ErrorResponseWithError(ctx, 500, "更新邮件通知失败", err)
 	}
 	if err := writeNotify("webhook", webhookEnabled, webhookCfg); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新Webhook通知失败", "error": err.Error()})
+		return utils.ErrorResponseWithError(ctx, 500, "更新Webhook通知失败", err)
 	}
 
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "success",
-	})
+	return utils.SuccessResponse(ctx, "success")
 }
 
 func (r *SettingsController) TestAlertSettings(ctx http.Context) http.Response {
 	channel := ctx.Request().Input("type")
 	if channel == "" {
-		return ctx.Response().Status(422).Json(http.Json{"status": false, "message": "测试类型不能为空"})
+		return utils.ErrorResponse(ctx, 422, "测试类型不能为空")
 	}
+
+	notificationRepo := repositories.NewAlertNotificationRepository()
 
 	// 解析配置
 	var configJson map[string]interface{}
 	if err := ctx.Request().Bind(&configJson); err != nil {
-		return ctx.Response().Status(422).Json(http.Json{"status": false, "message": "无效的请求数据", "error": err.Error()})
+		return utils.ErrorResponseWithError(ctx, 422, "无效的请求数据", err)
 	}
 
 	configData, ok := configJson["config"].(map[string]interface{})
 	if !ok {
-		return ctx.Response().Status(422).Json(http.Json{"status": false, "message": "无效的配置数据"})
+		return utils.ErrorResponse(ctx, 422, "无效的配置数据")
 	}
 
 	// 序列化配置以便绑定到结构体
 	configBytes, err := json.Marshal(configData)
 	if err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "配置处理失败", "error": err.Error()})
+		return utils.ErrorResponseWithError(ctx, 500, "配置处理失败", err)
 	}
 
 	switch channel {
 	case "email":
 		var emailCfg notification.EmailConfig
 		if err := json.Unmarshal(configBytes, &emailCfg); err != nil {
-			return ctx.Response().Status(422).Json(http.Json{"status": false, "message": "无效的邮件配置", "error": err.Error()})
+			return utils.ErrorResponseWithError(ctx, 422, "无效的邮件配置", err)
 		}
 
 		// 如果密码为空，尝试使用已保存的密码
 		if emailCfg.Password == "" {
-			var savedConfigJson string
-			_ = facades.DB().Table("alert_notifications").Where("notification_type", "email").Value("config_json", &savedConfigJson)
-			if savedConfigJson != "" {
+			savedNotification, err := notificationRepo.GetByType("email")
+			if err == nil && savedNotification != nil && savedNotification.ConfigJson != "" {
 				var savedCfg notification.EmailConfig
-				if err := json.Unmarshal([]byte(savedConfigJson), &savedCfg); err == nil {
+				if err := json.Unmarshal([]byte(savedNotification.ConfigJson), &savedCfg); err == nil {
 					if savedCfg.Password != "" {
 						emailCfg.Password = savedCfg.Password
 					}
@@ -616,25 +512,25 @@ func (r *SettingsController) TestAlertSettings(ctx http.Context) http.Response {
 		content := fmt.Sprintf("这是一条测试邮件，用于验证您的邮件通知配置是否正确。\n发送时间：%s", time.Now().Format("2006-01-02 15:04:05"))
 
 		if err := notification.SendEmail(emailCfg, subject, content); err != nil {
-			return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "发送测试邮件失败: " + err.Error()})
+			return utils.ErrorResponseWithError(ctx, 500, "发送测试邮件失败", err)
 		}
 
 	case "webhook":
 		var webhookCfg notification.WebhookConfig
 		if err := json.Unmarshal(configBytes, &webhookCfg); err != nil {
-			return ctx.Response().Status(422).Json(http.Json{"status": false, "message": "无效的Webhook配置", "error": err.Error()})
+			return utils.ErrorResponseWithError(ctx, 422, "无效的Webhook配置", err)
 		}
 
 		// 发送测试消息
 		content := fmt.Sprintf("CloudSentinel 告警通知测试\n这是一条测试消息，用于验证您的Webhook通知配置是否正确。\n发送时间：%s", time.Now().Format("2006-01-02 15:04:05"))
 
 		if err := notification.SendWebhook(webhookCfg, content); err != nil {
-			return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "发送测试消息失败: " + err.Error()})
+			return utils.ErrorResponseWithError(ctx, 500, "发送测试消息失败", err)
 		}
 
 	default:
-		return ctx.Response().Status(422).Json(http.Json{"status": false, "message": "不支持的通知类型"})
+		return utils.ErrorResponse(ctx, 422, "不支持的通知类型")
 	}
 
-	return ctx.Response().Success().Json(http.Json{"status": true, "message": "测试发送成功"})
+	return utils.SuccessResponse(ctx, "测试发送成功")
 }

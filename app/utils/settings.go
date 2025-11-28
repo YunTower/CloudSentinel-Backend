@@ -1,28 +1,19 @@
 package utils
 
 import (
-	"github.com/goravel/framework/facades"
+	"goravel/app/repositories"
 )
 
 // GetSetting 获取系统设置值
 func GetSetting(key string, defaultValue string) string {
-	var value string
-	if err := facades.DB().Table("system_settings").Where("setting_key", key).Value("setting_value", &value); err != nil {
-		return defaultValue
-	}
-	if value == "" {
-		return defaultValue
-	}
-	return value
+	settingRepo := repositories.NewSystemSettingRepository()
+	return settingRepo.GetValue(key, defaultValue)
 }
 
 // GetSettingBool 获取布尔类型的系统设置值
 func GetSettingBool(key string, defaultValue bool) bool {
-	value := GetSetting(key, "")
-	if value == "" {
-		return defaultValue
-	}
-	return value == "true"
+	settingRepo := repositories.NewSystemSettingRepository()
+	return settingRepo.GetBool(key, defaultValue)
 }
 
 // GetSettings 批量获取系统设置值
@@ -32,29 +23,17 @@ func GetSettings(keys []string) map[string]string {
 		return result
 	}
 
-	var settings []map[string]interface{}
-	keysInterface := make([]interface{}, len(keys))
-	for i, k := range keys {
-		keysInterface[i] = k
-	}
-
-	err := facades.Orm().Query().Table("system_settings").
-		Select("setting_key", "setting_value").
-		WhereIn("setting_key", keysInterface).
-		Get(&settings)
-
+	settingRepo := repositories.NewSystemSettingRepository()
+	settings, err := settingRepo.GetByKeys(keys)
 	if err != nil {
 		return result
 	}
 
-	for _, setting := range settings {
-		if key, ok := setting["setting_key"].(string); ok {
-			if value, ok := setting["setting_value"].(string); ok {
-				result[key] = value
-			}
+	for key, setting := range settings {
+		if setting != nil {
+			result[key] = setting.GetValue()
 		}
 	}
 
 	return result
 }
-

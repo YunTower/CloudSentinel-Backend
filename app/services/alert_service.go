@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"goravel/app/jobs"
+	"goravel/app/repositories"
 	"goravel/app/utils/notification"
 	"html/template"
 	"time"
@@ -81,7 +82,7 @@ type Rules struct {
 	Disk   Rule `json:"disk"`
 }
 
-// getRules 获取所有告警规则（优化：合并循环查询为一次批量查询）
+// getRules 获取所有告警规则
 func (s *AlertService) getRules() (*Rules, error) {
 	rules := &Rules{
 		CPU:    Rule{Enabled: true, Warning: 80, Critical: 90},
@@ -89,22 +90,21 @@ func (s *AlertService) getRules() (*Rules, error) {
 		Disk:   Rule{Enabled: true, Warning: 85, Critical: 95},
 	}
 
-	// 批量获取所有告警规则，减少数据库查询次数
-	var settings []map[string]interface{}
-	keys := []interface{}{"alert_rule_cpu", "alert_rule_memory", "alert_rule_disk"}
-	err := facades.Orm().Query().Table("system_settings").
-		Select("setting_key", "setting_value").
-		WhereIn("setting_key", keys).
-		Get(&settings)
+	// 批量获取所有告警规则
+	settingRepo := repositories.NewSystemSettingRepository()
+	keys := []string{"alert_rule_cpu", "alert_rule_memory", "alert_rule_disk"}
+	settings, err := settingRepo.GetByKeys(keys)
 
 	if err != nil {
 		return rules, nil // 使用默认规则
 	}
 
 	// 解析规则
-	for _, setting := range settings {
-		key, _ := setting["setting_key"].(string)
-		ruleJson, _ := setting["setting_value"].(string)
+	for key, setting := range settings {
+		if setting == nil {
+			continue
+		}
+		ruleJson := setting.GetValue()
 
 		if ruleJson == "" {
 			continue
@@ -199,26 +199,13 @@ func (s *AlertService) evaluateRule(serverID, metricName string, value float64, 
 // sendNotification 发送通知
 func (s *AlertService) sendNotification(serverID, metricName string, value float64, state AlertState, severity string, isRecovery bool, rule Rule) {
 	// 获取服务器名称
-	var serverName string
-	var serverIP string
-	var servers []map[string]interface{}
-	err := facades.Orm().Query().Table("servers").
-		Select("name", "ip").
-		Where("id", serverID).
-		Get(&servers)
-	if err == nil && len(servers) > 0 {
-		if name, ok := servers[0]["name"].(string); ok {
-			serverName = name
-		}
-		if ip, ok := servers[0]["ip"].(string); ok {
-			serverIP = ip
-		}
-	}
-	if serverName == "" {
-		serverName = serverID
-	}
-	if serverIP == "" {
-		serverIP = "未知"
+	serverRepo := repositories.NewServerRepository()
+	server, err := serverRepo.GetByID(serverID)
+	serverName := serverID
+	serverIP := "未知"
+	if err == nil && server != nil {
+		serverName = server.Name
+		serverIP = server.IP
 	}
 
 	// 构建消息
@@ -346,11 +333,8 @@ func (s *AlertService) getNotificationConfigs() (*notification.EmailConfig, *not
 	emailConfig := &notification.EmailConfig{Enabled: false}
 	webhookConfig := &notification.WebhookConfig{Enabled: false}
 
-	var notifications []map[string]interface{}
-	err := facades.Orm().Query().Table("alert_notifications").
-		Select("notification_type", "enabled", "config_json").
-		WhereIn("notification_type", []interface{}{"email", "webhook"}).
-		Get(&notifications)
+	notificationRepo := repositories.NewAlertNotificationRepository()
+	notifications, err := notificationRepo.GetAll()
 
 	if err != nil {
 		return emailConfig, webhookConfig, err
@@ -358,21 +342,17 @@ func (s *AlertService) getNotificationConfigs() (*notification.EmailConfig, *not
 
 	// 解析配置
 	for _, notif := range notifications {
-		notifType, _ := notif["notification_type"].(string)
-		enabled, _ := notif["enabled"].(bool)
-		configJson, _ := notif["config_json"].(string)
-
-		if !enabled || configJson == "" {
+		if !notif.Enabled || notif.ConfigJson == "" {
 			continue
 		}
 
-		switch notifType {
+		switch notif.NotificationType {
 		case "email":
-			if err := json.Unmarshal([]byte(configJson), &emailConfig); err == nil {
+			if err := json.Unmarshal([]byte(notif.ConfigJson), &emailConfig); err == nil {
 				emailConfig.Enabled = true
 			}
 		case "webhook":
-			if err := json.Unmarshal([]byte(configJson), &webhookConfig); err == nil {
+			if err := json.Unmarshal([]byte(notif.ConfigJson), &webhookConfig); err == nil {
 				webhookConfig.Enabled = true
 			}
 		}

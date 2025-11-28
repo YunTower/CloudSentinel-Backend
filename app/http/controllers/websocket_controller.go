@@ -2,6 +2,8 @@ package controllers
 
 import (
 	"encoding/json"
+	"goravel/app/models"
+	"goravel/app/repositories"
 	"goravel/app/services"
 	ws "goravel/app/services/websocket"
 
@@ -321,12 +323,10 @@ func (c *WebSocketController) pushInitialServerStates(frontendConn *ws.FrontendC
 	}
 
 	// 查询所有在线服务器
-	var servers []map[string]interface{}
-	err := facades.Orm().Query().Table("servers").
-		Select("id", "boot_time", "uptime_seconds").
-		Where("status", "online").
-		Get(&servers)
+	serverRepo := repositories.NewServerRepository()
+	metricRepo := repositories.NewServerMetricRepository()
 
+	servers, err := serverRepo.GetOnline()
 	if err != nil {
 		facades.Log().Channel("websocket").Errorf("查询在线服务器失败: %v", err)
 		return
@@ -339,12 +339,22 @@ func (c *WebSocketController) pushInitialServerStates(frontendConn *ws.FrontendC
 
 	facades.Log().Channel("websocket").Infof("开始推送 %d 个在线服务器的初始状态", len(servers))
 
+	// 收集所有服务器ID
+	serverIDs := make([]string, 0, len(servers))
+	for _, s := range servers {
+		serverIDs = append(serverIDs, s.ID)
+	}
+
+	// 批量获取最新指标
+	latestMetrics, err := metricRepo.GetLatestByServerIDs(serverIDs)
+	if err != nil {
+		facades.Log().Channel("websocket").Warningf("批量查询指标数据失败: %v", err)
+		latestMetrics = make(map[string]*models.ServerMetric)
+	}
+
 	// 为每个服务器推送最新状态
 	for _, server := range servers {
-		serverID, ok := server["id"].(string)
-		if !ok {
-			continue
-		}
+		serverID := server.ID
 
 		// 检查连接是否已关闭
 		if frontendConn.IsClosed() {
@@ -353,36 +363,21 @@ func (c *WebSocketController) pushInitialServerStates(frontendConn *ws.FrontendC
 		}
 
 		// 获取最新指标数据
-		var latestMetrics []map[string]interface{}
-		err := facades.Orm().Query().Table("server_metrics").
-			Select("cpu_usage", "memory_usage", "disk_usage", "network_upload", "network_download").
-			Where("server_id", serverID).
-			OrderBy("timestamp", "desc").
-			Limit(1).
-			Get(&latestMetrics)
-
-		if err != nil {
-			facades.Log().Channel("websocket").Warningf("查询服务器 %s 的指标数据失败: %v", serverID, err)
-			continue
-		}
-
-		// 如果没有指标数据，跳过该服务器
-		if len(latestMetrics) == 0 {
+		metric, exists := latestMetrics[serverID]
+		if !exists || metric == nil {
 			facades.Log().Channel("websocket").Debugf("服务器 %s 没有指标数据，跳过", serverID)
 			continue
 		}
 
-		metric := latestMetrics[0]
-
 		// 计算运行时间
-		uptimeStr := services.CalculateUptime(server["boot_time"], server["uptime_seconds"])
+		uptimeStr := services.CalculateUptime(server.BootTime, nil)
 
 		// 格式化数值为两位小数
-		cpuUsage := services.FormatMetricValue(metric["cpu_usage"])
-		memoryUsage := services.FormatMetricValue(metric["memory_usage"])
-		diskUsage := services.FormatMetricValue(metric["disk_usage"])
-		networkUpload := services.FormatMetricValue(metric["network_upload"])
-		networkDownload := services.FormatMetricValue(metric["network_download"])
+		cpuUsage := services.FormatMetricValue(metric.CPUUsage)
+		memoryUsage := services.FormatMetricValue(metric.MemoryUsage)
+		diskUsage := services.FormatMetricValue(metric.DiskUsage)
+		networkUpload := services.FormatMetricValue(metric.NetworkUpload)
+		networkDownload := services.FormatMetricValue(metric.NetworkDownload)
 
 		// 构造并推送 metrics_update 消息
 		message := map[string]interface{}{

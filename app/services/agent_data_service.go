@@ -8,6 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"goravel/app/models"
+	"goravel/app/repositories"
+
 	"github.com/goravel/framework/facades"
 )
 
@@ -193,11 +196,8 @@ func (j *saveSystemInfoJob) Execute() error {
 	}
 
 	// 更新服务器记录
-	_, err := facades.Orm().Query().Table("servers").
-		Where("id", j.serverID).
-		Update(updateData)
-
-	if err != nil {
+	serverRepo := repositories.NewServerRepository()
+	if err := serverRepo.Update(j.serverID, updateData); err != nil {
 		facades.Log().Errorf("保存系统信息失败: %v", err)
 		return err
 	}
@@ -287,46 +287,46 @@ func (j *saveMetricsJob) Execute() error {
 	}
 
 	// 保存到server_metrics表
-	metricsData := map[string]interface{}{
-		"server_id": j.serverID,
-		"timestamp": now,
+	metric := &models.ServerMetric{
+		ServerID:  j.serverID,
+		Timestamp: now,
 	}
 
 	// CPU使用率
 	if v, ok := j.data["cpu_usage"].(float64); ok {
-		metricsData["cpu_usage"] = FormatMetricValue(v)
+		metric.CPUUsage = FormatMetricValue(v)
 	} else {
-		metricsData["cpu_usage"] = 0.0
+		metric.CPUUsage = 0.0
 	}
 
 	// 内存使用率
 	if v, ok := j.data["memory_usage_percent"].(float64); ok {
-		metricsData["memory_usage"] = FormatMetricValue(v)
+		metric.MemoryUsage = FormatMetricValue(v)
 	} else {
-		metricsData["memory_usage"] = 0.0
+		metric.MemoryUsage = 0.0
 	}
 
 	// 磁盘使用率
 	if v, ok := j.data["disk_usage"].(float64); ok {
-		metricsData["disk_usage"] = FormatMetricValue(v)
+		metric.DiskUsage = FormatMetricValue(v)
 	} else {
-		metricsData["disk_usage"] = 0.0
+		metric.DiskUsage = 0.0
 	}
 
 	// 网络速度
 	if v, ok := j.data["network_upload"].(float64); ok {
-		metricsData["network_upload"] = FormatMetricValue(v)
+		metric.NetworkUpload = FormatMetricValue(v)
 	} else {
-		metricsData["network_upload"] = 0.0
+		metric.NetworkUpload = 0.0
 	}
 	if v, ok := j.data["network_download"].(float64); ok {
-		metricsData["network_download"] = FormatMetricValue(v)
+		metric.NetworkDownload = FormatMetricValue(v)
 	} else {
-		metricsData["network_download"] = 0.0
+		metric.NetworkDownload = 0.0
 	}
 
-	err = facades.Orm().Query().Table("server_metrics").Create(metricsData)
-	if err != nil {
+	metricRepo := repositories.NewServerMetricRepository()
+	if err := metricRepo.Create(metric); err != nil {
 		facades.Log().Errorf("保存性能指标失败: %v", err)
 		return err
 	}
@@ -349,11 +349,11 @@ func (j *saveMetricsJob) Execute() error {
 	}
 
 	// 格式化数值为两位小数
-	cpuUsage := FormatMetricValue(metricsData["cpu_usage"])
-	memoryUsage := FormatMetricValue(metricsData["memory_usage"])
-	diskUsage := FormatMetricValue(metricsData["disk_usage"])
-	networkUpload := FormatMetricValue(metricsData["network_upload"])
-	networkDownload := FormatMetricValue(metricsData["network_download"])
+	cpuUsage := FormatMetricValue(metric.CPUUsage)
+	memoryUsage := FormatMetricValue(metric.MemoryUsage)
+	diskUsage := FormatMetricValue(metric.DiskUsage)
+	networkUpload := FormatMetricValue(metric.NetworkUpload)
+	networkDownload := FormatMetricValue(metric.NetworkDownload)
 
 	// 推送实时指标更新
 	message := map[string]interface{}{
@@ -418,23 +418,22 @@ type saveMemoryInfoJob struct {
 }
 
 func (j *saveMemoryInfoJob) Execute() error {
-	record := map[string]interface{}{
-		"server_id": j.serverID,
-		"timestamp": time.Now(),
+	memoryHistory := &models.ServerMemoryHistory{
+		ServerID:  j.serverID,
+		Timestamp: time.Now(),
 	}
 
 	if v, ok := j.data["memory_total"].(float64); ok {
-		record["memory_total"] = int64(v)
+		memoryHistory.MemoryTotal = int64(v)
 	}
 	if v, ok := j.data["memory_used"].(float64); ok {
-		record["memory_used"] = int64(v)
+		memoryHistory.MemoryUsed = int64(v)
 	}
 	if v, ok := j.data["memory_usage_percent"].(float64); ok {
-		record["memory_usage_percent"] = v
+		memoryHistory.MemoryUsagePercent = v
 	}
 
-	err := facades.Orm().Query().Table("server_memory_history").Create(record)
-	if err != nil {
+	if err := facades.Orm().Query().Create(memoryHistory); err != nil {
 		facades.Log().Errorf("保存内存信息失败: %v", err)
 		return err
 	}
@@ -444,38 +443,44 @@ func (j *saveMemoryInfoJob) Execute() error {
 
 // SaveDiskInfo 保存磁盘信息
 func SaveDiskInfo(serverID string, data []interface{}) error {
-	facades.Orm().Query().Table("server_disks").
+	// 删除旧数据
+	facades.Orm().Query().Model(&models.ServerDisk{}).
 		Where("server_id", serverID).
 		Delete()
 
+	// 批量创建磁盘记录
+	disks := make([]*models.ServerDisk, 0, len(data))
 	for _, item := range data {
 		diskData, ok := item.(map[string]interface{})
 		if !ok {
 			continue
 		}
 
-		record := map[string]interface{}{
-			"server_id": serverID,
+		disk := &models.ServerDisk{
+			ServerID: serverID,
 		}
 
 		if v, ok := diskData["mount_point"].(string); ok {
-			record["mount_point"] = v
+			disk.MountPoint = v
 		}
 		if v, ok := diskData["device"].(string); ok {
-			record["disk_name"] = v // 映射到disk_name列
+			disk.DiskName = v
 		}
 		if v, ok := diskData["total"].(float64); ok {
-			record["total_size"] = int64(v) // 映射到total_size列
+			disk.TotalSize = int64(v)
 		}
 		if v, ok := diskData["used"].(float64); ok {
-			record["used_size"] = int64(v) // 映射到used_size列
+			disk.UsedSize = int64(v)
 		}
 		if v, ok := diskData["free"].(float64); ok {
-			record["free_size"] = int64(v) // 映射到free_size列
+			disk.FreeSize = int64(v)
 		}
 
-		err := facades.Orm().Query().Table("server_disks").Create(record)
-		if err != nil {
+		disks = append(disks, disk)
+	}
+
+	if len(disks) > 0 {
+		if err := facades.Orm().Query().Create(&disks); err != nil {
 			facades.Log().Errorf("保存磁盘信息失败: %v", err)
 			return err
 		}
@@ -524,15 +529,14 @@ func (j *saveNetworkInfoJob) Execute() error {
 	// 保存网络速度
 	if upload, ok1 := j.data["upload_speed"].(float64); ok1 {
 		if download, ok2 := j.data["download_speed"].(float64); ok2 {
-			record := map[string]interface{}{
-				"server_id":      j.serverID,
-				"upload_speed":   upload,
-				"download_speed": download,
-				"timestamp":      time.Now(),
+			networkSpeed := &models.ServerNetworkSpeed{
+				ServerID:      j.serverID,
+				UploadSpeed:   upload,
+				DownloadSpeed: download,
+				Timestamp:     time.Now(),
 			}
 
-			err := facades.Orm().Query().Table("server_network_speed").Create(record)
-			if err != nil {
+			if err := facades.Orm().Query().Create(networkSpeed); err != nil {
 				facades.Log().Errorf("保存网络速度失败: %v", err)
 				return err
 			}
@@ -667,51 +671,41 @@ type saveSwapInfoJob struct {
 }
 
 func (j *saveSwapInfoJob) Execute() error {
-	timestamp := time.Now().Unix()
-
-	record := map[string]interface{}{
-		"server_id": j.serverID,
-		"timestamp": timestamp,
+	swap := &models.ServerSwap{
+		ServerID:  j.serverID,
+		Timestamp: time.Now(),
 	}
-
-	var swapTotal, swapUsed, swapFree float64
-	var swapUsagePercent float64
 
 	if v, ok := j.data["swap_total"].(float64); ok {
-		swapTotal = v
-		record["swap_total"] = int64(v)
+		swap.SwapTotal = int64(v)
 	}
 	if v, ok := j.data["swap_used"].(float64); ok {
-		swapUsed = v
-		record["swap_used"] = int64(v)
+		swap.SwapUsed = int64(v)
 	}
 	if v, ok := j.data["swap_free"].(float64); ok {
-		swapFree = v
-		record["swap_free"] = int64(v)
+		swap.SwapFree = int64(v)
 	}
 
-	// 计算swap使用率
-	if swapTotal > 0 {
-		swapUsagePercent = (swapUsed / swapTotal) * 100
-	}
-
-	err := facades.Orm().Query().Table("server_swap").Create(record)
-	if err != nil {
+	if err := facades.Orm().Query().Create(swap); err != nil {
 		facades.Log().Errorf("保存Swap信息失败: %v", err)
 		return err
 	}
 
 	// 向前端推送Swap信息更新
 	wsService := GetWebSocketService()
+	var swapUsagePercent float64
+	if swap.SwapTotal > 0 {
+		swapUsagePercent = float64(swap.SwapUsed) / float64(swap.SwapTotal) * 100
+	}
 	message := map[string]interface{}{
 		"type": "swap_info_update",
 		"data": map[string]interface{}{
 			"server_id": j.serverID,
 			"swap": map[string]interface{}{
-				"swap_total":         FormatMetricValue(swapTotal),
-				"swap_used":          FormatMetricValue(swapUsed),
-				"swap_free":          FormatMetricValue(swapFree),
-				"swap_usage_percent": FormatMetricValue(swapUsagePercent),
+				"swap_total":         swap.SwapTotal,
+				"swap_used":          swap.SwapUsed,
+				"swap_free":          swap.SwapFree,
+				"swap_usage_percent": swapUsagePercent,
 			},
 		},
 	}
