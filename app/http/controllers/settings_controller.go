@@ -3,6 +3,7 @@ package controllers
 import (
 	"encoding/json"
 	"fmt"
+	"goravel/app/utils"
 	"goravel/app/utils/notification"
 	"strconv"
 	"strings"
@@ -21,59 +22,25 @@ func NewSettingsController() *SettingsController {
 
 // GetPublicSettings 获取公开的系统设置
 func (r *SettingsController) GetPublicSettings(ctx http.Context) http.Response {
-	// 查询访客登录相关配置
-	var allowGuestLogin string
-	var guestPasswordEnabled string
-	var panelTitle string
+	// 批量获取系统设置
+	settings := utils.GetSettings([]string{"allow_guest_login", "guest_password_enabled", "panel_title"})
 
-	// 查询是否允许访客登录
-	guestLoginErr := facades.DB().Table("system_settings").Where("setting_key", "allow_guest_login").Value("setting_value", &allowGuestLogin)
-	if guestLoginErr != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  false,
-			"message": "查询访客登录配置失败",
-			"code":    "CONFIG_ERROR",
-			"error":   guestLoginErr.Error(),
-		})
-	}
-
-	// 查询是否启用访客密码访问
-	guestPasswordErr := facades.DB().Table("system_settings").Where("setting_key", "guest_password_enabled").Value("setting_value", &guestPasswordEnabled)
-	if guestPasswordErr != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  false,
-			"message": "查询访客密码配置失败",
-			"code":    "CONFIG_ERROR",
-			"error":   guestPasswordErr.Error(),
-		})
-	}
-
-	// 查询面板标题
-	panelTitleErr := facades.DB().Table("system_settings").Where("setting_key", "panel_title").Value("setting_value", &panelTitle)
-	if panelTitleErr != nil {
-		// 面板标题查询失败不影响主要功能，使用默认值
+	allowGuestLogin := settings["allow_guest_login"]
+	guestPasswordEnabled := settings["guest_password_enabled"]
+	panelTitle := settings["panel_title"]
+	if panelTitle == "" {
 		panelTitle = "CloudSentinel 云哨"
 	}
 
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "success",
-		"data": map[string]any{
-			"allow_guest_login":      allowGuestLogin == "true",
-			"guest_password_enabled": guestPasswordEnabled == "true",
-			"panel_title":            panelTitle,
-		},
+	return utils.SuccessResponse(ctx, "success", map[string]any{
+		"allow_guest_login":      allowGuestLogin == "true",
+		"guest_password_enabled": guestPasswordEnabled == "true",
+		"panel_title":            panelTitle,
 	})
 }
 
 func (r *SettingsController) GetPanelSettings(ctx http.Context) http.Response {
-	var panelTitle string
-
-	panelTitleErr := facades.DB().Table("system_settings").Where("setting_key", "panel_title").Value("setting_value", &panelTitle)
-	if panelTitleErr != nil {
-		// 面板标题查询失败不影响主要功能，使用默认值
-		panelTitle = "CloudSentinel 云哨"
-	}
+	panelTitle := utils.GetSetting("panel_title", "CloudSentinel 云哨")
 
 	// 提取当前版本类型
 	currentVersion := facades.Config().GetString("app.version", "0.0.1-release")
@@ -83,71 +50,31 @@ func (r *SettingsController) GetPanelSettings(ctx http.Context) http.Response {
 		currentVersionType = currentVersionParts[1]
 	}
 
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "success",
-		"data": map[string]any{
-			"panel_title":          panelTitle,
-			"current_version":      currentVersion,
-			"current_version_type": currentVersionType,
-		},
+	return utils.SuccessResponse(ctx, "success", map[string]any{
+		"panel_title":          panelTitle,
+		"current_version":      currentVersion,
+		"current_version_type": currentVersionType,
 	})
 }
 
 func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Response {
-	var allowGuestLogin string
-	var guestPasswordEnabled string
-	var guestPasswordHash string
-	var hideSensitiveInfo string
-	var sessionTimeoutSeconds string
-	var maxLoginAttempts string
-	var lockoutDurationSeconds string
-	var jwtSecret string
-	var jwtExpirationSeconds string
-	var adminUsername string
+	// 批量获取系统设置
+	settings := utils.GetSettings([]string{
+		"allow_guest_login", "guest_password_enabled", "guest_password_hash",
+		"admin_username", "hide_sensitive_info", "session_timeout",
+		"max_login_attempts", "lockout_duration", "jwt_secret", "jwt_expiration",
+	})
 
-	if err := facades.DB().Table("system_settings").Where("setting_key", "allow_guest_login").Value("setting_value", &allowGuestLogin); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  false,
-			"message": "查询配置失败",
-			"code":    "CONFIG_ERROR",
-			"error":   err.Error(),
-		})
-	}
-	if err := facades.DB().Table("system_settings").Where("setting_key", "guest_password_enabled").Value("setting_value", &guestPasswordEnabled); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  false,
-			"message": "查询配置失败",
-			"code":    "CONFIG_ERROR",
-			"error":   err.Error(),
-		})
-	}
-	// 查询密码hash，用于判断是否已设置密码
-	if err := facades.DB().Table("system_settings").Where("setting_key", "guest_password_hash").Value("setting_value", &guestPasswordHash); err != nil {
-		guestPasswordHash = ""
-	}
-	// 查询管理员用户名
-	if err := facades.DB().Table("system_settings").Where("setting_key", "admin_username").Value("setting_value", &adminUsername); err != nil {
-		adminUsername = "admin"
-	}
-	if err := facades.DB().Table("system_settings").Where("setting_key", "hide_sensitive_info").Value("setting_value", &hideSensitiveInfo); err != nil {
-		hideSensitiveInfo = "true"
-	}
-	if err := facades.DB().Table("system_settings").Where("setting_key", "session_timeout").Value("setting_value", &sessionTimeoutSeconds); err != nil {
-		sessionTimeoutSeconds = "3600"
-	}
-	if err := facades.DB().Table("system_settings").Where("setting_key", "max_login_attempts").Value("setting_value", &maxLoginAttempts); err != nil {
-		maxLoginAttempts = "5"
-	}
-	if err := facades.DB().Table("system_settings").Where("setting_key", "lockout_duration").Value("setting_value", &lockoutDurationSeconds); err != nil {
-		lockoutDurationSeconds = "900"
-	}
-	if err := facades.DB().Table("system_settings").Where("setting_key", "jwt_secret").Value("setting_value", &jwtSecret); err != nil {
-		jwtSecret = ""
-	}
-	if err := facades.DB().Table("system_settings").Where("setting_key", "jwt_expiration").Value("setting_value", &jwtExpirationSeconds); err != nil {
-		jwtExpirationSeconds = "86400"
-	}
+	allowGuestLogin := utils.GetSetting("allow_guest_login", "false")
+	guestPasswordEnabled := utils.GetSetting("guest_password_enabled", "false")
+	guestPasswordHash := settings["guest_password_hash"]
+	adminUsername := utils.GetSetting("admin_username", "admin")
+	hideSensitiveInfo := utils.GetSetting("hide_sensitive_info", "true")
+	sessionTimeoutSeconds := utils.GetSetting("session_timeout", "3600")
+	maxLoginAttempts := utils.GetSetting("max_login_attempts", "5")
+	lockoutDurationSeconds := utils.GetSetting("lockout_duration", "900")
+	jwtSecret := settings["jwt_secret"]
+	jwtExpirationSeconds := utils.GetSetting("jwt_expiration", "86400")
 
 	parseInt := func(s string, def int64) int64 {
 		if v, err := strconv.ParseInt(s, 10, 64); err == nil {
@@ -160,22 +87,18 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 	lockoutMinutes := int(parseInt(lockoutDurationSeconds, 900) / 60)
 	jwtHours := int(parseInt(jwtExpirationSeconds, 86400) / 3600)
 
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "success",
-		"data": map[string]any{
-			"allowGuest":        allowGuestLogin == "true",
-			"enablePassword":    guestPasswordEnabled == "true",
-			"guestPassword":     "",
-			"hasPassword":       guestPasswordHash != "",
-			"hideSensitiveInfo": hideSensitiveInfo == "true",
-			"sessionTimeout":    sessionMinutes,
-			"maxLoginAttempts":  parseInt(maxLoginAttempts, 5),
-			"lockoutDuration":   lockoutMinutes,
-			"jwtSecret":         jwtSecret,
-			"jwtExpiration":     jwtHours,
-			"adminUsername":     adminUsername,
-		},
+	return utils.SuccessResponse(ctx, "success", map[string]any{
+		"allowGuest":        allowGuestLogin == "true",
+		"enablePassword":    guestPasswordEnabled == "true",
+		"guestPassword":     "",
+		"hasPassword":       guestPasswordHash != "",
+		"hideSensitiveInfo": hideSensitiveInfo == "true",
+		"sessionTimeout":    sessionMinutes,
+		"maxLoginAttempts":  parseInt(maxLoginAttempts, 5),
+		"lockoutDuration":   lockoutMinutes,
+		"jwtSecret":         jwtSecret,
+		"jwtExpiration":     jwtHours,
+		"adminUsername":     adminUsername,
 	})
 }
 

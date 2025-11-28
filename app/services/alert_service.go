@@ -81,7 +81,7 @@ type Rules struct {
 	Disk   Rule `json:"disk"`
 }
 
-// getRules 获取所有告警规则
+// getRules 获取所有告警规则（优化：合并循环查询为一次批量查询）
 func (s *AlertService) getRules() (*Rules, error) {
 	rules := &Rules{
 		CPU:    Rule{Enabled: true, Warning: 80, Critical: 90},
@@ -89,22 +89,40 @@ func (s *AlertService) getRules() (*Rules, error) {
 		Disk:   Rule{Enabled: true, Warning: 85, Critical: 95},
 	}
 
-	// 从 system_settings 读取规则
-	for _, metric := range []string{"cpu", "memory", "disk"} {
-		var ruleJson string
-		key := fmt.Sprintf("alert_rule_%s", metric)
-		if err := facades.DB().Table("system_settings").Where("setting_key", key).Value("setting_value", &ruleJson); err == nil && ruleJson != "" {
-			var rule Rule
-			if err := json.Unmarshal([]byte(ruleJson), &rule); err == nil {
-				switch metric {
-				case "cpu":
-					rules.CPU = rule
-				case "memory":
-					rules.Memory = rule
-				case "disk":
-					rules.Disk = rule
-				}
-			}
+	// 批量获取所有告警规则，减少数据库查询次数
+	var settings []map[string]interface{}
+	keys := []interface{}{"alert_rule_cpu", "alert_rule_memory", "alert_rule_disk"}
+	err := facades.Orm().Query().Table("system_settings").
+		Select("setting_key", "setting_value").
+		WhereIn("setting_key", keys).
+		Get(&settings)
+
+	if err != nil {
+		return rules, nil // 使用默认规则
+	}
+
+	// 解析规则
+	for _, setting := range settings {
+		key, _ := setting["setting_key"].(string)
+		ruleJson, _ := setting["setting_value"].(string)
+
+		if ruleJson == "" {
+			continue
+		}
+
+		var rule Rule
+		if err := json.Unmarshal([]byte(ruleJson), &rule); err != nil {
+			continue
+		}
+
+		// 根据key设置对应的规则
+		switch key {
+		case "alert_rule_cpu":
+			rules.CPU = rule
+		case "alert_rule_memory":
+			rules.Memory = rule
+		case "alert_rule_disk":
+			rules.Disk = rule
 		}
 	}
 
@@ -328,27 +346,35 @@ func (s *AlertService) getNotificationConfigs() (*notification.EmailConfig, *not
 	emailConfig := &notification.EmailConfig{Enabled: false}
 	webhookConfig := &notification.WebhookConfig{Enabled: false}
 
-	// 获取邮件配置
-	var emailEnabled bool
-	var emailConfigJson string
-	facades.DB().Table("alert_notifications").Where("notification_type", "email").Value("enabled", &emailEnabled)
-	facades.DB().Table("alert_notifications").Where("notification_type", "email").Value("config_json", &emailConfigJson)
+	var notifications []map[string]interface{}
+	err := facades.Orm().Query().Table("alert_notifications").
+		Select("notification_type", "enabled", "config_json").
+		WhereIn("notification_type", []interface{}{"email", "webhook"}).
+		Get(&notifications)
 
-	if emailEnabled && emailConfigJson != "" {
-		if err := json.Unmarshal([]byte(emailConfigJson), &emailConfig); err == nil {
-			emailConfig.Enabled = true
-		}
+	if err != nil {
+		return emailConfig, webhookConfig, err
 	}
 
-	// 获取Webhook配置
-	var webhookEnabled bool
-	var webhookConfigJson string
-	facades.DB().Table("alert_notifications").Where("notification_type", "webhook").Value("enabled", &webhookEnabled)
-	facades.DB().Table("alert_notifications").Where("notification_type", "webhook").Value("config_json", &webhookConfigJson)
+	// 解析配置
+	for _, notif := range notifications {
+		notifType, _ := notif["notification_type"].(string)
+		enabled, _ := notif["enabled"].(bool)
+		configJson, _ := notif["config_json"].(string)
 
-	if webhookEnabled && webhookConfigJson != "" {
-		if err := json.Unmarshal([]byte(webhookConfigJson), &webhookConfig); err == nil {
-			webhookConfig.Enabled = true
+		if !enabled || configJson == "" {
+			continue
+		}
+
+		switch notifType {
+		case "email":
+			if err := json.Unmarshal([]byte(configJson), &emailConfig); err == nil {
+				emailConfig.Enabled = true
+			}
+		case "webhook":
+			if err := json.Unmarshal([]byte(configJson), &webhookConfig); err == nil {
+				webhookConfig.Enabled = true
+			}
 		}
 	}
 

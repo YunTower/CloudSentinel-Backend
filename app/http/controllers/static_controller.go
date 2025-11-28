@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"goravel/app/utils"
+
 	goravelhttp "github.com/goravel/framework/contracts/http"
 )
 
@@ -25,9 +27,7 @@ func (r *StaticController) ServeStatic(ctx goravelhttp.Context) goravelhttp.Resp
 	path := ctx.Request().Path()
 
 	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/ws/") {
-		return ctx.Response().Status(http.StatusNotFound).Json(goravelhttp.Json{
-			"error": "Not found",
-		})
+		return utils.ErrorResponse(ctx, http.StatusNotFound, "Not found")
 	}
 
 	// 移除前导斜杠
@@ -41,16 +41,10 @@ func (r *StaticController) ServeStatic(ctx goravelhttp.Context) goravelhttp.Resp
 	// 检查 PublicFiles 是否已初始化并包含文件
 	entries, listErr := PublicFiles.ReadDir("public")
 	if listErr != nil {
-		// 如果连目录都读不到，说明 PublicFiles 可能没有被正确初始化
-		return ctx.Response().Status(http.StatusInternalServerError).Json(goravelhttp.Json{
-			"error": "Static files not embedded. PublicFiles not initialized. Please rebuild the application.",
-		})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, "Static files not embedded. PublicFiles not initialized. Please rebuild the application.")
 	}
 	if len(entries) == 0 {
-		// 目录存在但为空，说明编译时 public 目录是空的
-		return ctx.Response().Status(http.StatusInternalServerError).Json(goravelhttp.Json{
-			"error": "Static files not embedded. Public directory was empty during compilation. Please build frontend first (pnpm run build) and rebuild the backend.",
-		})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, "Static files not embedded. Public directory was empty during compilation. Please build frontend first (pnpm run build) and rebuild the backend.")
 	}
 
 	fsPath := "public/" + strings.ReplaceAll(path, "\\", "/")
@@ -62,27 +56,19 @@ func (r *StaticController) ServeStatic(ctx goravelhttp.Context) goravelhttp.Resp
 		ext := strings.ToLower(filepath.Ext(path))
 
 		if ext != "" && ext != ".html" {
-			return ctx.Response().Status(http.StatusNotFound).Json(goravelhttp.Json{
-				"error": "File not found",
-			})
+			return utils.ErrorResponse(ctx, http.StatusNotFound, "File not found")
 		}
 
 		indexData, indexErr := PublicFiles.ReadFile("public/index.html")
 		if indexErr != nil {
 			entries, listErr := PublicFiles.ReadDir("public")
 			if listErr != nil {
-				return ctx.Response().Status(http.StatusInternalServerError).Json(goravelhttp.Json{
-					"error": "Embedded files not available. Please ensure frontend is built and rebuild the backend.",
-				})
+				return utils.ErrorResponse(ctx, http.StatusInternalServerError, "Embedded files not available. Please ensure frontend is built and rebuild the backend.")
 			}
 			if len(entries) == 0 {
-				return ctx.Response().Status(http.StatusInternalServerError).Json(goravelhttp.Json{
-					"error": "Public directory is empty. Please build frontend first.",
-				})
+				return utils.ErrorResponse(ctx, http.StatusInternalServerError, "Public directory is empty. Please build frontend first.")
 			}
-			return ctx.Response().Status(http.StatusNotFound).Json(goravelhttp.Json{
-				"error": "index.html not found in embedded files",
-			})
+			return utils.ErrorResponse(ctx, http.StatusNotFound, "index.html not found in embedded files")
 		}
 
 		return ctx.Response().Header("Content-Type", "text/html; charset=utf-8").String(http.StatusOK, string(indexData))

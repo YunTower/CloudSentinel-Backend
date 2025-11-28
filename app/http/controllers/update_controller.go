@@ -15,8 +15,9 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-
 	"time"
+
+	"goravel/app/utils"
 
 	"github.com/goravel/framework/contracts/http"
 	"github.com/goravel/framework/facades"
@@ -75,10 +76,7 @@ func (r *UpdateController) Status(ctx http.Context) http.Response {
 		}
 	}
 
-	return ctx.Response().Success().Json(http.Json{
-		"status": true,
-		"data":   status,
-	})
+	return utils.SuccessResponse(ctx, "success", status)
 }
 
 // compareVersions 比较版本号，返回 true 表示需要更新
@@ -476,13 +474,11 @@ func (r *UpdateController) Update(ctx http.Context) http.Response {
 		"type": "required|in:gitee,github",
 	})
 	if err != nil || validator.Fails() {
-		return ctx.Response().Status(400).Json(http.Json{
-			"status":  false,
-			"message": "验证失败",
-			"code":    "VALIDATION_ERROR",
-			"error":   err.Error(),
-			"data":    validator.Errors(),
-		})
+		var validationErr error = err
+		if validationErr == nil {
+			validationErr = fmt.Errorf("validation failed")
+		}
+		return utils.ErrorResponseWithError(ctx, 400, "验证失败", validationErr, "VALIDATION_ERROR")
 	}
 
 	// 检查是否已经在更新中
@@ -511,11 +507,7 @@ func (r *UpdateController) Update(ctx http.Context) http.Response {
 			}
 
 			if activeSteps[status.Step] {
-				return ctx.Response().Status(400).Json(http.Json{
-					"status":  false,
-					"message": "更新已在进行中",
-					"code":    "UPDATE_IN_PROGRESS",
-				})
+				return utils.ErrorResponse(ctx, 400, "更新已在进行中", "UPDATE_IN_PROGRESS")
 			}
 
 			// 如果是 error 或 completed 状态，清除旧状态，允许重新开始
@@ -528,11 +520,7 @@ func (r *UpdateController) Update(ctx http.Context) http.Response {
 
 	updateType := ctx.Request().Input("type")
 	if updateType == "" {
-		return ctx.Response().Status(400).Json(http.Json{
-			"status":  false,
-			"message": "更新源类型不能为空",
-			"code":    "MISSING_TYPE",
-		})
+		return utils.ErrorResponse(ctx, 400, "更新源类型不能为空", "MISSING_TYPE")
 	}
 
 	// 设置初始状态
@@ -543,12 +531,7 @@ func (r *UpdateController) Update(ctx http.Context) http.Response {
 	}
 	if err := facades.Cache().Put("update_status", initialStatus, 10*time.Minute); err != nil {
 		facades.Log().Errorf("设置更新状态失败: %v", err)
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  false,
-			"message": "设置更新状态失败",
-			"code":    "CACHE_ERROR",
-			"error":   err.Error(),
-		})
+		return utils.ErrorResponseWithError(ctx, 500, "设置更新状态失败", err, "CACHE_ERROR")
 	}
 
 	// 启动异步更新任务
@@ -832,89 +815,48 @@ func (r *UpdateController) Update(ctx http.Context) http.Response {
 		facades.Cache().Forget("update_status")
 	}()
 
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "更新任务已启动",
-	})
+	return utils.SuccessResponse(ctx, "更新任务已启动")
 }
 
-func (r *UpdateController) Check(ctx http.Context) http.Response {
+// checkVersion 检查版本信息的公共方法
+func (r *UpdateController) checkVersion(ctx http.Context, releaseUrlMap map[string]string, includeCurrentVersion bool) http.Response {
 	validator, err := ctx.Request().Validate(map[string]string{
 		"type": "required|in:gitee,github",
 	})
 	if err != nil || validator.Fails() {
-		return ctx.Response().Status(401).Json(http.Json{
-			"status":  false,
-			"message": "验证失败",
-			"code":    "VALIDATION_ERROR",
-			"error":   err.Error(),
-			"data":    validator.Errors(),
-		})
+		return utils.ErrorResponseWithError(ctx, 401, "验证失败", err, "VALIDATION_ERROR")
 	}
 
-	requestUrl := releaseUrls[ctx.Request().Input("type")]
+	requestUrl := releaseUrlMap[ctx.Request().Input("type")]
 	response, requestErr := facades.Http().Get(requestUrl)
 	if requestErr != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  false,
-			"message": "请求最新版本信息失败",
-			"code":    "REQUEST_LATEST_VERSION_FAILED",
-			"error":   requestErr.Error(),
-		})
+		return utils.ErrorResponseWithError(ctx, 500, "请求最新版本信息失败", requestErr, "REQUEST_LATEST_VERSION_FAILED")
 	}
 
 	responseBody, responseErr := response.Body()
 	if responseErr != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  false,
-			"message": "读取最新版本信息失败",
-			"code":    "READ_LATEST_VERSION_FAILED",
-			"error":   responseErr.Error(),
-		})
+		return utils.ErrorResponseWithError(ctx, 500, "读取最新版本信息失败", responseErr, "READ_LATEST_VERSION_FAILED")
 	}
 	if response.Status() == 404 {
-		return ctx.Response().Status(404).Json(http.Json{
-			"status":  false,
-			"message": "未找到最新的版本信息，改天再试试吧",
-			"code":    "LATEST_VERSION_NOT_FOUND",
-			"error":   "Latest version information not found",
-		})
+		return utils.ErrorResponse(ctx, 404, "未找到最新的版本信息，改天再试试吧", "LATEST_VERSION_NOT_FOUND")
 	}
 
 	// 格式化响应体
 	var result map[string]any
 	err = json.Unmarshal([]byte(responseBody), &result)
 	if err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  false,
-			"message": "解析最新版本信息失败",
-			"code":    "PARSE_LATEST_VERSION_FAILED",
-			"error":   err.Error(),
-		})
+		return utils.ErrorResponseWithError(ctx, 500, "解析最新版本信息失败", err, "PARSE_LATEST_VERSION_FAILED")
 	}
 
 	// 获取tagName
 	tagName, ok := result["tag_name"].(string)
 	if !ok {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  false,
-			"message": "最新版本信息格式错误",
-			"code":    "LATEST_VERSION_FORMAT_ERROR",
-			"error":   "Invalid latest version information format",
-		})
+		return utils.ErrorResponse(ctx, 500, "最新版本信息格式错误", "LATEST_VERSION_FORMAT_ERROR")
 	}
 
 	// 格式化版本号
 	if len(tagName) > 0 && tagName[0] == 'v' {
 		tagName = tagName[1:]
-	}
-
-	// 提取当前版本类型
-	currentVersion := facades.Config().GetString("app.version", "0.0.1-release")
-	currentVersionParts := strings.Split(currentVersion, "-")
-	currentVersionType := "release"
-	if len(currentVersionParts) > 1 {
-		currentVersionType = currentVersionParts[1]
 	}
 
 	// 提取最新版本类型
@@ -927,7 +869,6 @@ func (r *UpdateController) Check(ctx http.Context) http.Response {
 	// 格式化发布时间
 	var publishTime string
 	if createdAt, ok := result["created_at"].(string); ok && createdAt != "" {
-		// 解析 ISO 8601 格式时间 "2025-11-13T11:50:40Z"
 		parsedTime, parseErr := time.Parse(time.RFC3339, createdAt)
 		if parseErr == nil {
 			publishTime = parsedTime.Format("2006-01-02 15:04:05")
@@ -936,121 +877,35 @@ func (r *UpdateController) Check(ctx http.Context) http.Response {
 		}
 	}
 
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "success",
-		"data": map[string]any{
-			"latest_version":       tagName,
-			"latest_version_type":  versionType,
-			"current_version":      currentVersion,
-			"current_version_type": currentVersionType,
-			"publish_time":         publishTime,
-			"change_log":           result["body"],
-		},
-	})
+	data := map[string]any{
+		"latest_version":      tagName,
+		"latest_version_type": versionType,
+		"publish_time":        publishTime,
+		"change_log":          result["body"],
+	}
+
+	// 如果需要包含当前版本信息
+	if includeCurrentVersion {
+		currentVersion := facades.Config().GetString("app.version", "0.0.1-release")
+		currentVersionParts := strings.Split(currentVersion, "-")
+		currentVersionType := "release"
+		if len(currentVersionParts) > 1 {
+			currentVersionType = currentVersionParts[1]
+		}
+		data["current_version"] = currentVersion
+		data["current_version_type"] = currentVersionType
+	}
+
+	return utils.SuccessResponse(ctx, "success", data)
+}
+
+func (r *UpdateController) Check(ctx http.Context) http.Response {
+	return r.checkVersion(ctx, releaseUrls, true)
 }
 
 // CheckAgent 检查 Agent 最新版本
 func (r *UpdateController) CheckAgent(ctx http.Context) http.Response {
-	validator, err := ctx.Request().Validate(map[string]string{
-		"type": "required|in:gitee,github",
-	})
-	if err != nil || validator.Fails() {
-		return ctx.Response().Status(401).Json(http.Json{
-			"status":  false,
-			"message": "验证失败",
-			"code":    "VALIDATION_ERROR",
-			"error":   err.Error(),
-			"data":    validator.Errors(),
-		})
-	}
-
-	requestUrl := agentReleaseUrls[ctx.Request().Input("type")]
-	response, requestErr := facades.Http().Get(requestUrl)
-	if requestErr != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  false,
-			"message": "请求最新版本信息失败",
-			"code":    "REQUEST_LATEST_VERSION_FAILED",
-			"error":   requestErr.Error(),
-		})
-	}
-
-	responseBody, responseErr := response.Body()
-	if responseErr != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  false,
-			"message": "读取最新版本信息失败",
-			"code":    "READ_LATEST_VERSION_FAILED",
-			"error":   responseErr.Error(),
-		})
-	}
-	if response.Status() == 404 {
-		return ctx.Response().Status(404).Json(http.Json{
-			"status":  false,
-			"message": "未找到最新的版本信息，改天再试试吧",
-			"code":    "LATEST_VERSION_NOT_FOUND",
-			"error":   "Latest version information not found",
-		})
-	}
-
-	// 格式化响应体
-	var result map[string]any
-	err = json.Unmarshal([]byte(responseBody), &result)
-	if err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  false,
-			"message": "解析最新版本信息失败",
-			"code":    "PARSE_LATEST_VERSION_FAILED",
-			"error":   err.Error(),
-		})
-	}
-
-	// 获取tagName
-	tagName, ok := result["tag_name"].(string)
-	if !ok {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  false,
-			"message": "最新版本信息格式错误",
-			"code":    "LATEST_VERSION_FORMAT_ERROR",
-			"error":   "Invalid latest version information format",
-		})
-	}
-
-	// 格式化版本号
-	if len(tagName) > 0 && tagName[0] == 'v' {
-		tagName = tagName[1:]
-	}
-
-	// 提取最新版本类型
-	versionParts := strings.Split(tagName, "-")
-	versionType := "release"
-	if len(versionParts) > 1 {
-		versionType = versionParts[1]
-	}
-
-	// 格式化发布时间
-	var publishTime string
-	if createdAt, ok := result["created_at"].(string); ok && createdAt != "" {
-		// 解析 ISO 8601 格式时间 "2025-11-13T11:50:40Z"
-		parsedTime, parseErr := time.Parse(time.RFC3339, createdAt)
-		if parseErr == nil {
-			publishTime = parsedTime.Format("2006-01-02 15:04:05")
-		} else {
-			publishTime = createdAt
-		}
-	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "success",
-		"data": map[string]any{
-			"latest_version":      tagName,
-			"latest_version_type": versionType,
-			"publish_time":        publishTime,
-			"change_log":          result["body"],
-		},
-	})
+	return r.checkVersion(ctx, agentReleaseUrls, false)
 }
 
 // runMigrations 执行数据库迁移

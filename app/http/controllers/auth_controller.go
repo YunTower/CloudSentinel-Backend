@@ -1,10 +1,10 @@
 package controllers
 
 import (
-	"fmt"
 	"goravel/app/http/requests/auth"
 	"goravel/app/models"
 	"goravel/app/services"
+	"goravel/app/utils"
 	"time"
 
 	"github.com/goravel/framework/contracts/http"
@@ -36,9 +36,6 @@ func getUserInfo(ctx http.Context) *UserInfo {
 	guard, _ := ctx.Value("guard").(string)
 	isAuthenticated, _ := ctx.Value("is_authenticated").(bool)
 
-	fmt.Printf("Debug - user_id: %v, user_type: %v, guard: %v, is_authenticated: %v\n",
-		userID, userType, guard, isAuthenticated)
-
 	return &UserInfo{
 		ID:              userID,
 		Type:            userType,
@@ -51,15 +48,9 @@ func getUserInfo(ctx http.Context) *UserInfo {
 func requireAuth(ctx http.Context) (*UserInfo, http.Response) {
 	// 检查是否已认证
 	isAuthenticated, ok := ctx.Value("is_authenticated").(bool)
-	fmt.Printf("Debug - is_authenticated: %v, ok: %v\n", isAuthenticated, ok)
 
 	if !ok || !isAuthenticated {
-		return nil, ctx.Response().Status(401).Json(http.Json{
-			"status":  false,
-			"message": "用户未认证",
-			"code":    "UNAUTHENTICATED",
-			"error":   "User not authenticated",
-		})
+		return nil, utils.ErrorResponse(ctx, 401, "用户未认证", "UNAUTHENTICATED")
 	}
 
 	userInfo := getUserInfo(ctx)

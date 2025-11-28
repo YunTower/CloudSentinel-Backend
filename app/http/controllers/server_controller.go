@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"goravel/app/services"
+	"goravel/app/utils"
 
 	"github.com/google/uuid"
 	"github.com/goravel/framework/contracts/http"
@@ -37,19 +38,12 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 
 	var req CreateServerRequest
 	if err := ctx.Request().Bind(&req); err != nil {
-		return ctx.Response().Status(http.StatusBadRequest).Json(http.Json{
-			"status":  false,
-			"message": "请求参数错误",
-			"error":   err.Error(),
-		})
+		return utils.ErrorResponseWithError(ctx, http.StatusBadRequest, "请求参数错误", err)
 	}
 
 	// 验证必填字段
 	if req.Name == "" || req.IP == "" {
-		return ctx.Response().Status(http.StatusBadRequest).Json(http.Json{
-			"status":  false,
-			"message": "名称和IP地址为必填项",
-		})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "名称和IP地址为必填项")
 	}
 
 	// 设置默认端口
@@ -59,10 +53,7 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 
 	// 验证端口范围
 	if req.Port < 1 || req.Port > 65535 {
-		return ctx.Response().Status(http.StatusBadRequest).Json(http.Json{
-			"status":  false,
-			"message": "端口号必须在1-65535之间",
-		})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "端口号必须在1-65535之间")
 	}
 
 	// 生成UUID作为server_id
@@ -97,31 +88,23 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 
 	if err != nil {
 		facades.Log().Errorf("创建服务器失败: %v", err)
-		return ctx.Response().Status(http.StatusInternalServerError).Json(http.Json{
-			"status":  false,
-			"message": "创建服务器失败",
-			"error":   err.Error(),
-		})
+		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "创建服务器失败", err)
 	}
 
 	facades.Log().Infof("成功创建服务器: %s (IP: %s)", req.Name, req.IP)
 
 	// 返回服务器信息和agent_key
-	return ctx.Response().Status(http.StatusCreated).Json(http.Json{
-		"status":  true,
-		"message": "服务器创建成功",
-		"data": map[string]interface{}{
-			"id":         serverID,
-			"name":       req.Name,
-			"ip":         req.IP,
-			"port":       req.Port,
-			"status":     "offline",
-			"location":   req.Location,
-			"os":         req.OS,
-			"agent_key":  agentKey,
-			"created_at": now,
-			"updated_at": now,
-		},
+	return utils.SuccessResponseWithStatus(ctx, http.StatusCreated, "服务器创建成功", map[string]interface{}{
+		"id":         serverID,
+		"name":       req.Name,
+		"ip":         req.IP,
+		"port":       req.Port,
+		"status":     "offline",
+		"location":   req.Location,
+		"os":         req.OS,
+		"agent_key":  agentKey,
+		"created_at": now,
+		"updated_at": now,
 	})
 }
 
@@ -161,14 +144,60 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 
 	if err != nil {
 		facades.Log().Errorf("获取服务器列表失败: %v", err)
-		return ctx.Response().Status(http.StatusInternalServerError).Json(http.Json{
-			"status":  false,
-			"message": "获取服务器列表失败",
-			"error":   err.Error(),
-		})
+		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "获取服务器列表失败", err)
 	}
 
-	// 为每个服务器获取最新指标和磁盘信息
+	// 批量获取所有服务器的最新指标和磁盘信息
+	serverIDs := make([]interface{}, 0, len(servers))
+	for _, server := range servers {
+		if serverID, ok := server["id"].(string); ok {
+			serverIDs = append(serverIDs, serverID)
+		}
+	}
+
+	// 批量获取所有服务器的最新指标
+	var allLatestMetrics []map[string]interface{}
+	if len(serverIDs) > 0 {
+		// 获取每个服务器的最新指标
+		sql := `SELECT server_id, cpu_usage, memory_usage, disk_usage, network_upload, network_download
+			FROM (
+				SELECT server_id, cpu_usage, memory_usage, disk_usage, network_upload, network_download,
+					ROW_NUMBER() OVER (PARTITION BY server_id ORDER BY timestamp DESC) as rn
+				FROM server_metrics
+				WHERE server_id IN (` + strings.Repeat("?,", len(serverIDs)-1) + `?)
+			) WHERE rn = 1`
+		_ = facades.Orm().Query().Raw(sql, serverIDs...).Scan(&allLatestMetrics)
+	}
+
+	metricsMap := make(map[string]map[string]interface{})
+	for _, metric := range allLatestMetrics {
+		if serverID, ok := metric["server_id"].(string); ok {
+			metricsMap[serverID] = map[string]interface{}{
+				"cpu_usage":        services.FormatMetricValue(metric["cpu_usage"]),
+				"memory_usage":     services.FormatMetricValue(metric["memory_usage"]),
+				"disk_usage":       services.FormatMetricValue(metric["disk_usage"]),
+				"network_upload":   services.FormatMetricValue(metric["network_upload"]),
+				"network_download": services.FormatMetricValue(metric["network_download"]),
+			}
+		}
+	}
+
+	// 获取所有服务器的磁盘信息
+	var allDisks []map[string]interface{}
+	if len(serverIDs) > 0 {
+		sql := `SELECT server_id, total_size FROM server_disks WHERE server_id IN (` + strings.Repeat("?,", len(serverIDs)-1) + `?)`
+		_ = facades.Orm().Query().Raw(sql, serverIDs...).Scan(&allDisks)
+	}
+
+	storageMap := make(map[string]int64)
+	for _, disk := range allDisks {
+		if serverID, ok := disk["server_id"].(string); ok {
+			if totalSize, ok := disk["total_size"].(int64); ok {
+				storageMap[serverID] += totalSize
+			}
+		}
+	}
+
 	for i := range servers {
 		serverID, ok := servers[i]["id"].(string)
 		if !ok {
@@ -178,24 +207,9 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 		// 计算运行时间
 		servers[i]["uptime"] = services.CalculateUptime(servers[i]["boot_time"], servers[i]["uptime_seconds"])
 
-		// 获取最新指标数据
-		var latestMetrics []map[string]interface{}
-		facades.Orm().Query().Table("server_metrics").
-			Select("cpu_usage", "memory_usage", "disk_usage", "network_upload", "network_download").
-			Where("server_id", serverID).
-			OrderBy("timestamp", "desc").
-			Limit(1).
-			Get(&latestMetrics)
-
-		if len(latestMetrics) > 0 {
-			metric := latestMetrics[0]
-			servers[i]["metrics"] = map[string]interface{}{
-				"cpu_usage":        services.FormatMetricValue(metric["cpu_usage"]),
-				"memory_usage":     services.FormatMetricValue(metric["memory_usage"]),
-				"disk_usage":       services.FormatMetricValue(metric["disk_usage"]),
-				"network_upload":   services.FormatMetricValue(metric["network_upload"]),
-				"network_download": services.FormatMetricValue(metric["network_download"]),
-			}
+		// 设置指标数据
+		if metrics, exists := metricsMap[serverID]; exists {
+			servers[i]["metrics"] = metrics
 		} else {
 			// 如果没有指标数据，设置默认值
 			servers[i]["metrics"] = map[string]interface{}{
@@ -208,37 +222,8 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 		}
 
 		// 计算总存储容量
-		var disks []map[string]interface{}
-		facades.Orm().Query().Table("server_disks").
-			Select("total_size").
-			Where("server_id", serverID).
-			Get(&disks)
-
-		var totalStorageBytes int64 = 0
-		for _, disk := range disks {
-			if totalSize, ok := disk["total_size"].(int64); ok {
-				totalStorageBytes += totalSize
-			}
-		}
-
-		// 格式化存储容量
-		var totalStorage string
-		if totalStorageBytes == 0 {
-			totalStorage = ""
-		} else if totalStorageBytes >= 1024*1024*1024*1024 {
-			// TB
-			totalStorage = fmt.Sprintf("%.1fTB", float64(totalStorageBytes)/(1024*1024*1024*1024))
-		} else if totalStorageBytes >= 1024*1024*1024 {
-			// GB
-			totalStorage = fmt.Sprintf("%.1fGB", float64(totalStorageBytes)/(1024*1024*1024))
-		} else if totalStorageBytes >= 1024*1024 {
-			// MB
-			totalStorage = fmt.Sprintf("%.1fMB", float64(totalStorageBytes)/(1024*1024))
-		} else {
-			// KB
-			totalStorage = fmt.Sprintf("%.1fKB", float64(totalStorageBytes)/1024)
-		}
-		servers[i]["total_storage"] = totalStorage
+		totalStorageBytes := storageMap[serverID]
+		servers[i]["total_storage"] = utils.FormatStorageSize(totalStorageBytes)
 
 		// 根据角色和设置过滤敏感信息
 		if shouldHideSensitive {
@@ -253,11 +238,7 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 		}
 	}
 
-	return ctx.Response().Json(http.StatusOK, http.Json{
-		"status":  true,
-		"message": "获取成功",
-		"data":    servers,
-	})
+	return utils.SuccessResponse(ctx, "获取成功", servers)
 }
 
 // GetServerDetail 获取服务器详细信息
@@ -291,18 +272,11 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 
 	if err != nil {
 		facades.Log().Errorf("获取服务器详情失败: %v", err)
-		return ctx.Response().Status(http.StatusInternalServerError).Json(http.Json{
-			"status":  false,
-			"message": "获取服务器详情失败",
-			"error":   err.Error(),
-		})
+		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "获取服务器详情失败", err)
 	}
 
 	if len(servers) == 0 {
-		return ctx.Response().Status(http.StatusNotFound).Json(http.Json{
-			"status":  false,
-			"message": "服务器不存在",
-		})
+		return utils.ErrorResponse(ctx, http.StatusNotFound, "服务器不存在")
 	}
 
 	server := servers[0]
