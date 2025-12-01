@@ -38,6 +38,9 @@ func (kernel Kernel) Migrations() []schema.Migration {
 		&migrations.M20250116000016CreateServerDiskIoTable{},
 		&migrations.M20250116000017RenameVirtualMemoryToSwap{},
 		&migrations.M20250116000018AddUptimeSecondsToServers{},
+		&migrations.M20250120000001MergeConfigsToSystemSettings{},
+		&migrations.M20250120000002CreateServerGroupsTable{},
+		&migrations.M20250120000003AddBillingFieldsToServers{},
 	}
 }
 

@@ -3,6 +3,8 @@ package seeders
 import (
 	"time"
 
+	"goravel/app/repositories"
+
 	"github.com/goravel/framework/facades"
 )
 
@@ -101,6 +103,8 @@ func (s *SystemSettingsSeeder) Run() error {
 	// 获取当前Unix时间戳
 	now := time.Now().Unix()
 
+	settingRepo := repositories.GetSystemSettingRepository()
+
 	for _, setting := range adminSettings {
 		// 添加时间戳字段
 		setting["created_at"] = now
@@ -111,6 +115,26 @@ func (s *SystemSettingsSeeder) Run() error {
 			return err
 		}
 	}
+
+	// 添加 JSON 格式的配置（用于向后兼容和统一管理）
+	// guest_access_config
+	guestAccessConfig := map[string]interface{}{
+		"allow_guest":         false,
+		"enable_password":     true,
+		"guest_password":      "$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi",
+		"hide_sensitive_info": true,
+	}
+	_ = settingRepo.SetJSON("guest_access_config", guestAccessConfig)
+
+	// permission_settings
+	permissionSettings := map[string]interface{}{
+		"session_timeout":    3600,
+		"max_login_attempts": 5,
+		"lockout_duration":   900,
+		"jwt_secret":         "cloudsentinel-secret-key-change-in-production",
+		"jwt_expiration":     86400,
+	}
+	_ = settingRepo.SetJSON("permission_settings", permissionSettings)
 
 	return nil
 }

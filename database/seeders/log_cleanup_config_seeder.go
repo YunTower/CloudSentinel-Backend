@@ -1,9 +1,7 @@
 package seeders
 
 import (
-	"time"
-
-	"github.com/goravel/framework/facades"
+	"goravel/app/repositories"
 )
 
 type LogCleanupConfigSeeder struct {
@@ -16,13 +14,16 @@ func (s *LogCleanupConfigSeeder) Signature() string {
 
 // Run executes the seeder logic.
 func (s *LogCleanupConfigSeeder) Run() error {
-	// 先清空表，避免重复插入
-	facades.Orm().Query().Table("log_cleanup_config").Delete()
+	settingRepo := repositories.GetSystemSettingRepository()
 
-	// 获取当前Unix时间戳
-	now := time.Now().Unix()
+	// 检查是否已存在配置
+	_, err := settingRepo.GetByKey("log_cleanup_config")
+	if err == nil {
+		// 配置已存在，跳过
+		return nil
+	}
 
-	// 插入默认日志清理配置
+	// 插入默认日志清理配置（数组格式）
 	cleanupConfigs := []map[string]interface{}{
 		{
 			"log_type":              "server_metrics",
@@ -30,8 +31,6 @@ func (s *LogCleanupConfigSeeder) Run() error {
 			"keep_days":             30,
 			"enabled":               true,
 			"last_cleanup_time":     nil,
-			"created_at":            now,
-			"updated_at":            now,
 		},
 		{
 			"log_type":              "server_memory_history",
@@ -39,8 +38,6 @@ func (s *LogCleanupConfigSeeder) Run() error {
 			"keep_days":             30,
 			"enabled":               true,
 			"last_cleanup_time":     nil,
-			"created_at":            now,
-			"updated_at":            now,
 		},
 		{
 			"log_type":              "server_swap",
@@ -48,8 +45,6 @@ func (s *LogCleanupConfigSeeder) Run() error {
 			"keep_days":             30,
 			"enabled":               true,
 			"last_cleanup_time":     nil,
-			"created_at":            now,
-			"updated_at":            now,
 		},
 		{
 			"log_type":              "server_network_connections",
@@ -57,8 +52,6 @@ func (s *LogCleanupConfigSeeder) Run() error {
 			"keep_days":             30,
 			"enabled":               true,
 			"last_cleanup_time":     nil,
-			"created_at":            now,
-			"updated_at":            now,
 		},
 		{
 			"log_type":              "server_network_speed",
@@ -66,8 +59,6 @@ func (s *LogCleanupConfigSeeder) Run() error {
 			"keep_days":             30,
 			"enabled":               true,
 			"last_cleanup_time":     nil,
-			"created_at":            now,
-			"updated_at":            now,
 		},
 		{
 			"log_type":              "server_cpus",
@@ -75,8 +66,6 @@ func (s *LogCleanupConfigSeeder) Run() error {
 			"keep_days":             30,
 			"enabled":               true,
 			"last_cleanup_time":     nil,
-			"created_at":            now,
-			"updated_at":            now,
 		},
 		{
 			"log_type":              "alerts",
@@ -84,8 +73,6 @@ func (s *LogCleanupConfigSeeder) Run() error {
 			"keep_days":             90,
 			"enabled":               true,
 			"last_cleanup_time":     nil,
-			"created_at":            now,
-			"updated_at":            now,
 		},
 		{
 			"log_type":              "service_monitor_alerts",
@@ -93,8 +80,6 @@ func (s *LogCleanupConfigSeeder) Run() error {
 			"keep_days":             90,
 			"enabled":               true,
 			"last_cleanup_time":     nil,
-			"created_at":            now,
-			"updated_at":            now,
 		},
 		{
 			"log_type":              "audit_logs",
@@ -102,17 +87,8 @@ func (s *LogCleanupConfigSeeder) Run() error {
 			"keep_days":             180,
 			"enabled":               true,
 			"last_cleanup_time":     nil,
-			"created_at":            now,
-			"updated_at":            now,
 		},
 	}
 
-	for _, config := range cleanupConfigs {
-		err := facades.Orm().Query().Table("log_cleanup_config").Create(config)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return settingRepo.SetJSON("log_cleanup_config", cleanupConfigs)
 }

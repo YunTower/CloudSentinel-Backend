@@ -1,9 +1,7 @@
 package seeders
 
 import (
-	"time"
-
-	"github.com/goravel/framework/facades"
+	"goravel/app/repositories"
 )
 
 type TrafficResetConfigSeeder struct {
@@ -16,20 +14,20 @@ func (s *TrafficResetConfigSeeder) Signature() string {
 
 // Run executes the seeder logic.
 func (s *TrafficResetConfigSeeder) Run() error {
-	// 先清空表，避免重复插入
-	facades.Orm().Query().Table("traffic_reset_config").Delete()
+	settingRepo := repositories.GetSystemSettingRepository()
 
-	// 获取当前Unix时间戳
-	now := time.Now().Unix()
+	// 检查是否已存在配置
+	_, err := settingRepo.GetByKey("traffic_reset_config")
+	if err == nil {
+		// 配置已存在，跳过
+		return nil
+	}
 
 	// 插入流量重置配置（默认每月1日0点重置）
-	err := facades.Orm().Query().Table("traffic_reset_config").Create(map[string]interface{}{
+	trafficData := map[string]interface{}{
 		"reset_day":  1,
 		"reset_hour": 0,
-		"created_at": now,
-		"updated_at": now,
-	})
+	}
 
-	return err
+	return settingRepo.SetJSON("traffic_reset_config", trafficData)
 }
-
