@@ -7,11 +7,13 @@ var (
 	serverRepoOnce            sync.Once
 	serverMetricRepoOnce      sync.Once
 	alertNotificationRepoOnce sync.Once
+	serverGroupRepoOnce       sync.Once
 
 	systemSettingRepoInstance     *SystemSettingRepository
 	serverRepoInstance            *ServerRepository
 	serverMetricRepoInstance      *ServerMetricRepository
 	alertNotificationRepoInstance *AlertNotificationRepository
+	serverGroupRepoInstance       *ServerGroupRepository
 )
 
 // GetSystemSettingRepository 获取系统设置 Repository 单例
@@ -46,3 +48,10 @@ func GetAlertNotificationRepository() *AlertNotificationRepository {
 	return alertNotificationRepoInstance
 }
 
+// GetServerGroupRepository 获取服务器分组 Repository 单例
+func GetServerGroupRepository() *ServerGroupRepository {
+	serverGroupRepoOnce.Do(func() {
+		serverGroupRepoInstance = &ServerGroupRepository{}
+	})
+	return serverGroupRepoInstance
+}

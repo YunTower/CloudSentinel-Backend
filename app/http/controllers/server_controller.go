@@ -31,11 +31,21 @@ func NewServerController() *ServerController {
 // CreateServer 创建服务器
 func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 	type CreateServerRequest struct {
-		Name     string `json:"name" form:"name"`
-		IP       string `json:"ip" form:"ip"`
-		Port     int    `json:"port" form:"port"`
-		Location string `json:"location" form:"location"`
-		OS       string `json:"os" form:"os"`
+		Name                   string   `json:"name" form:"name"`
+		IP                     string   `json:"ip" form:"ip"`
+		Port                   int      `json:"port" form:"port"`
+		Location               string   `json:"location" form:"location"`
+		OS                     string   `json:"os" form:"os"`
+		GroupID                *uint    `json:"group_id" form:"group_id"`
+		BillingCycle           string   `json:"billing_cycle" form:"billing_cycle"`
+		CustomCycleDays        *int     `json:"custom_cycle_days" form:"custom_cycle_days"`
+		Price                  *float64 `json:"price" form:"price"`
+		ExpireTime             *string  `json:"expire_time" form:"expire_time"`
+		BandwidthMbps          int      `json:"bandwidth_mbps" form:"bandwidth_mbps"`
+		TrafficLimitType       string   `json:"traffic_limit_type" form:"traffic_limit_type"`
+		TrafficLimitBytes      int64    `json:"traffic_limit_bytes" form:"traffic_limit_bytes"`
+		TrafficResetCycle      string   `json:"traffic_reset_cycle" form:"traffic_reset_cycle"`
+		TrafficCustomCycleDays *int     `json:"traffic_custom_cycle_days" form:"traffic_custom_cycle_days"`
 	}
 
 	var req CreateServerRequest
@@ -64,16 +74,38 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 	// 生成agent_key
 	agentKey := uuid.New().String()
 
+	// 解析到期时间
+	var expireTime *time.Time
+	if req.ExpireTime != nil && *req.ExpireTime != "" {
+		parsed, err := time.Parse("2006-01-02 15:04:05", *req.ExpireTime)
+		if err != nil {
+			parsed, err = time.Parse("2006-01-02", *req.ExpireTime)
+		}
+		if err == nil {
+			expireTime = &parsed
+		}
+	}
+
 	// 创建服务器模型
 	server := &models.Server{
-		ID:        serverID,
-		Name:      req.Name,
-		IP:        req.IP,
-		Status:    "offline",
-		AgentKey:  agentKey,
-		Cores:     1,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		ID:                     serverID,
+		Name:                   req.Name,
+		IP:                     req.IP,
+		Status:                 "offline",
+		AgentKey:               agentKey,
+		Cores:                  1,
+		GroupID:                req.GroupID,
+		BillingCycle:           req.BillingCycle,
+		CustomCycleDays:        req.CustomCycleDays,
+		Price:                  req.Price,
+		ExpireTime:             expireTime,
+		BandwidthMbps:          req.BandwidthMbps,
+		TrafficLimitType:       req.TrafficLimitType,
+		TrafficLimitBytes:      req.TrafficLimitBytes,
+		TrafficResetCycle:      req.TrafficResetCycle,
+		TrafficCustomCycleDays: req.TrafficCustomCycleDays,
+		CreatedAt:              time.Now(),
+		UpdatedAt:              time.Now(),
 	}
 
 	serverRepo := repositories.GetServerRepository()
@@ -104,6 +136,16 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 		userType = "guest" // 默认为游客
 	}
 
+	// 获取分组筛选参数
+	groupIDStr := ctx.Request().Query("group_id")
+	var groupID *uint
+	if groupIDStr != "" {
+		if id, err := strconv.ParseUint(groupIDStr, 10, 32); err == nil {
+			uid := uint(id)
+			groupID = &uid
+		}
+	}
+
 	settingRepo := repositories.GetSystemSettingRepository()
 	serverRepo := repositories.GetServerRepository()
 	metricRepo := repositories.GetServerMetricRepository()
@@ -116,8 +158,14 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 	// 判断是否是管理员
 	isAdmin := userType == "admin"
 
-	// 获取所有服务器
-	allServers, err := serverRepo.GetAll()
+	// 获取服务器列表（支持按分组筛选）
+	var allServers []*models.Server
+	var err error
+	if groupID != nil {
+		allServers, err = serverRepo.GetByGroupID(*groupID)
+	} else {
+		allServers, err = serverRepo.GetAll()
+	}
 	if err != nil {
 		facades.Log().Errorf("获取服务器列表失败: %v", err)
 		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "获取服务器列表失败", err)
@@ -154,6 +202,46 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 			"cores":        server.Cores,
 			"created_at":   server.CreatedAt,
 			"updated_at":   server.UpdatedAt,
+		}
+
+		// 添加分组和付费信息
+		if server.GroupID != nil {
+			serverData["group_id"] = *server.GroupID
+			if server.ServerGroup != nil {
+				serverData["group"] = map[string]interface{}{
+					"id":          server.ServerGroup.ID,
+					"name":        server.ServerGroup.Name,
+					"description": server.ServerGroup.Description,
+					"color":       server.ServerGroup.Color,
+				}
+			}
+		}
+		if server.BillingCycle != "" {
+			serverData["billing_cycle"] = server.BillingCycle
+		}
+		if server.CustomCycleDays != nil {
+			serverData["custom_cycle_days"] = *server.CustomCycleDays
+		}
+		if server.Price != nil {
+			serverData["price"] = *server.Price
+		}
+		if server.ExpireTime != nil {
+			serverData["expire_time"] = server.ExpireTime.Format("2006-01-02 15:04:05")
+		}
+		if server.BandwidthMbps > 0 {
+			serverData["bandwidth_mbps"] = server.BandwidthMbps
+		}
+		if server.TrafficLimitType != "" {
+			serverData["traffic_limit_type"] = server.TrafficLimitType
+		}
+		if server.TrafficLimitBytes > 0 {
+			serverData["traffic_limit_bytes"] = server.TrafficLimitBytes
+		}
+		if server.TrafficResetCycle != "" {
+			serverData["traffic_reset_cycle"] = server.TrafficResetCycle
+		}
+		if server.TrafficCustomCycleDays != nil {
+			serverData["traffic_custom_cycle_days"] = *server.TrafficCustomCycleDays
 		}
 
 		// 计算运行时间
@@ -243,6 +331,46 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 		"agent_key":        server.AgentKey,
 		"created_at":       server.CreatedAt,
 		"updated_at":       server.UpdatedAt,
+	}
+
+	// 添加分组和付费信息
+	if server.GroupID != nil {
+		serverData["group_id"] = *server.GroupID
+		if server.ServerGroup != nil {
+			serverData["group"] = map[string]interface{}{
+				"id":          server.ServerGroup.ID,
+				"name":        server.ServerGroup.Name,
+				"description": server.ServerGroup.Description,
+				"color":       server.ServerGroup.Color,
+			}
+		}
+	}
+	if server.BillingCycle != "" {
+		serverData["billing_cycle"] = server.BillingCycle
+	}
+	if server.CustomCycleDays != nil {
+		serverData["custom_cycle_days"] = *server.CustomCycleDays
+	}
+	if server.Price != nil {
+		serverData["price"] = *server.Price
+	}
+	if server.ExpireTime != nil {
+		serverData["expire_time"] = server.ExpireTime.Format("2006-01-02 15:04:05")
+	}
+	if server.BandwidthMbps > 0 {
+		serverData["bandwidth_mbps"] = server.BandwidthMbps
+	}
+	if server.TrafficLimitType != "" {
+		serverData["traffic_limit_type"] = server.TrafficLimitType
+	}
+	if server.TrafficLimitBytes > 0 {
+		serverData["traffic_limit_bytes"] = server.TrafficLimitBytes
+	}
+	if server.TrafficResetCycle != "" {
+		serverData["traffic_reset_cycle"] = server.TrafficResetCycle
+	}
+	if server.TrafficCustomCycleDays != nil {
+		serverData["traffic_custom_cycle_days"] = *server.TrafficCustomCycleDays
 	}
 
 	// 计算运行时间
@@ -722,11 +850,21 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 	}
 
 	type UpdateServerRequest struct {
-		Name     string `json:"name" form:"name"`
-		IP       string `json:"ip" form:"ip"`
-		Port     int    `json:"port" form:"port"`
-		Location string `json:"location" form:"location"`
-		OS       string `json:"os" form:"os"`
+		Name                   string   `json:"name" form:"name"`
+		IP                     string   `json:"ip" form:"ip"`
+		Port                   int      `json:"port" form:"port"`
+		Location               string   `json:"location" form:"location"`
+		OS                     string   `json:"os" form:"os"`
+		GroupID                *uint    `json:"group_id" form:"group_id"`
+		BillingCycle           string   `json:"billing_cycle" form:"billing_cycle"`
+		CustomCycleDays        *int     `json:"custom_cycle_days" form:"custom_cycle_days"`
+		Price                  *float64 `json:"price" form:"price"`
+		ExpireTime             *string  `json:"expire_time" form:"expire_time"`
+		BandwidthMbps          int      `json:"bandwidth_mbps" form:"bandwidth_mbps"`
+		TrafficLimitType       string   `json:"traffic_limit_type" form:"traffic_limit_type"`
+		TrafficLimitBytes      int64    `json:"traffic_limit_bytes" form:"traffic_limit_bytes"`
+		TrafficResetCycle      string   `json:"traffic_reset_cycle" form:"traffic_reset_cycle"`
+		TrafficCustomCycleDays *int     `json:"traffic_custom_cycle_days" form:"traffic_custom_cycle_days"`
 	}
 
 	var req UpdateServerRequest
@@ -757,6 +895,43 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 	}
 	if req.OS != "" {
 		updateData["os"] = req.OS
+	}
+	// 付费和分组相关字段
+	if req.GroupID != nil {
+		updateData["group_id"] = *req.GroupID
+	}
+	if req.BillingCycle != "" {
+		updateData["billing_cycle"] = req.BillingCycle
+	}
+	if req.CustomCycleDays != nil {
+		updateData["custom_cycle_days"] = *req.CustomCycleDays
+	}
+	if req.Price != nil {
+		updateData["price"] = *req.Price
+	}
+	if req.ExpireTime != nil && *req.ExpireTime != "" {
+		parsed, err := time.Parse("2006-01-02 15:04:05", *req.ExpireTime)
+		if err != nil {
+			parsed, err = time.Parse("2006-01-02", *req.ExpireTime)
+		}
+		if err == nil {
+			updateData["expire_time"] = parsed
+		}
+	}
+	if req.BandwidthMbps > 0 {
+		updateData["bandwidth_mbps"] = req.BandwidthMbps
+	}
+	if req.TrafficLimitType != "" {
+		updateData["traffic_limit_type"] = req.TrafficLimitType
+	}
+	if req.TrafficLimitBytes > 0 {
+		updateData["traffic_limit_bytes"] = req.TrafficLimitBytes
+	}
+	if req.TrafficResetCycle != "" {
+		updateData["traffic_reset_cycle"] = req.TrafficResetCycle
+	}
+	if req.TrafficCustomCycleDays != nil {
+		updateData["traffic_custom_cycle_days"] = *req.TrafficCustomCycleDays
 	}
 	updateData["updated_at"] = time.Now()
 

@@ -3,6 +3,8 @@ package services
 import (
 	"time"
 
+	"goravel/app/repositories"
+
 	"github.com/goravel/framework/facades"
 )
 
@@ -47,11 +49,10 @@ func (s *CleanupService) Stop() {
 func (s *CleanupService) CleanupOldData() {
 	facades.Log().Info("开始清理旧数据...")
 
-	// 获取所有清理配置
+	// 从 system_settings 获取清理配置
+	settingRepo := repositories.GetSystemSettingRepository()
 	var configs []map[string]interface{}
-	err := facades.Orm().Query().Table("log_cleanup_config").
-		Where("enabled", 1).
-		Get(&configs)
+	err := settingRepo.GetJSON("log_cleanup_config", &configs)
 
 	if err != nil {
 		facades.Log().Errorf("获取清理配置失败: %v", err)
@@ -63,19 +64,56 @@ func (s *CleanupService) CleanupOldData() {
 		return
 	}
 
+	// 表名映射：log_type -> 表名
+	tableNameMap := map[string]string{
+		"server_metrics":             "server_metrics",
+		"server_memory_history":      "server_memory_history",
+		"server_swap":                "server_swap",
+		"server_network_connections": "server_network_connections",
+		"server_network_speed":       "server_network_speed",
+		"server_cpus":                "server_cpus",
+		"alerts":                     "alerts",
+		"service_monitor_alerts":     "service_monitor_alerts",
+		"audit_logs":                 "audit_logs",
+	}
+
 	for _, config := range configs {
-		tableName, ok := config["table_name"].(string)
+		// 检查是否启用
+		enabled, ok := config["enabled"].(bool)
+		if !ok {
+			// 尝试从数字转换
+			if enabledNum, ok := config["enabled"].(float64); ok {
+				enabled = enabledNum == 1
+			} else {
+				continue
+			}
+		}
+		if !enabled {
+			continue
+		}
+
+		logType, ok := config["log_type"].(string)
 		if !ok {
 			continue
 		}
 
-		retentionDays, ok := config["retention_days"].(int64)
-		if !ok {
+		tableName, exists := tableNameMap[logType]
+		if !exists {
+			continue
+		}
+
+		// 获取保留天数
+		var keepDays int
+		if keepDaysFloat, ok := config["keep_days"].(float64); ok {
+			keepDays = int(keepDaysFloat)
+		} else if keepDaysInt, ok := config["keep_days"].(int); ok {
+			keepDays = keepDaysInt
+		} else {
 			continue
 		}
 
 		// 计算截止时间
-		cutoffTime := time.Now().AddDate(0, 0, -int(retentionDays))
+		cutoffTime := time.Now().AddDate(0, 0, -keepDays)
 		cutoffTimestamp := cutoffTime.Unix()
 
 		// 删除旧数据
@@ -90,7 +128,7 @@ func (s *CleanupService) CleanupOldData() {
 
 		rowsAffected := result.RowsAffected
 		if rowsAffected > 0 {
-			facades.Log().Infof("已清理表 %s 中 %d 条超过 %d 天的记录", tableName, rowsAffected, retentionDays)
+			facades.Log().Infof("已清理表 %s 中 %d 条超过 %d 天的记录", tableName, rowsAffected, keepDays)
 		}
 	}
 
