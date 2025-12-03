@@ -13,7 +13,7 @@ import (
 	"github.com/goravel/framework/queue"
 	"github.com/goravel/framework/route"
 
-	// "github.com/goravel/framework/schedule"
+	"github.com/goravel/framework/schedule"
 	"github.com/goravel/framework/support/carbon"
 	"github.com/goravel/framework/validation"
 	"github.com/goravel/gin"
@@ -78,7 +78,7 @@ func init() {
 			&cache.ServiceProvider{},
 			&http.ServiceProvider{},
 			&route.ServiceProvider{},
-			//&schedule.ServiceProvider{},
+			&schedule.ServiceProvider{},
 			//&event.ServiceProvider{},
 			&queue.ServiceProvider{},
 			//&grpc.ServiceProvider{},

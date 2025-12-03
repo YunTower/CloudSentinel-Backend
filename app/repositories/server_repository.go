@@ -27,7 +27,10 @@ func (r *ServerRepository) GetByID(id string) (*models.Server, error) {
 // GetAll 获取所有服务器
 func (r *ServerRepository) GetAll() ([]*models.Server, error) {
 	var servers []*models.Server
-	err := facades.Orm().Query().OrderBy("created_at", "desc").Get(&servers)
+	err := facades.Orm().Query().
+		With("ServerGroup").
+		OrderBy("created_at", "desc").
+		Get(&servers)
 	if err != nil {
 		return nil, err
 	}
@@ -75,6 +78,7 @@ func (r *ServerRepository) GetWithDisks(serverIDs []string) ([]*models.Server, e
 
 	err := facades.Orm().Query().
 		WhereIn("id", stringsToInterfaceSlice(serverIDs)).
+		With("ServerGroup").
 		With("ServerDisks").
 		Get(&servers)
 
@@ -129,6 +133,7 @@ func (r *ServerRepository) GetByIDWithRelations(id string) (*models.Server, erro
 	var server models.Server
 	err := facades.Orm().Query().
 		Where("id", id).
+		With("ServerGroup").
 		With("ServerMetrics").
 		With("ServerDisks").
 		With("ServerMemoryHistory").
@@ -139,4 +144,32 @@ func (r *ServerRepository) GetByIDWithRelations(id string) (*models.Server, erro
 		return nil, err
 	}
 	return &server, nil
+}
+
+// GetByGroupID 根据分组ID获取服务器列表
+func (r *ServerRepository) GetByGroupID(groupID uint) ([]*models.Server, error) {
+	var servers []*models.Server
+	err := facades.Orm().Query().
+		Where("group_id", groupID).
+		With("ServerGroup").
+		OrderBy("created_at", "desc").
+		Get(&servers)
+	if err != nil {
+		return nil, err
+	}
+	return servers, nil
+}
+
+// GetWithoutGroup 获取未分组的服务器列表
+func (r *ServerRepository) GetWithoutGroup() ([]*models.Server, error) {
+	var servers []*models.Server
+	err := facades.Orm().Query().
+		Where("group_id", nil).
+		With("ServerGroup").
+		OrderBy("created_at", "desc").
+		Get(&servers)
+	if err != nil {
+		return nil, err
+	}
+	return servers, nil
 }

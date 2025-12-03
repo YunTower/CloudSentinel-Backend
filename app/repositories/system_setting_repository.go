@@ -109,3 +109,38 @@ func (r *SystemSettingRepository) GetJSON(key string, target interface{}) error 
 	}
 	return json.Unmarshal([]byte(setting.GetValue()), target)
 }
+
+// SetJSON 设置 JSON 值
+func (r *SystemSettingRepository) SetJSON(key string, value interface{}) error {
+	jsonData, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return r.SetValue(key, string(jsonData))
+}
+
+// GetJSONWithDefault 获取 JSON 值，如果不存在则返回默认值
+func (r *SystemSettingRepository) GetJSONWithDefault(key string, target interface{}, defaultValue interface{}) error {
+	setting, err := r.GetByKey(key)
+	if err != nil || setting == nil {
+		// 如果不存在，使用默认值
+		if defaultValue != nil {
+			jsonData, err := json.Marshal(defaultValue)
+			if err == nil {
+				return json.Unmarshal(jsonData, target)
+			}
+		}
+		return err
+	}
+	if setting.GetValue() == "" {
+		// 如果值为空，使用默认值
+		if defaultValue != nil {
+			jsonData, err := json.Marshal(defaultValue)
+			if err == nil {
+				return json.Unmarshal(jsonData, target)
+			}
+		}
+		return nil
+	}
+	return json.Unmarshal([]byte(setting.GetValue()), target)
+}

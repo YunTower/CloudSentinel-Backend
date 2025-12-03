@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"goravel/app/jobs"
+	"goravel/app/models"
 	"goravel/app/repositories"
 	"goravel/app/utils/notification"
 	"html/template"
@@ -44,8 +45,9 @@ const (
 
 // CheckAndAlert 检查指标并触发告警
 func (s *AlertService) CheckAndAlert(serverID string, metrics map[string]interface{}) error {
-	// 获取告警规则
-	rules, err := s.getRules()
+	// 获取告警规则（使用服务器特定规则）
+	serverIDPtr := &serverID
+	rules, err := s.GetServerRules(serverIDPtr)
 	if err != nil {
 		facades.Log().Warningf("获取告警规则失败: %v", err)
 		return err
@@ -82,51 +84,125 @@ type Rules struct {
 	Disk   Rule `json:"disk"`
 }
 
-// getRules 获取所有告警规则
+// getRules 获取所有告警规则（兼容旧接口，使用全局规则）
 func (s *AlertService) getRules() (*Rules, error) {
-	rules := &Rules{
+	return s.GetServerRules(nil)
+}
+
+// GetServerRules 获取指定服务器的告警规则（合并逻辑：Server > Global > Default）
+func (s *AlertService) GetServerRules(serverID *string) (*Rules, error) {
+	// 默认规则
+	defaultRules := &Rules{
 		CPU:    Rule{Enabled: true, Warning: 80, Critical: 90},
 		Memory: Rule{Enabled: true, Warning: 85, Critical: 95},
 		Disk:   Rule{Enabled: true, Warning: 85, Critical: 95},
 	}
 
-	// 批量获取所有告警规则
-	settingRepo := repositories.GetSystemSettingRepository()
-	keys := []string{"alert_rule_cpu", "alert_rule_memory", "alert_rule_disk"}
-	settings, err := settingRepo.GetByKeys(keys)
+	ruleRepo := repositories.GetServerAlertRuleRepository()
+	ruleTypes := []string{"cpu", "memory", "disk"}
 
-	if err != nil {
-		return rules, nil // 使用默认规则
-	}
-
-	// 解析规则
-	for key, setting := range settings {
-		if setting == nil {
-			continue
-		}
-		ruleJson := setting.GetValue()
-
-		if ruleJson == "" {
-			continue
-		}
-
-		var rule Rule
-		if err := json.Unmarshal([]byte(ruleJson), &rule); err != nil {
-			continue
-		}
-
-		// 根据key设置对应的规则
-		switch key {
-		case "alert_rule_cpu":
-			rules.CPU = rule
-		case "alert_rule_memory":
-			rules.Memory = rule
-		case "alert_rule_disk":
-			rules.Disk = rule
+	// 先获取全局规则
+	globalRules := make(map[string]*Rule)
+	globalRuleList, err := ruleRepo.GetGlobalRules()
+	if err == nil {
+		for _, ruleRecord := range globalRuleList {
+			var rule Rule
+			if err := json.Unmarshal([]byte(ruleRecord.Config), &rule); err == nil {
+				globalRules[ruleRecord.RuleType] = &rule
+			}
 		}
 	}
 
-	return rules, nil
+	// 如果有指定服务器ID，获取服务器特定规则
+	serverRules := make(map[string]*Rule)
+	if serverID != nil {
+		serverRuleList, err := ruleRepo.GetByServerID(*serverID)
+		if err == nil {
+			for _, ruleRecord := range serverRuleList {
+				var rule Rule
+				if err := json.Unmarshal([]byte(ruleRecord.Config), &rule); err == nil {
+					serverRules[ruleRecord.RuleType] = &rule
+				}
+			}
+		}
+	}
+
+	// 合并规则：服务器规则 > 全局规则 > 默认规则
+	result := &Rules{}
+	for _, ruleType := range ruleTypes {
+		var rule *Rule
+		if serverID != nil {
+			// 优先使用服务器特定规则
+			if r, ok := serverRules[ruleType]; ok {
+				rule = r
+			} else if r, ok := globalRules[ruleType]; ok {
+				rule = r
+			} else {
+				// 使用默认规则
+				switch ruleType {
+				case "cpu":
+					rule = &defaultRules.CPU
+				case "memory":
+					rule = &defaultRules.Memory
+				case "disk":
+					rule = &defaultRules.Disk
+				}
+			}
+		} else {
+			// 只使用全局规则
+			if r, ok := globalRules[ruleType]; ok {
+				rule = r
+			} else {
+				// 使用默认规则
+				switch ruleType {
+				case "cpu":
+					rule = &defaultRules.CPU
+				case "memory":
+					rule = &defaultRules.Memory
+				case "disk":
+					rule = &defaultRules.Disk
+				}
+			}
+		}
+
+		// 设置结果
+		switch ruleType {
+		case "cpu":
+			result.CPU = *rule
+		case "memory":
+			result.Memory = *rule
+		case "disk":
+			result.Disk = *rule
+		}
+	}
+
+	return result, nil
+}
+
+// SaveServerRules 保存服务器告警规则（serverID 为 nil 时保存全局规则）
+func (s *AlertService) SaveServerRules(serverID *string, rules map[string]Rule) error {
+	ruleRepo := repositories.GetServerAlertRuleRepository()
+
+	for ruleType, rule := range rules {
+		ruleJson, err := json.Marshal(rule)
+		if err != nil {
+			facades.Log().Warningf("序列化告警规则失败 %s: %v", ruleType, err)
+			continue
+		}
+
+		ruleRecord := &models.ServerAlertRule{
+			ServerID: serverID,
+			RuleType: ruleType,
+			Config:   string(ruleJson),
+		}
+
+		if err := ruleRepo.CreateOrUpdate(ruleRecord); err != nil {
+			facades.Log().Warningf("保存告警规则失败 %s: %v", ruleType, err)
+			return err
+		}
+	}
+
+	return nil
 }
 
 // evaluateRule 评估单个规则
@@ -359,4 +435,253 @@ func (s *AlertService) getNotificationConfigs() (*notification.EmailConfig, *not
 	}
 
 	return emailConfig, webhookConfig, nil
+}
+
+// CheckBandwidth 检查带宽峰值告警
+func (s *AlertService) CheckBandwidth(serverID string, currentMbps float64) error {
+	serverIDPtr := &serverID
+	ruleRepo := repositories.GetServerAlertRuleRepository()
+
+	// 先尝试获取服务器特定规则
+	rule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "bandwidth")
+	if err != nil {
+		// 如果不存在，尝试获取全局规则
+		rule, err = ruleRepo.GetByServerIDAndType(nil, "bandwidth")
+		if err != nil {
+			// 没有配置规则，不检查
+			return nil
+		}
+	}
+
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(rule.Config), &config); err != nil {
+		return nil
+	}
+
+	enabled, _ := config["enabled"].(bool)
+	if !enabled {
+		return nil
+	}
+
+	threshold, ok := config["threshold"].(float64)
+	if !ok {
+		return nil
+	}
+
+	if currentMbps >= threshold {
+		// 触发告警
+		serverRepo := repositories.GetServerRepository()
+		server, err := serverRepo.GetByID(serverID)
+		serverName := serverID
+		serverIP := "未知"
+		if err == nil && server != nil {
+			serverName = server.Name
+			serverIP = server.IP
+		}
+
+		title := fmt.Sprintf("[告警] %s - 带宽峰值", serverName)
+		webhookMessage := fmt.Sprintf("🚨 带宽峰值告警\n\n服务器: %s (%s)\n当前带宽: %.2f Mbps\n阈值: %.2f Mbps\n触发时间: %s",
+			serverName, serverIP, currentMbps, threshold, time.Now().Format("2006-01-02 15:04:05"))
+
+		// 检查冷却期
+		cacheKey := fmt.Sprintf("alert_cooldown:%s:bandwidth", serverID)
+		if cooldown := facades.Cache().Get(cacheKey); cooldown != nil {
+			return nil
+		}
+		facades.Cache().Put(cacheKey, true, 2*time.Minute)
+
+		// 发送通知
+		emailConfig, webhookConfig, _ := s.getNotificationConfigs()
+		if emailConfig.Enabled {
+			configJson, _ := json.Marshal(emailConfig)
+			_ = facades.Queue().Job(&jobs.SendAlertJob{
+				Channel: "email",
+				Config:  string(configJson),
+				Subject: title,
+				Content: webhookMessage,
+			}).Dispatch()
+		}
+		if webhookConfig.Enabled {
+			configJson, _ := json.Marshal(webhookConfig)
+			_ = facades.Queue().Job(&jobs.SendAlertJob{
+				Channel: "webhook",
+				Config:  string(configJson),
+				Subject: title,
+				Content: webhookMessage,
+			}).Dispatch()
+		}
+	}
+
+	return nil
+}
+
+// CheckTraffic 检查流量耗尽告警
+func (s *AlertService) CheckTraffic(serverID string, usedBytes int64, limitBytes int64) error {
+	if limitBytes <= 0 {
+		// 无限制，不检查
+		return nil
+	}
+
+	serverIDPtr := &serverID
+	ruleRepo := repositories.GetServerAlertRuleRepository()
+
+	// 先尝试获取服务器特定规则
+	rule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "traffic")
+	if err != nil {
+		// 如果不存在，尝试获取全局规则
+		rule, err = ruleRepo.GetByServerIDAndType(nil, "traffic")
+		if err != nil {
+			// 没有配置规则，不检查
+			return nil
+		}
+	}
+
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(rule.Config), &config); err != nil {
+		return nil
+	}
+
+	enabled, _ := config["enabled"].(bool)
+	if !enabled {
+		return nil
+	}
+
+	thresholdPercent, ok := config["threshold_percent"].(float64)
+	if !ok {
+		return nil
+	}
+
+	usedPercent := float64(usedBytes) / float64(limitBytes) * 100
+	if usedPercent >= thresholdPercent {
+		// 触发告警
+		serverRepo := repositories.GetServerRepository()
+		server, err := serverRepo.GetByID(serverID)
+		serverName := serverID
+		serverIP := "未知"
+		if err == nil && server != nil {
+			serverName = server.Name
+			serverIP = server.IP
+		}
+
+		usedGB := float64(usedBytes) / (1024 * 1024 * 1024)
+		limitGB := float64(limitBytes) / (1024 * 1024 * 1024)
+
+		title := fmt.Sprintf("[告警] %s - 流量耗尽", serverName)
+		webhookMessage := fmt.Sprintf("🚨 流量耗尽告警\n\n服务器: %s (%s)\n已用流量: %.2f GB / %.2f GB (%.2f%%)\n阈值: %.2f%%\n触发时间: %s",
+			serverName, serverIP, usedGB, limitGB, usedPercent, thresholdPercent, time.Now().Format("2006-01-02 15:04:05"))
+
+		// 检查冷却期
+		cacheKey := fmt.Sprintf("alert_cooldown:%s:traffic", serverID)
+		if cooldown := facades.Cache().Get(cacheKey); cooldown != nil {
+			return nil
+		}
+		facades.Cache().Put(cacheKey, true, 2*time.Minute)
+
+		// 发送通知
+		emailConfig, webhookConfig, _ := s.getNotificationConfigs()
+		if emailConfig.Enabled {
+			configJson, _ := json.Marshal(emailConfig)
+			_ = facades.Queue().Job(&jobs.SendAlertJob{
+				Channel: "email",
+				Config:  string(configJson),
+				Subject: title,
+				Content: webhookMessage,
+			}).Dispatch()
+		}
+		if webhookConfig.Enabled {
+			configJson, _ := json.Marshal(webhookConfig)
+			_ = facades.Queue().Job(&jobs.SendAlertJob{
+				Channel: "webhook",
+				Config:  string(configJson),
+				Subject: title,
+				Content: webhookMessage,
+			}).Dispatch()
+		}
+	}
+
+	return nil
+}
+
+// CheckExpiration 检查服务器到期告警
+func (s *AlertService) CheckExpiration(serverID string) error {
+	serverRepo := repositories.GetServerRepository()
+	server, err := serverRepo.GetByID(serverID)
+	if err != nil || server == nil {
+		return nil
+	}
+
+	if server.ExpireTime == nil {
+		// 无到期时间，不检查
+		return nil
+	}
+
+	serverIDPtr := &serverID
+	ruleRepo := repositories.GetServerAlertRuleRepository()
+
+	// 先尝试获取服务器特定规则
+	rule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "expiration")
+	if err != nil {
+		// 如果不存在，尝试获取全局规则
+		rule, err = ruleRepo.GetByServerIDAndType(nil, "expiration")
+		if err != nil {
+			// 没有配置规则，不检查
+			return nil
+		}
+	}
+
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(rule.Config), &config); err != nil {
+		return nil
+	}
+
+	enabled, _ := config["enabled"].(bool)
+	if !enabled {
+		return nil
+	}
+
+	alertDays, ok := config["alert_days"].(float64)
+	if !ok {
+		return nil
+	}
+
+	now := time.Now()
+	expireTime := *server.ExpireTime
+	daysUntilExpire := expireTime.Sub(now).Hours() / 24
+
+	if daysUntilExpire <= alertDays && daysUntilExpire >= 0 {
+		// 触发告警
+		title := fmt.Sprintf("[告警] %s - 即将到期", server.Name)
+		webhookMessage := fmt.Sprintf("🚨 服务器到期提醒\n\n服务器: %s (%s)\n到期时间: %s\n剩余天数: %.0f 天\n触发时间: %s",
+			server.Name, server.IP, expireTime.Format("2006-01-02 15:04:05"), daysUntilExpire, now.Format("2006-01-02 15:04:05"))
+
+		// 检查冷却期（每天只发送一次）
+		cacheKey := fmt.Sprintf("alert_cooldown:%s:expiration", serverID)
+		if cooldown := facades.Cache().Get(cacheKey); cooldown != nil {
+			return nil
+		}
+		facades.Cache().Put(cacheKey, true, 24*time.Hour)
+
+		// 发送通知
+		emailConfig, webhookConfig, _ := s.getNotificationConfigs()
+		if emailConfig.Enabled {
+			configJson, _ := json.Marshal(emailConfig)
+			_ = facades.Queue().Job(&jobs.SendAlertJob{
+				Channel: "email",
+				Config:  string(configJson),
+				Subject: title,
+				Content: webhookMessage,
+			}).Dispatch()
+		}
+		if webhookConfig.Enabled {
+			configJson, _ := json.Marshal(webhookConfig)
+			_ = facades.Queue().Job(&jobs.SendAlertJob{
+				Channel: "webhook",
+				Config:  string(configJson),
+				Subject: title,
+				Content: webhookMessage,
+			}).Dispatch()
+		}
+	}
+
+	return nil
 }
