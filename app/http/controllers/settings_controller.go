@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"goravel/app/repositories"
+	"goravel/app/services"
 	"goravel/app/utils"
 	"goravel/app/utils/notification"
 	"strconv"
@@ -104,48 +105,19 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 }
 
 func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
-	settingRepo := repositories.GetSystemSettingRepository()
+	alertService := services.NewAlertService()
 	notificationRepo := repositories.GetAlertNotificationRepository()
 
-	fetchRule := func(metric string) map[string]any {
-		// 默认值
-		defaultRule := map[string]any{
-			"enabled":  false,
-			"warning":  80.0,
-			"critical": 90.0,
+	// 获取全局规则（serverID 为 nil）
+	rules, err := alertService.GetServerRules(nil)
+	if err != nil {
+		facades.Log().Warningf("获取告警规则失败: %v", err)
+		// 使用默认值
+		rules = &services.Rules{
+			CPU:    services.Rule{Enabled: true, Warning: 80, Critical: 90},
+			Memory: services.Rule{Enabled: true, Warning: 85, Critical: 95},
+			Disk:   services.Rule{Enabled: true, Warning: 85, Critical: 95},
 		}
-		if metric == "memory" || metric == "disk" {
-			defaultRule["warning"] = 85.0
-			defaultRule["critical"] = 95.0
-		}
-
-		key := fmt.Sprintf("alert_rule_%s", metric)
-		setting, err := settingRepo.GetByKey(key)
-		if err == nil && setting != nil {
-			var rule map[string]any
-			if err := json.Unmarshal([]byte(setting.GetValue()), &rule); err == nil {
-				// 确保所有字段都存在
-				if enabled, ok := rule["enabled"].(bool); ok {
-					defaultRule["enabled"] = enabled
-				}
-				if warning, ok := rule["warning"].(float64); ok {
-					defaultRule["warning"] = warning
-				} else if warningStr, ok := rule["warning"].(string); ok {
-					if w, err := strconv.ParseFloat(warningStr, 64); err == nil {
-						defaultRule["warning"] = w
-					}
-				}
-				if critical, ok := rule["critical"].(float64); ok {
-					defaultRule["critical"] = critical
-				} else if criticalStr, ok := rule["critical"].(string); ok {
-					if c, err := strconv.ParseFloat(criticalStr, 64); err == nil {
-						defaultRule["critical"] = c
-					}
-				}
-			}
-		}
-
-		return defaultRule
 	}
 
 	type notifyConfig struct {
@@ -166,9 +138,21 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 		return notifyConfig{Enabled: notification.Enabled, Config: cfg}
 	}
 
-	cpu := fetchRule("cpu")
-	memory := fetchRule("memory")
-	disk := fetchRule("disk")
+	cpu := map[string]any{
+		"enabled":  rules.CPU.Enabled,
+		"warning":  rules.CPU.Warning,
+		"critical": rules.CPU.Critical,
+	}
+	memory := map[string]any{
+		"enabled":  rules.Memory.Enabled,
+		"warning":  rules.Memory.Warning,
+		"critical": rules.Memory.Critical,
+	}
+	disk := map[string]any{
+		"enabled":  rules.Disk.Enabled,
+		"warning":  rules.Disk.Warning,
+		"critical": rules.Disk.Critical,
+	}
 
 	email := fetchNotify("email")
 	webhook := fetchNotify("webhook")
@@ -378,7 +362,6 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 }
 
 func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Response {
-	settingRepo := repositories.GetSystemSettingRepository()
 	notificationRepo := repositories.GetAlertNotificationRepository()
 
 	type rule struct {
@@ -392,30 +375,27 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 		critical, _ := strconv.ParseFloat(ctx.Request().Input("rules."+metric+".critical"), 64)
 		return rule{Enabled: enabled, Warning: warning, Critical: critical}
 	}
-	writeRule := func(metric string, rl rule) error {
-		// 将规则序列化为 JSON
-		ruleData := map[string]any{
-			"enabled":  rl.Enabled,
-			"warning":  rl.Warning,
-			"critical": rl.Critical,
-		}
-		ruleJson, err := json.Marshal(ruleData)
-		if err != nil {
-			return err
-		}
+	// 使用 AlertService 保存全局规则（serverID 为 nil）
+	alertService := services.NewAlertService()
+	rulesMap := make(map[string]services.Rule)
+	rulesMap["cpu"] = services.Rule{
+		Enabled:  readRule("cpu").Enabled,
+		Warning:  readRule("cpu").Warning,
+		Critical: readRule("cpu").Critical,
+	}
+	rulesMap["memory"] = services.Rule{
+		Enabled:  readRule("memory").Enabled,
+		Warning:  readRule("memory").Warning,
+		Critical: readRule("memory").Critical,
+	}
+	rulesMap["disk"] = services.Rule{
+		Enabled:  readRule("disk").Enabled,
+		Warning:  readRule("disk").Warning,
+		Critical: readRule("disk").Critical,
+	}
 
-		// 保存到 system_settings 表
-		key := fmt.Sprintf("alert_rule_%s", metric)
-		return settingRepo.SetValue(key, string(ruleJson))
-	}
-	if err := writeRule("cpu", readRule("cpu")); err != nil {
-		return utils.ErrorResponseWithError(ctx, 500, "更新CPU规则失败", err)
-	}
-	if err := writeRule("memory", readRule("memory")); err != nil {
-		return utils.ErrorResponseWithError(ctx, 500, "更新内存规则失败", err)
-	}
-	if err := writeRule("disk", readRule("disk")); err != nil {
-		return utils.ErrorResponseWithError(ctx, 500, "更新磁盘规则失败", err)
+	if err := alertService.SaveServerRules(nil, rulesMap); err != nil {
+		return utils.ErrorResponseWithError(ctx, 500, "更新告警规则失败", err)
 	}
 
 	emailEnabled := ctx.Request().Input("notifications.email.enabled") == "true"

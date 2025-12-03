@@ -34,11 +34,17 @@ func main() {
 		}
 	}()
 
+	// Start schedule by facades.Schedule
+	go facades.Schedule().Run()
+
 	// Listen for the OS signal
 	go func() {
 		<-quit
 		if err := facades.Route().Shutdown(); err != nil {
 			facades.Log().Errorf("Route Shutdown error: %v", err)
+		}
+		if err := facades.Schedule().Shutdown(); err != nil {
+			facades.Log().Errorf("Schedule Shutdown error: %v", err)
 		}
 
 		os.Exit(0)

@@ -456,6 +456,50 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 		serverData["agent_version"] = server.AgentVersion
 	}
 
+	// 获取告警规则
+	alertService := services.NewAlertService()
+	serverIDPtr := &serverID
+	rules, err := alertService.GetServerRules(serverIDPtr)
+	if err == nil {
+		alertRulesData := map[string]interface{}{
+			"cpu": map[string]interface{}{
+				"enabled":  rules.CPU.Enabled,
+				"warning":  rules.CPU.Warning,
+				"critical": rules.CPU.Critical,
+			},
+			"memory": map[string]interface{}{
+				"enabled":  rules.Memory.Enabled,
+				"warning":  rules.Memory.Warning,
+				"critical": rules.Memory.Critical,
+			},
+			"disk": map[string]interface{}{
+				"enabled":  rules.Disk.Enabled,
+				"warning":  rules.Disk.Warning,
+				"critical": rules.Disk.Critical,
+			},
+		}
+
+		// 获取其他类型的告警规则（bandwidth, traffic, expiration）
+		ruleRepo := repositories.GetServerAlertRuleRepository()
+		ruleTypes := []string{"bandwidth", "traffic", "expiration"}
+		for _, ruleType := range ruleTypes {
+			// 先尝试获取服务器特定规则
+			rule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, ruleType)
+			if err != nil {
+				// 如果不存在，尝试获取全局规则
+				rule, err = ruleRepo.GetByServerIDAndType(nil, ruleType)
+			}
+			if err == nil && rule != nil {
+				var ruleConfig map[string]interface{}
+				if err := json.Unmarshal([]byte(rule.Config), &ruleConfig); err == nil {
+					alertRulesData[ruleType] = ruleConfig
+				}
+			}
+		}
+
+		serverData["alert_rules"] = alertRulesData
+	}
+
 	return utils.SuccessResponse(ctx, "获取成功", serverData)
 }
 
@@ -849,22 +893,29 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 		})
 	}
 
+	type RuleInput struct {
+		Enabled  bool    `json:"enabled" form:"enabled"`
+		Warning  float64 `json:"warning" form:"warning"`
+		Critical float64 `json:"critical" form:"critical"`
+	}
+
 	type UpdateServerRequest struct {
-		Name                   string   `json:"name" form:"name"`
-		IP                     string   `json:"ip" form:"ip"`
-		Port                   int      `json:"port" form:"port"`
-		Location               string   `json:"location" form:"location"`
-		OS                     string   `json:"os" form:"os"`
-		GroupID                *uint    `json:"group_id" form:"group_id"`
-		BillingCycle           string   `json:"billing_cycle" form:"billing_cycle"`
-		CustomCycleDays        *int     `json:"custom_cycle_days" form:"custom_cycle_days"`
-		Price                  *float64 `json:"price" form:"price"`
-		ExpireTime             *string  `json:"expire_time" form:"expire_time"`
-		BandwidthMbps          int      `json:"bandwidth_mbps" form:"bandwidth_mbps"`
-		TrafficLimitType       string   `json:"traffic_limit_type" form:"traffic_limit_type"`
-		TrafficLimitBytes      int64    `json:"traffic_limit_bytes" form:"traffic_limit_bytes"`
-		TrafficResetCycle      string   `json:"traffic_reset_cycle" form:"traffic_reset_cycle"`
-		TrafficCustomCycleDays *int     `json:"traffic_custom_cycle_days" form:"traffic_custom_cycle_days"`
+		Name                   string                  `json:"name" form:"name"`
+		IP                     string                  `json:"ip" form:"ip"`
+		Port                   int                     `json:"port" form:"port"`
+		Location               string                  `json:"location" form:"location"`
+		OS                     string                  `json:"os" form:"os"`
+		GroupID                *uint                   `json:"group_id" form:"group_id"`
+		BillingCycle           string                  `json:"billing_cycle" form:"billing_cycle"`
+		CustomCycleDays        *int                    `json:"custom_cycle_days" form:"custom_cycle_days"`
+		Price                  *float64                `json:"price" form:"price"`
+		ExpireTime             *string                 `json:"expire_time" form:"expire_time"`
+		BandwidthMbps          int                     `json:"bandwidth_mbps" form:"bandwidth_mbps"`
+		TrafficLimitType       string                  `json:"traffic_limit_type" form:"traffic_limit_type"`
+		TrafficLimitBytes      int64                   `json:"traffic_limit_bytes" form:"traffic_limit_bytes"`
+		TrafficResetCycle      string                  `json:"traffic_reset_cycle" form:"traffic_reset_cycle"`
+		TrafficCustomCycleDays *int                    `json:"traffic_custom_cycle_days" form:"traffic_custom_cycle_days"`
+		AlertRules             *map[string]interface{} `json:"alert_rules" form:"alert_rules"`
 	}
 
 	var req UpdateServerRequest
@@ -939,6 +990,74 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 	if err := repositories.GetServerRepository().Update(serverID, updateData); err != nil {
 		facades.Log().Errorf("更新服务器失败: %v", err)
 		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "更新服务器失败", err)
+	}
+
+	// 处理告警规则
+	if req.AlertRules != nil {
+		alertService := services.NewAlertService()
+		serverIDPtr := &serverID
+		rules := make(map[string]services.Rule)
+
+		// 处理基础资源规则（cpu, memory, disk）
+		if cpuRule, ok := (*req.AlertRules)["cpu"].(map[string]interface{}); ok {
+			if enabled, ok := cpuRule["enabled"].(bool); ok {
+				warning, _ := cpuRule["warning"].(float64)
+				critical, _ := cpuRule["critical"].(float64)
+				rules["cpu"] = services.Rule{
+					Enabled:  enabled,
+					Warning:  warning,
+					Critical: critical,
+				}
+			}
+		}
+		if memoryRule, ok := (*req.AlertRules)["memory"].(map[string]interface{}); ok {
+			if enabled, ok := memoryRule["enabled"].(bool); ok {
+				warning, _ := memoryRule["warning"].(float64)
+				critical, _ := memoryRule["critical"].(float64)
+				rules["memory"] = services.Rule{
+					Enabled:  enabled,
+					Warning:  warning,
+					Critical: critical,
+				}
+			}
+		}
+		if diskRule, ok := (*req.AlertRules)["disk"].(map[string]interface{}); ok {
+			if enabled, ok := diskRule["enabled"].(bool); ok {
+				warning, _ := diskRule["warning"].(float64)
+				critical, _ := diskRule["critical"].(float64)
+				rules["disk"] = services.Rule{
+					Enabled:  enabled,
+					Warning:  warning,
+					Critical: critical,
+				}
+			}
+		}
+
+		// 保存基础资源规则
+		if len(rules) > 0 {
+			if err := alertService.SaveServerRules(serverIDPtr, rules); err != nil {
+				facades.Log().Warningf("保存告警规则失败: %v", err)
+			}
+		}
+
+		// 处理其他类型的告警规则（bandwidth, traffic, expiration）
+		ruleRepo := repositories.GetServerAlertRuleRepository()
+		ruleTypes := []string{"bandwidth", "traffic", "expiration"}
+		for _, ruleType := range ruleTypes {
+			if ruleData, ok := (*req.AlertRules)[ruleType].(map[string]interface{}); ok {
+				configJson, err := json.Marshal(ruleData)
+				if err == nil {
+					rule := &models.ServerAlertRule{
+						ServerID: serverIDPtr,
+						RuleType:  ruleType,
+						Config:    string(configJson),
+					}
+					if err := ruleRepo.CreateOrUpdate(rule); err != nil {
+						facades.Log().Warningf("保存告警规则 %s 失败: %v", ruleType, err)
+					}
+				}
+			}
+		}
 	}
 
 	facades.Log().Infof("成功更新服务器: %s", serverID)

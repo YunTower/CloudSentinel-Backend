@@ -398,6 +398,13 @@ func (j *saveMetricsJob) Execute() error {
 		facades.Log().Warningf("告警检查失败: %v", err)
 	}
 
+	// 检查带宽峰值告警
+	// 计算总带宽使用量（上传+下载）
+	totalBandwidthMbps := (networkUpload + networkDownload) / 1024 / 1024 * 8 // 转换为 Mbps
+	if err := alertService.CheckBandwidth(j.serverID, totalBandwidthMbps); err != nil {
+		facades.Log().Warningf("带宽告警检查失败: %v", err)
+	}
+
 	return nil
 }
 
@@ -589,6 +596,18 @@ func (j *saveNetworkInfoJob) Execute() error {
 			if err != nil {
 				facades.Log().Errorf("保存流量使用情况失败: %v", err)
 				return err
+			}
+
+			// 检查流量耗尽告警
+			serverRepo := repositories.GetServerRepository()
+			server, err := serverRepo.GetByID(j.serverID)
+			if err == nil && server != nil && server.TrafficLimitBytes > 0 {
+				// 计算总流量使用量（上传+下载）
+				totalUsedBytes := int64(uploadBytes) + int64(downloadBytes)
+				alertService := NewAlertService()
+				if err := alertService.CheckTraffic(j.serverID, totalUsedBytes, server.TrafficLimitBytes); err != nil {
+					facades.Log().Warningf("流量告警检查失败: %v", err)
+				}
 			}
 		}
 	}

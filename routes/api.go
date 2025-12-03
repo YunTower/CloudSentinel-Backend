@@ -16,6 +16,7 @@ func Api() {
 	wsController := controllers.NewWebSocketController()
 	serverController := controllers.NewServerController()
 	serverGroupController := controllers.NewServerGroupController()
+	serverAlertController := controllers.NewServerAlertController()
 	staticController := controllers.NewStaticController()
 
 	facades.Route().Prefix("api").Group(func(router route.Router) {
@@ -53,6 +54,8 @@ func Api() {
 			authRouter.Prefix("/servers").Delete("/:id", serverController.DeleteServer)
 			authRouter.Prefix("/servers").Post("/:id/restart", serverController.RestartServer)
 			authRouter.Prefix("/servers").Post("/:id/update-agent", serverController.UpdateAgent)
+			authRouter.Prefix("/servers").Get("/:id/alert-rules", serverAlertController.GetServerAlertRules)
+			authRouter.Prefix("/servers").Post("/:id/alert-rules", serverAlertController.UpdateServerAlertRules)
 
 			// 服务器分组管理
 			authRouter.Prefix("/servers/groups").Get("", serverGroupController.GetGroups)
