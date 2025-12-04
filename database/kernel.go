@@ -42,6 +42,8 @@ func (kernel Kernel) Migrations() []schema.Migration {
 		&migrations.M20250120000002CreateServerGroupsTable{},
 		&migrations.M20250120000003AddBillingFieldsToServers{},
 		&migrations.M20250125000001CreateServerAlertRulesTable{},
+		&migrations.M20250126000001CreateServerNotificationChannelsTable{},
+		&migrations.M20250127000001RemoveGlobalAlertRules{},
 	}
 }
 
