@@ -483,12 +483,8 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 		ruleRepo := repositories.GetServerAlertRuleRepository()
 		ruleTypes := []string{"bandwidth", "traffic", "expiration"}
 		for _, ruleType := range ruleTypes {
-			// 先尝试获取服务器特定规则
+			// 获取服务器特定规则
 			rule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, ruleType)
-			if err != nil {
-				// 如果不存在，尝试获取全局规则
-				rule, err = ruleRepo.GetByServerIDAndType(nil, ruleType)
-			}
 			if err == nil && rule != nil {
 				var ruleConfig map[string]interface{}
 				if err := json.Unmarshal([]byte(rule.Config), &ruleConfig); err == nil {
@@ -498,6 +494,12 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 		}
 
 		serverData["alert_rules"] = alertRulesData
+	}
+
+	// 获取服务器通知渠道配置
+	notificationChannels, err := alertService.GetServerNotificationChannels(serverID)
+	if err == nil {
+		serverData["notification_channels"] = notificationChannels
 	}
 
 	return utils.SuccessResponse(ctx, "获取成功", serverData)
@@ -916,6 +918,7 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 		TrafficResetCycle      string                  `json:"traffic_reset_cycle" form:"traffic_reset_cycle"`
 		TrafficCustomCycleDays *int                    `json:"traffic_custom_cycle_days" form:"traffic_custom_cycle_days"`
 		AlertRules             *map[string]interface{} `json:"alert_rules" form:"alert_rules"`
+		NotificationChannels   *map[string]bool        `json:"notification_channels" form:"notification_channels"`
 	}
 
 	var req UpdateServerRequest
@@ -992,9 +995,9 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "更新服务器失败", err)
 	}
 
-	// 处理告警规则
+	// 处理告警规则和通知渠道
+	alertService := services.NewAlertService()
 	if req.AlertRules != nil {
-		alertService := services.NewAlertService()
 		serverIDPtr := &serverID
 		rules := make(map[string]services.Rule)
 
@@ -1057,6 +1060,17 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 					}
 				}
 			}
+		}
+	}
+
+	// 处理服务器通知渠道配置
+	if req.NotificationChannels != nil {
+		channels := make(map[string]bool)
+		for k, v := range *req.NotificationChannels {
+			channels[k] = v
+		}
+		if err := alertService.SaveServerNotificationChannels(serverID, channels); err != nil {
+			facades.Log().Warningf("保存服务器通知渠道配置失败: %v", err)
 		}
 	}
 

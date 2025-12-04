@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"goravel/app/repositories"
-	"goravel/app/services"
 	"goravel/app/utils"
 	"goravel/app/utils/notification"
 	"strconv"
@@ -105,20 +104,7 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 }
 
 func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
-	alertService := services.NewAlertService()
 	notificationRepo := repositories.GetAlertNotificationRepository()
-
-	// 获取全局规则（serverID 为 nil）
-	rules, err := alertService.GetServerRules(nil)
-	if err != nil {
-		facades.Log().Warningf("获取告警规则失败: %v", err)
-		// 使用默认值
-		rules = &services.Rules{
-			CPU:    services.Rule{Enabled: true, Warning: 80, Critical: 90},
-			Memory: services.Rule{Enabled: true, Warning: 85, Critical: 95},
-			Disk:   services.Rule{Enabled: true, Warning: 85, Critical: 95},
-		}
-	}
 
 	type notifyConfig struct {
 		Enabled bool           `json:"enabled"`
@@ -136,22 +122,6 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 			_ = json.Unmarshal([]byte(notification.ConfigJson), &cfg)
 		}
 		return notifyConfig{Enabled: notification.Enabled, Config: cfg}
-	}
-
-	cpu := map[string]any{
-		"enabled":  rules.CPU.Enabled,
-		"warning":  rules.CPU.Warning,
-		"critical": rules.CPU.Critical,
-	}
-	memory := map[string]any{
-		"enabled":  rules.Memory.Enabled,
-		"warning":  rules.Memory.Warning,
-		"critical": rules.Memory.Critical,
-	}
-	disk := map[string]any{
-		"enabled":  rules.Disk.Enabled,
-		"warning":  rules.Disk.Warning,
-		"critical": rules.Disk.Critical,
 	}
 
 	email := fetchNotify("email")
@@ -174,11 +144,6 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 		"status":  true,
 		"message": "success",
 		"data": map[string]any{
-			"rules": map[string]any{
-				"cpu":    cpu,
-				"memory": memory,
-				"disk":   disk,
-			},
 			"notifications": map[string]any{
 				"email":   emailData,
 				"webhook": webhookData,
@@ -363,40 +328,6 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 
 func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Response {
 	notificationRepo := repositories.GetAlertNotificationRepository()
-
-	type rule struct {
-		Enabled  bool
-		Warning  float64
-		Critical float64
-	}
-	readRule := func(metric string) rule {
-		enabled := ctx.Request().Input("rules."+metric+".enabled") == "true"
-		warning, _ := strconv.ParseFloat(ctx.Request().Input("rules."+metric+".warning"), 64)
-		critical, _ := strconv.ParseFloat(ctx.Request().Input("rules."+metric+".critical"), 64)
-		return rule{Enabled: enabled, Warning: warning, Critical: critical}
-	}
-	// 使用 AlertService 保存全局规则（serverID 为 nil）
-	alertService := services.NewAlertService()
-	rulesMap := make(map[string]services.Rule)
-	rulesMap["cpu"] = services.Rule{
-		Enabled:  readRule("cpu").Enabled,
-		Warning:  readRule("cpu").Warning,
-		Critical: readRule("cpu").Critical,
-	}
-	rulesMap["memory"] = services.Rule{
-		Enabled:  readRule("memory").Enabled,
-		Warning:  readRule("memory").Warning,
-		Critical: readRule("memory").Critical,
-	}
-	rulesMap["disk"] = services.Rule{
-		Enabled:  readRule("disk").Enabled,
-		Warning:  readRule("disk").Warning,
-		Critical: readRule("disk").Critical,
-	}
-
-	if err := alertService.SaveServerRules(nil, rulesMap); err != nil {
-		return utils.ErrorResponseWithError(ctx, 500, "更新告警规则失败", err)
-	}
 
 	emailEnabled := ctx.Request().Input("notifications.email.enabled") == "true"
 	emailCfg := map[string]any{

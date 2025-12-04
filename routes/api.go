@@ -54,8 +54,7 @@ func Api() {
 			authRouter.Prefix("/servers").Delete("/:id", serverController.DeleteServer)
 			authRouter.Prefix("/servers").Post("/:id/restart", serverController.RestartServer)
 			authRouter.Prefix("/servers").Post("/:id/update-agent", serverController.UpdateAgent)
-			authRouter.Prefix("/servers").Get("/:id/alert-rules", serverAlertController.GetServerAlertRules)
-			authRouter.Prefix("/servers").Post("/:id/alert-rules", serverAlertController.UpdateServerAlertRules)
+			authRouter.Prefix("/servers").Post("/copy-alert-rules", serverAlertController.CopyAlertRules)
 
 			// 服务器分组管理
 			authRouter.Prefix("/servers/groups").Get("", serverGroupController.GetGroups)

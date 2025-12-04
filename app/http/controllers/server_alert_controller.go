@@ -2,12 +2,14 @@ package controllers
 
 import (
 	"encoding/json"
+	"fmt"
 	"goravel/app/models"
 	"goravel/app/repositories"
 	"goravel/app/services"
 	"goravel/app/utils"
 
 	"github.com/goravel/framework/contracts/http"
+	"github.com/goravel/framework/facades"
 )
 
 type ServerAlertController struct{}
@@ -149,5 +151,99 @@ func (c *ServerAlertController) UpdateServerAlertRules(ctx http.Context) http.Re
 	}
 
 	return utils.SuccessResponse(ctx, "success")
+}
+
+// CopyAlertRules 复制告警规则到多个服务器
+func (c *ServerAlertController) CopyAlertRules(ctx http.Context) http.Response {
+	type CopyAlertRulesRequest struct {
+		SourceServerID  string   `json:"source_server_id" form:"source_server_id"`
+		TargetServerIDs []string `json:"target_server_ids" form:"target_server_ids"`
+		RuleTypes       []string `json:"rule_types" form:"rule_types"` // cpu, memory, disk, bandwidth, traffic, expiration
+	}
+
+	var req CopyAlertRulesRequest
+	if err := ctx.Request().Bind(&req); err != nil {
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "请求参数错误")
+	}
+
+	if req.SourceServerID == "" {
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "源服务器ID不能为空")
+	}
+
+	if len(req.TargetServerIDs) == 0 {
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "目标服务器ID列表不能为空")
+	}
+
+	if len(req.RuleTypes) == 0 {
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "规则类型列表不能为空")
+	}
+
+	// 验证源服务器是否存在
+	serverRepo := repositories.GetServerRepository()
+	sourceServer, err := serverRepo.GetByID(req.SourceServerID)
+	if err != nil || sourceServer == nil {
+		return utils.ErrorResponse(ctx, http.StatusNotFound, "源服务器不存在")
+	}
+
+	// 获取源服务器的告警规则
+	ruleRepo := repositories.GetServerAlertRuleRepository()
+	sourceServerIDPtr := &req.SourceServerID
+
+	// 复制规则到目标服务器
+	successCount := 0
+	failCount := 0
+	var lastError error
+
+	for _, targetServerID := range req.TargetServerIDs {
+		// 排除源服务器
+		if targetServerID == req.SourceServerID {
+			continue
+		}
+
+		// 验证目标服务器是否存在
+		targetServer, err := serverRepo.GetByID(targetServerID)
+		if err != nil || targetServer == nil {
+			failCount++
+			lastError = err
+			continue
+		}
+
+		// 复制每个规则类型
+		for _, ruleType := range req.RuleTypes {
+			// 获取源服务器的规则
+			sourceRule, err := ruleRepo.GetByServerIDAndType(sourceServerIDPtr, ruleType)
+			if err != nil {
+				// 源服务器没有该规则，跳过
+				continue
+			}
+
+			// 创建目标服务器的规则
+			targetRule := &models.ServerAlertRule{
+				ServerID: &targetServerID,
+				RuleType: ruleType,
+				Config:   sourceRule.Config,
+			}
+
+			if err := ruleRepo.CreateOrUpdate(targetRule); err != nil {
+				failCount++
+				lastError = err
+				facades.Log().Warningf("复制告警规则失败: 源服务器=%s, 目标服务器=%s, 规则类型=%s, 错误=%v",
+					req.SourceServerID, targetServerID, ruleType, err)
+			} else {
+				successCount++
+			}
+		}
+	}
+
+	if failCount > 0 && successCount == 0 {
+		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "复制告警规则失败", lastError)
+	}
+
+	message := fmt.Sprintf("成功复制 %d 条规则", successCount)
+	if failCount > 0 {
+		message += fmt.Sprintf("，失败 %d 条", failCount)
+	}
+
+	return utils.SuccessResponse(ctx, message)
 }
 
