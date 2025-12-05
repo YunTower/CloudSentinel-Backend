@@ -51,6 +51,72 @@ func (c *ServerAlertController) GetServerAlertRules(ctx http.Context) http.Respo
 		},
 	}
 
+	// 获取其他类型的告警规则（bandwidth, traffic, expiration）
+	ruleRepo := repositories.GetServerAlertRuleRepository()
+	
+	// bandwidth: {enabled: bool, threshold: number}
+	bandwidthRule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "bandwidth")
+	if err == nil && bandwidthRule != nil {
+		var ruleConfig map[string]interface{}
+		if err := json.Unmarshal([]byte(bandwidthRule.Config), &ruleConfig); err == nil {
+			result["bandwidth"] = ruleConfig
+		} else {
+			// 解析失败，返回默认值
+			result["bandwidth"] = map[string]interface{}{
+				"enabled":   false,
+				"threshold": 100,
+			}
+		}
+	} else {
+		// 没有配置，返回默认禁用状态
+		result["bandwidth"] = map[string]interface{}{
+			"enabled":   false,
+			"threshold": 100,
+		}
+	}
+
+	// traffic: {enabled: bool, threshold_percent: number}
+	trafficRule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "traffic")
+	if err == nil && trafficRule != nil {
+		var ruleConfig map[string]interface{}
+		if err := json.Unmarshal([]byte(trafficRule.Config), &ruleConfig); err == nil {
+			result["traffic"] = ruleConfig
+		} else {
+			// 解析失败，返回默认值
+			result["traffic"] = map[string]interface{}{
+				"enabled":         false,
+				"threshold_percent": 80,
+			}
+		}
+	} else {
+		// 没有配置，返回默认禁用状态
+		result["traffic"] = map[string]interface{}{
+			"enabled":         false,
+			"threshold_percent": 80,
+		}
+	}
+
+	// expiration: {enabled: bool, alert_days: number}
+	expirationRule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "expiration")
+	if err == nil && expirationRule != nil {
+		var ruleConfig map[string]interface{}
+		if err := json.Unmarshal([]byte(expirationRule.Config), &ruleConfig); err == nil {
+			result["expiration"] = ruleConfig
+		} else {
+			// 解析失败，返回默认值
+			result["expiration"] = map[string]interface{}{
+				"enabled":    false,
+				"alert_days": 7,
+			}
+		}
+	} else {
+		// 没有配置，返回默认禁用状态
+		result["expiration"] = map[string]interface{}{
+			"enabled":    false,
+			"alert_days": 7,
+		}
+	}
+
 	return ctx.Response().Success().Json(http.Json{
 		"status":  true,
 		"message": "success",
@@ -113,7 +179,7 @@ func (c *ServerAlertController) UpdateServerAlertRules(ctx http.Context) http.Re
 		}
 	}
 
-	// 处理新增规则类型（需要特殊处理，因为结构不同）
+	// 处理新增规则类型
 	ruleRepo := repositories.GetServerAlertRuleRepository()
 	if req.Bandwidth != nil {
 		configJson, _ := json.Marshal(*req.Bandwidth)
@@ -246,4 +312,3 @@ func (c *ServerAlertController) CopyAlertRules(ctx http.Context) http.Response {
 
 	return utils.SuccessResponse(ctx, message)
 }
-

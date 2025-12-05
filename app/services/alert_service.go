@@ -89,16 +89,16 @@ func (s *AlertService) getRules() (*Rules, error) {
 	return s.GetServerRules(nil)
 }
 
-// GetServerRules 获取指定服务器的告警规则（只获取服务器特定规则或使用默认值）
+// GetServerRules 获取指定服务器的告警规则
 func (s *AlertService) GetServerRules(serverID *string) (*Rules, error) {
-	// 默认规则
+	// 默认规则（禁用状态）
 	defaultRules := &Rules{
-		CPU:    Rule{Enabled: true, Warning: 80, Critical: 90},
-		Memory: Rule{Enabled: true, Warning: 85, Critical: 95},
-		Disk:   Rule{Enabled: true, Warning: 85, Critical: 95},
+		CPU:    Rule{Enabled: false, Warning: 80, Critical: 90},
+		Memory: Rule{Enabled: false, Warning: 85, Critical: 95},
+		Disk:   Rule{Enabled: false, Warning: 85, Critical: 95},
 	}
 
-	// 如果没有指定服务器ID，返回默认规则
+	// 如果没有指定服务器ID，返回禁用状态的默认规则
 	if serverID == nil {
 		return defaultRules, nil
 	}
@@ -118,15 +118,15 @@ func (s *AlertService) GetServerRules(serverID *string) (*Rules, error) {
 		}
 	}
 
-	// 合并规则：服务器规则 > 默认规则
+	// 只使用服务器特定规则，没有则使用禁用状态的默认规则
 	result := &Rules{}
 	for _, ruleType := range ruleTypes {
 		var rule *Rule
-		// 优先使用服务器特定规则
+		// 只使用服务器特定规则
 		if r, ok := serverRules[ruleType]; ok {
 			rule = r
 		} else {
-			// 使用默认规则
+			// 使用禁用状态的默认规则
 			switch ruleType {
 			case "cpu":
 				rule = &defaultRules.CPU
@@ -380,12 +380,12 @@ func (s *AlertService) sendNotification(serverID, metricName string, value float
 	}
 }
 
-// getNotificationConfigs 获取通知配置（优先使用服务器特定配置，如果没有则使用全局配置）
+// getNotificationConfigs 获取通知配置
 func (s *AlertService) getNotificationConfigs(serverID string) (*notification.EmailConfig, *notification.WebhookConfig, error) {
 	emailConfig := &notification.EmailConfig{Enabled: false}
 	webhookConfig := &notification.WebhookConfig{Enabled: false}
 
-	// 先获取全局通知配置
+	// 获取全局通知配置
 	notificationRepo := repositories.GetAlertNotificationRepository()
 	notifications, err := notificationRepo.GetAll()
 	if err != nil {
@@ -393,8 +393,6 @@ func (s *AlertService) getNotificationConfigs(serverID string) (*notification.Em
 	}
 
 	// 解析全局配置
-	globalEmailEnabled := false
-	globalWebhookEnabled := false
 	for _, notif := range notifications {
 		if !notif.Enabled || notif.ConfigJson == "" {
 			continue
@@ -403,11 +401,9 @@ func (s *AlertService) getNotificationConfigs(serverID string) (*notification.Em
 		switch notif.NotificationType {
 		case "email":
 			if err := json.Unmarshal([]byte(notif.ConfigJson), &emailConfig); err == nil {
-				globalEmailEnabled = true
 			}
 		case "webhook":
 			if err := json.Unmarshal([]byte(notif.ConfigJson), &webhookConfig); err == nil {
-				globalWebhookEnabled = true
 			}
 		}
 	}
@@ -416,30 +412,14 @@ func (s *AlertService) getNotificationConfigs(serverID string) (*notification.Em
 	channelRepo := repositories.GetServerNotificationChannelRepository()
 	serverChannels, err := channelRepo.GetByServerID(serverID)
 	if err == nil && len(serverChannels) > 0 {
-		// 检查服务器是否启用了特定渠道
+		// 只使用服务器配置的启用状态
 		for _, channel := range serverChannels {
 			if channel.NotificationType == "email" {
-				// 如果服务器禁用了邮件，则禁用
-				if !channel.Enabled {
-					emailConfig.Enabled = false
-				} else if globalEmailEnabled {
-					// 如果服务器启用了且全局已配置，则启用
-					emailConfig.Enabled = true
-				}
+				emailConfig.Enabled = channel.Enabled
 			} else if channel.NotificationType == "webhook" {
-				// 如果服务器禁用了webhook，则禁用
-				if !channel.Enabled {
-					webhookConfig.Enabled = false
-				} else if globalWebhookEnabled {
-					// 如果服务器启用了且全局已配置，则启用
-					webhookConfig.Enabled = true
-				}
+				webhookConfig.Enabled = channel.Enabled
 			}
 		}
-	} else {
-		// 如果没有服务器特定配置，使用全局配置
-		emailConfig.Enabled = globalEmailEnabled
-		webhookConfig.Enabled = globalWebhookEnabled
 	}
 
 	return emailConfig, webhookConfig, nil
@@ -466,6 +446,11 @@ func (s *AlertService) SaveServerNotificationChannels(serverID string, channels 
 	channelRepo := repositories.GetServerNotificationChannelRepository()
 
 	for notificationType, enabled := range channels {
+		// 验证 notificationType 不为空
+		if notificationType == "" {
+			continue
+		}
+
 		channel := &models.ServerNotificationChannel{
 			ServerID:         serverID,
 			NotificationType: notificationType,

@@ -1,6 +1,8 @@
 package repositories
 
 import (
+	"fmt"
+
 	"goravel/app/models"
 
 	"github.com/goravel/framework/facades"
@@ -39,13 +41,22 @@ func (r *ServerNotificationChannelRepository) GetByServerIDAndType(serverID, not
 
 // CreateOrUpdate 创建或更新通知渠道配置
 func (r *ServerNotificationChannelRepository) CreateOrUpdate(channel *models.ServerNotificationChannel) error {
+	// 验证必要字段
+	if channel.ServerID == "" {
+		return fmt.Errorf("server_id cannot be empty")
+	}
+	if channel.NotificationType == "" {
+		return fmt.Errorf("notification_type cannot be empty")
+	}
+
 	var existing models.ServerNotificationChannel
 	err := facades.Orm().Query().
 		Where("server_id", channel.ServerID).
 		Where("notification_type", channel.NotificationType).
 		First(&existing)
 
-	if err != nil {
+	// 检查是否是因为记录不存在而返回错误，或者 existing.ID 为 0（表示未找到）
+	if err != nil || existing.ID == 0 {
 		// 不存在则创建
 		return facades.Orm().Query().Create(channel)
 	}
@@ -73,4 +84,3 @@ func (r *ServerNotificationChannelRepository) DeleteByServerIDAndType(serverID, 
 		Delete()
 	return err
 }
-

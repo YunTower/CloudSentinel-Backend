@@ -114,6 +114,27 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "创建服务器失败", err)
 	}
 
+	// 创建服务器后，默认开启所有已配置的全局通知渠道
+	alertService := services.NewAlertService()
+	notificationRepo := repositories.GetAlertNotificationRepository()
+	globalNotifications, err := notificationRepo.GetAll()
+	if err == nil {
+		// 获取所有已配置且启用的全局通知渠道
+		channels := make(map[string]bool)
+		for _, notif := range globalNotifications {
+			if notif.Enabled && notif.ConfigJson != "" {
+				// 默认开启已配置的全局通知渠道
+				channels[notif.NotificationType] = true
+			}
+		}
+		// 保存服务器通知渠道配置
+		if len(channels) > 0 {
+			if err := alertService.SaveServerNotificationChannels(serverID, channels); err != nil {
+				facades.Log().Warningf("创建服务器默认通知渠道配置失败: %v", err)
+			}
+		}
+	}
+
 	facades.Log().Infof("成功创建服务器: %s (IP: %s)", req.Name, req.IP)
 
 	// 返回服务器信息和agent_key
@@ -481,15 +502,67 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 
 		// 获取其他类型的告警规则（bandwidth, traffic, expiration）
 		ruleRepo := repositories.GetServerAlertRuleRepository()
-		ruleTypes := []string{"bandwidth", "traffic", "expiration"}
-		for _, ruleType := range ruleTypes {
-			// 获取服务器特定规则
-			rule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, ruleType)
-			if err == nil && rule != nil {
-				var ruleConfig map[string]interface{}
-				if err := json.Unmarshal([]byte(rule.Config), &ruleConfig); err == nil {
-					alertRulesData[ruleType] = ruleConfig
+
+		// bandwidth: {enabled: bool, threshold: number}
+		bandwidthRule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "bandwidth")
+		if err == nil && bandwidthRule != nil {
+			var ruleConfig map[string]interface{}
+			if err := json.Unmarshal([]byte(bandwidthRule.Config), &ruleConfig); err == nil {
+				alertRulesData["bandwidth"] = ruleConfig
+			} else {
+				// 解析失败，返回默认值
+				alertRulesData["bandwidth"] = map[string]interface{}{
+					"enabled":   false,
+					"threshold": 100,
 				}
+			}
+		} else {
+			// 没有配置，返回默认禁用状态
+			alertRulesData["bandwidth"] = map[string]interface{}{
+				"enabled":   false,
+				"threshold": 100,
+			}
+		}
+
+		// traffic: {enabled: bool, threshold_percent: number}
+		trafficRule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "traffic")
+		if err == nil && trafficRule != nil {
+			var ruleConfig map[string]interface{}
+			if err := json.Unmarshal([]byte(trafficRule.Config), &ruleConfig); err == nil {
+				alertRulesData["traffic"] = ruleConfig
+			} else {
+				// 解析失败，返回默认值
+				alertRulesData["traffic"] = map[string]interface{}{
+					"enabled":           false,
+					"threshold_percent": 80,
+				}
+			}
+		} else {
+			// 没有配置，返回默认禁用状态
+			alertRulesData["traffic"] = map[string]interface{}{
+				"enabled":           false,
+				"threshold_percent": 80,
+			}
+		}
+
+		// expiration: {enabled: bool, alert_days: number}
+		expirationRule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "expiration")
+		if err == nil && expirationRule != nil {
+			var ruleConfig map[string]interface{}
+			if err := json.Unmarshal([]byte(expirationRule.Config), &ruleConfig); err == nil {
+				alertRulesData["expiration"] = ruleConfig
+			} else {
+				// 解析失败，返回默认值
+				alertRulesData["expiration"] = map[string]interface{}{
+					"enabled":    false,
+					"alert_days": 7,
+				}
+			}
+		} else {
+			// 没有配置，返回默认禁用状态
+			alertRulesData["expiration"] = map[string]interface{}{
+				"enabled":    false,
+				"alert_days": 7,
 			}
 		}
 
@@ -1002,37 +1075,65 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 		rules := make(map[string]services.Rule)
 
 		// 处理基础资源规则（cpu, memory, disk）
+		// 无论 enabled 是 true 还是 false，只要规则数据存在就保存
 		if cpuRule, ok := (*req.AlertRules)["cpu"].(map[string]interface{}); ok {
-			if enabled, ok := cpuRule["enabled"].(bool); ok {
-				warning, _ := cpuRule["warning"].(float64)
-				critical, _ := cpuRule["critical"].(float64)
-				rules["cpu"] = services.Rule{
-					Enabled:  enabled,
-					Warning:  warning,
-					Critical: critical,
-				}
+			enabled := false
+			if e, ok := cpuRule["enabled"].(bool); ok {
+				enabled = e
+			}
+			warning, _ := cpuRule["warning"].(float64)
+			critical, _ := cpuRule["critical"].(float64)
+			// 如果没有设置阈值，使用默认值
+			if warning == 0 {
+				warning = 80
+			}
+			if critical == 0 {
+				critical = 90
+			}
+			rules["cpu"] = services.Rule{
+				Enabled:  enabled,
+				Warning:  warning,
+				Critical: critical,
 			}
 		}
 		if memoryRule, ok := (*req.AlertRules)["memory"].(map[string]interface{}); ok {
-			if enabled, ok := memoryRule["enabled"].(bool); ok {
-				warning, _ := memoryRule["warning"].(float64)
-				critical, _ := memoryRule["critical"].(float64)
-				rules["memory"] = services.Rule{
-					Enabled:  enabled,
-					Warning:  warning,
-					Critical: critical,
-				}
+			enabled := false
+			if e, ok := memoryRule["enabled"].(bool); ok {
+				enabled = e
+			}
+			warning, _ := memoryRule["warning"].(float64)
+			critical, _ := memoryRule["critical"].(float64)
+			// 如果没有设置阈值，使用默认值
+			if warning == 0 {
+				warning = 85
+			}
+			if critical == 0 {
+				critical = 95
+			}
+			rules["memory"] = services.Rule{
+				Enabled:  enabled,
+				Warning:  warning,
+				Critical: critical,
 			}
 		}
 		if diskRule, ok := (*req.AlertRules)["disk"].(map[string]interface{}); ok {
-			if enabled, ok := diskRule["enabled"].(bool); ok {
-				warning, _ := diskRule["warning"].(float64)
-				critical, _ := diskRule["critical"].(float64)
-				rules["disk"] = services.Rule{
-					Enabled:  enabled,
-					Warning:  warning,
-					Critical: critical,
-				}
+			enabled := false
+			if e, ok := diskRule["enabled"].(bool); ok {
+				enabled = e
+			}
+			warning, _ := diskRule["warning"].(float64)
+			critical, _ := diskRule["critical"].(float64)
+			// 如果没有设置阈值，使用默认值
+			if warning == 0 {
+				warning = 85
+			}
+			if critical == 0 {
+				critical = 95
+			}
+			rules["disk"] = services.Rule{
+				Enabled:  enabled,
+				Warning:  warning,
+				Critical: critical,
 			}
 		}
 
@@ -1052,8 +1153,8 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 				if err == nil {
 					rule := &models.ServerAlertRule{
 						ServerID: serverIDPtr,
-						RuleType:  ruleType,
-						Config:    string(configJson),
+						RuleType: ruleType,
+						Config:   string(configJson),
 					}
 					if err := ruleRepo.CreateOrUpdate(rule); err != nil {
 						facades.Log().Warningf("保存告警规则 %s 失败: %v", ruleType, err)
@@ -1089,10 +1190,41 @@ func (c *ServerController) DeleteServer(ctx http.Context) http.Response {
 		})
 	}
 
-	// 删除服务器
-	_, err := facades.Orm().Query().Model(&models.Server{}).
-		Where("id", serverID).
-		Delete()
+	// 先删除所有关联的数据，避免外键约束错误
+	// 先禁用外键检查
+	_, _ = facades.Orm().Query().Exec("PRAGMA foreign_keys = OFF")
+
+	// 删除所有关联表的数据
+	tables := []string{
+		"server_alert_rules",
+		"server_notification_channels",
+		"server_metrics",
+		"server_disks",
+		"server_status_logs",
+		"server_cpus",
+		"server_memory_history",
+		"server_swap",
+		"server_network_connections",
+		"server_traffic_usage",
+		"server_network_speed",
+		"server_disk_io",
+		"alerts",
+		"service_monitor_rule_servers",
+		"service_monitor_alerts",
+	}
+
+	for _, table := range tables {
+		_, err := facades.Orm().Query().Exec(fmt.Sprintf("DELETE FROM %s WHERE server_id = ?", table), serverID)
+		if err != nil {
+			facades.Log().Warningf("删除表 %s 中服务器 %s 的数据失败: %v", table, serverID, err)
+		}
+	}
+
+	// 最后删除服务器
+	_, err := facades.Orm().Query().Exec("DELETE FROM servers WHERE id = ?", serverID)
+
+	// 重新启用外键检查
+	_, _ = facades.Orm().Query().Exec("PRAGMA foreign_keys = ON")
 
 	if err != nil {
 		facades.Log().Errorf("删除服务器失败: %v", err)
