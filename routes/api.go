@@ -10,6 +10,7 @@ import (
 )
 
 func Api() {
+	// 初始化控制器
 	authController := controllers.NewAuthController()
 	settingsController := controllers.NewSettingsController()
 	updateController := controllers.NewUpdateController()
@@ -20,50 +21,74 @@ func Api() {
 	staticController := controllers.NewStaticController()
 
 	facades.Route().Prefix("api").Group(func(router route.Router) {
+		// 公开接口
 		router.Post("/auth/login", authController.Login)
 		router.Get("/settings/public", settingsController.GetPublicSettings)
 
+		// WebSocket 连接
 		router.Get("/ws/agent", wsController.HandleAgentConnection)
 		router.Get("/ws/frontend", wsController.HandleFrontendConnection)
 
 		router.Middleware(middleware.Auth()).Group(func(authRouter route.Router) {
-			authRouter.Prefix("/settings").Get("/panel", settingsController.GetPanelSettings)
-			authRouter.Prefix("/settings").Get("/permissions", settingsController.GetPermissionsSettings)
-			authRouter.Prefix("/settings").Get("/alerts", settingsController.GetAlertsSettings)
-			authRouter.Prefix("/settings").Patch("/panel", settingsController.UpdatePanelSettings)
-			authRouter.Prefix("/settings").Patch("/permissions", settingsController.UpdatePermissionsSettings)
-			authRouter.Prefix("/settings").Patch("/alerts", settingsController.UpdateAlertsSettings)
-			authRouter.Prefix("/settings").Post("/alerts/test", settingsController.TestAlertSettings)
+			// 认证相关
+			authRouter.Prefix("/auth").Group(func(authRoute route.Router) {
+				authRoute.Get("/refresh", authController.Refresh)
+				authRoute.Get("/check", authController.Check)
+			})
 
-			authRouter.Prefix("/update").Get("/check", updateController.Check)
-			authRouter.Prefix("/update").Get("/status", updateController.Status)
-			authRouter.Prefix("/update").Post("", updateController.Update)
-			authRouter.Prefix("/update").Get("/agent/check", updateController.CheckAgent)
+			// 设置相关
+			authRouter.Prefix("/settings").Group(func(settingsRoute route.Router) {
+				settingsRoute.Get("/panel", settingsController.GetPanelSettings)
+				settingsRoute.Get("/permissions", settingsController.GetPermissionsSettings)
+				settingsRoute.Get("/alerts", settingsController.GetAlertsSettings)
+				settingsRoute.Patch("/panel", settingsController.UpdatePanelSettings)
+				settingsRoute.Patch("/permissions", settingsController.UpdatePermissionsSettings)
+				settingsRoute.Patch("/alerts", settingsController.UpdateAlertsSettings)
+				settingsRoute.Post("/alerts/test", settingsController.TestAlertSettings)
+			})
 
-			authRouter.Prefix("/auth").Get("/refresh", authController.Refresh)
-			authRouter.Prefix("/auth").Get("/check", authController.Check)
+			// 更新相关
+			authRouter.Prefix("/update").Group(func(updateRoute route.Router) {
+				updateRoute.Get("/check", updateController.Check)
+				updateRoute.Get("/status", updateController.Status)
+				updateRoute.Post("", updateController.Update)
+				updateRoute.Get("/agent/check", updateController.CheckAgent)
+			})
 
-			authRouter.Prefix("/servers").Post("", serverController.CreateServer)
-			authRouter.Prefix("/servers").Get("", serverController.GetServers)
-			authRouter.Prefix("/servers").Get("/:id", serverController.GetServerDetail)
-			authRouter.Prefix("/servers").Get("/:id/metrics/cpu", serverController.GetServerMetricsCPU)
-			authRouter.Prefix("/servers").Get("/:id/metrics/memory", serverController.GetServerMetricsMemory)
-			authRouter.Prefix("/servers").Get("/:id/metrics/disk", serverController.GetServerMetricsDisk)
-			authRouter.Prefix("/servers").Get("/:id/metrics/network", serverController.GetServerMetricsNetwork)
-			authRouter.Prefix("/servers").Patch("/:id", serverController.UpdateServer)
-			authRouter.Prefix("/servers").Delete("/:id", serverController.DeleteServer)
-			authRouter.Prefix("/servers").Post("/:id/restart", serverController.RestartServer)
-			authRouter.Prefix("/servers").Post("/:id/update-agent", serverController.UpdateAgent)
-			authRouter.Prefix("/servers").Get("/:id/alert-rules", serverAlertController.GetServerAlertRules)
-			authRouter.Prefix("/servers").Post("/copy-alert-rules", serverAlertController.CopyAlertRules)
+			// 服务器相关
+			authRouter.Prefix("/servers").Group(func(serversRoute route.Router) {
+				// 服务器基础操作
+				serversRoute.Post("", serverController.CreateServer)
+				serversRoute.Get("", serverController.GetServers)
+				serversRoute.Get("/:id", serverController.GetServerDetail)
+				serversRoute.Patch("/:id", serverController.UpdateServer)
+				serversRoute.Delete("/:id", serverController.DeleteServer)
+
+				// 服务器指标
+				serversRoute.Get("/:id/metrics/cpu", serverController.GetServerMetricsCPU)
+				serversRoute.Get("/:id/metrics/memory", serverController.GetServerMetricsMemory)
+				serversRoute.Get("/:id/metrics/disk", serverController.GetServerMetricsDisk)
+				serversRoute.Get("/:id/metrics/network", serverController.GetServerMetricsNetwork)
+
+				// 服务器操作
+				serversRoute.Post("/:id/agent/restart", serverController.RestartAgent)
+				serversRoute.Post("/:id/agent/update", serverController.UpdateAgent)
+
+				// 服务器告警规则
+				serversRoute.Get("/:id/alert-rules", serverAlertController.GetServerAlertRules)
+				serversRoute.Post("/alert-rules/copy", serverAlertController.CopyAlertRules)
+			})
 
 			// 服务器分组管理
-			authRouter.Prefix("/servers/groups").Get("", serverGroupController.GetGroups)
-			authRouter.Prefix("/servers/groups").Post("", serverGroupController.CreateGroup)
-			authRouter.Prefix("/servers/groups").Patch("/:id", serverGroupController.UpdateGroup)
-			authRouter.Prefix("/servers/groups").Delete("/:id", serverGroupController.DeleteGroup)
+			authRouter.Prefix("/servers/groups").Group(func(groupsRoute route.Router) {
+				groupsRoute.Get("", serverGroupController.GetGroups)
+				groupsRoute.Post("", serverGroupController.CreateGroup)
+				groupsRoute.Patch("/:id", serverGroupController.UpdateGroup)
+				groupsRoute.Delete("/:id", serverGroupController.DeleteGroup)
+			})
 		})
 	})
 
+	// 静态文件服务
 	facades.Route().Fallback(staticController.ServeStatic)
 }

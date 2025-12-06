@@ -1236,8 +1236,8 @@ func (c *ServerController) DeleteServer(ctx http.Context) http.Response {
 	return utils.SuccessResponse(ctx, "删除成功")
 }
 
-// RestartServer 重启服务器agent
-func (c *ServerController) RestartServer(ctx http.Context) http.Response {
+// RestartAgent 重启服务器agent
+func (c *ServerController) RestartAgent(ctx http.Context) http.Response {
 	serverID := ctx.Request().Route("id")
 	if serverID == "" {
 		return ctx.Response().Status(http.StatusBadRequest).Json(http.Json{
