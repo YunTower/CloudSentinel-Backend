@@ -52,7 +52,10 @@ func (s *CleanupService) CleanupOldData() {
 	// 从 system_settings 获取清理配置
 	settingRepo := repositories.GetSystemSettingRepository()
 	var configs []map[string]interface{}
-	err := settingRepo.GetJSON("log_cleanup_config", &configs)
+
+	// 使用 GetJSONWithDefault 处理空值或无效 JSON 的情况
+	defaultConfigs := []map[string]interface{}{}
+	err := settingRepo.GetJSONWithDefault("log_cleanup_config", &configs, defaultConfigs)
 
 	if err != nil {
 		facades.Log().Errorf("获取清理配置失败: %v", err)
