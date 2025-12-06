@@ -1377,3 +1377,54 @@ func (c *ServerController) UpdateAgent(ctx http.Context) http.Response {
 		},
 	})
 }
+
+// ResetAgentKey 重置服务器通信密钥
+func (c *ServerController) ResetAgentKey(ctx http.Context) http.Response {
+	serverID := ctx.Request().Route("id")
+	if serverID == "" {
+		return ctx.Response().Status(http.StatusBadRequest).Json(http.Json{
+			"status":  false,
+			"message": "缺少服务器ID",
+		})
+	}
+
+	// 验证服务器是否存在
+	serverRepo := repositories.NewServerRepository()
+	_, err := serverRepo.GetByID(serverID)
+	if err != nil {
+		facades.Log().Errorf("获取服务器信息失败: %v", err)
+		return ctx.Response().Status(http.StatusNotFound).Json(http.Json{
+			"status":  false,
+			"message": "服务器不存在",
+		})
+	}
+
+	// 生成新的 agent_key
+	newAgentKey := uuid.New().String()
+
+	// 更新数据库
+	err = serverRepo.Update(serverID, map[string]interface{}{
+		"agent_key": newAgentKey,
+	})
+	if err != nil {
+		facades.Log().Errorf("更新通信密钥失败: %v", err)
+		return ctx.Response().Status(http.StatusInternalServerError).Json(http.Json{
+			"status":  false,
+			"message": "重置通信密钥失败: " + err.Error(),
+		})
+	}
+
+	// 断开该服务器的 WebSocket 连接
+	wsService := services.GetWebSocketService()
+	wsService.Unregister(serverID)
+
+	facades.Log().Infof("成功重置服务器通信密钥: %s, 新密钥: %s", serverID, newAgentKey)
+
+	return ctx.Response().Json(http.StatusOK, http.Json{
+		"status":  true,
+		"message": "通信密钥已重置",
+		"data": map[string]interface{}{
+			"agent_key": newAgentKey,
+		},
+	})
+}

@@ -73,6 +73,7 @@ func Api() {
 				// 服务器操作
 				serversRoute.Post("/:id/agent/restart", serverController.RestartAgent)
 				serversRoute.Post("/:id/agent/update", serverController.UpdateAgent)
+				serversRoute.Post("/:id/agent/reset-key", serverController.ResetAgentKey)
 
 				// 服务器告警规则
 				serversRoute.Get("/:id/alert-rules", serverAlertController.GetServerAlertRules)
