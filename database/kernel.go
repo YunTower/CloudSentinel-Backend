@@ -44,6 +44,10 @@ func (kernel Kernel) Migrations() []schema.Migration {
 		&migrations.M20250125000001CreateServerAlertRulesTable{},
 		&migrations.M20250126000001CreateServerNotificationChannelsTable{},
 		&migrations.M20250127000001RemoveGlobalAlertRules{},
+		&migrations.M20250128000001AddRsaKeysToServers{},
+		&migrations.M20250128000002FixMissingTimestamps{},
+		&migrations.M20250128000003MovePanelKeysToSystemSettings{},
+		&migrations.M20250128000005FixServerSwapColumns{},
 	}
 }
 

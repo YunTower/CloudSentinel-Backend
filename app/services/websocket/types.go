@@ -35,18 +35,18 @@ func (s ConnectionState) String() string {
 
 // MessageType 消息类型常量
 const (
-	MessageTypeAuth          = "auth"
-	MessageTypeHello         = "hello"
-	MessageTypeSystemInfo    = "system_info"
-	MessageTypeMetrics       = "metrics"
-	MessageTypeMemoryInfo    = "memory_info"
-	MessageTypeDiskInfo      = "disk_info"
+	MessageTypeAuth        = "auth"
+	MessageTypeHello       = "hello"
+	MessageTypeSystemInfo  = "system_info"
+	MessageTypeMetrics     = "metrics"
+	MessageTypeMemoryInfo  = "memory_info"
+	MessageTypeDiskInfo    = "disk_info"
 	MessageTypeDiskIO      = "disk_io"
 	MessageTypeNetworkInfo = "network_info"
 	MessageTypeSwapInfo    = "swap_info"
 	MessageTypePing        = "ping"
-	MessageTypePong          = "pong"
-	MessageTypeError         = "error"
+	MessageTypePong        = "pong"
+	MessageTypeError       = "error"
 )
 
 // Connection 连接接口
@@ -67,10 +67,14 @@ type Connection interface {
 
 // AgentConnectionInfo Agent 连接信息
 type AgentConnectionInfo struct {
-	ServerID   string
-	AgentKey   string
-	RemoteAddr string
-	LastPing   time.Time
+	ServerID          string
+	AgentKey          string
+	RemoteAddr        string
+	LastPing          time.Time
+	SessionKey        []byte // AES 会话密钥
+	AgentPublicKey    string // Agent 公钥
+	AgentFingerprint  string // Agent 公钥指纹
+	EncryptionEnabled bool   // 是否启用加密
 }
 
 // FrontendConnectionInfo Frontend 连接信息

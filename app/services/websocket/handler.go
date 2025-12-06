@@ -1,8 +1,18 @@
 package websocket
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
+
+	"goravel/app/repositories"
 
 	"github.com/goravel/framework/facades"
 )
@@ -84,6 +94,9 @@ func (h *agentMessageHandler) HandleAuth(data map[string]interface{}, conn *Agen
 		return errors.New("不支持的认证类型")
 	}
 
+	// 接收 Agent 公钥（可选，如果支持加密）
+	agentPublicKey, _ := authData["agent_public_key"].(string)
+
 	// 验证agent key和IP并获取server_id
 	clientIP := conn.GetRemoteAddr()
 	keyPreview := agentKey
@@ -112,7 +125,17 @@ func (h *agentMessageHandler) HandleAuth(data map[string]interface{}, conn *Agen
 		}
 	}
 
-	// 更新连接信息
+	// 处理密钥交换（如果 Agent 提供了公钥）
+	// 注意：必须在设置连接状态前进行，因为指纹不匹配时需要拒绝连接
+	if agentPublicKey != "" {
+		if err := h.handleKeyExchange(serverID, agentPublicKey, conn); err != nil {
+			facades.Log().Channel("websocket").Errorf("密钥交换失败: %v", err)
+			// 密钥交换失败（特别是指纹不匹配）时拒绝连接，防止中间人攻击
+			return fmt.Errorf("密钥交换失败，连接已拒绝: %w", err)
+		}
+	}
+
+	// 更新连接信息（密钥交换成功后才设置）
 	conn.SetServerID(serverID)
 	conn.SetAgentKey(agentKey)
 	conn.SetState(StateAuthenticated)
@@ -144,6 +167,258 @@ func (h *agentMessageHandler) HandleAuth(data map[string]interface{}, conn *Agen
 	return nil
 }
 
+// handleKeyExchange 处理密钥交换流程
+func (h *agentMessageHandler) handleKeyExchange(serverID, agentPublicKey string, conn *AgentConnection) error {
+	serverRepo := repositories.NewServerRepository()
+
+	// 计算 Agent 公钥指纹
+	agentFingerprint, err := h.getPublicKeyFingerprint(agentPublicKey)
+	if err != nil {
+		return err
+	}
+
+	// 从数据库查询服务器信息
+	var serverKeys []map[string]interface{}
+	err = facades.Orm().Query().Table("servers").
+		Select("agent_fingerprint").
+		Where("id", serverID).
+		Get(&serverKeys)
+
+	if err != nil || len(serverKeys) == 0 {
+		return fmt.Errorf("获取服务器信息失败: %w", err)
+	}
+
+	serverKeyData := serverKeys[0]
+
+	// 检查数据库中是否已有 Agent 公钥指纹
+	if existingFingerprint, ok := serverKeyData["agent_fingerprint"].(string); ok && existingFingerprint != "" {
+		if existingFingerprint != agentFingerprint {
+			facades.Log().Channel("websocket").Errorf("Agent 公钥指纹不匹配: 期望=%s, 实际=%s", existingFingerprint, agentFingerprint)
+			return errors.New("Agent 公钥指纹验证失败，可能存在中间人攻击")
+		}
+	}
+
+	// 保存 Agent 公钥和指纹
+	conn.SetAgentPublicKey(agentPublicKey)
+	conn.SetAgentFingerprint(agentFingerprint)
+
+	// 从 system_settings 获取或生成 panel 密钥对
+	_, panelPublicKey, err := h.getOrGeneratePanelKeyPair()
+	if err != nil {
+		return fmt.Errorf("获取面板密钥对失败: %w", err)
+	}
+
+	// 计算面板公钥指纹
+	panelFingerprint, err := h.getPublicKeyFingerprint(panelPublicKey)
+	if err != nil {
+		return err
+	}
+
+	// 发送面板公钥和指纹（明文）
+	keyExchangeResponse := map[string]interface{}{
+		"type":    "key_exchange",
+		"status":  "success",
+		"message": "密钥交换",
+		"data": map[string]interface{}{
+			"panel_public_key":  panelPublicKey,
+			"panel_fingerprint": panelFingerprint,
+		},
+	}
+
+	// 密钥交换消息使用明文发送（此时还未启用加密）
+	if err := conn.WriteJSON(keyExchangeResponse); err != nil {
+		return err
+	}
+
+	// 生成 AES 会话密钥
+	sessionKey, err := h.generateSessionKey()
+	if err != nil {
+		return err
+	}
+
+	// 使用 Agent 公钥加密会话密钥
+	encryptedSessionKey, err := h.encryptWithPublicKey(sessionKey, agentPublicKey)
+	if err != nil {
+		return err
+	}
+
+	// Base64 编码加密后的会话密钥
+	encryptedSessionKeyBase64 := base64.StdEncoding.EncodeToString(encryptedSessionKey)
+
+	// 发送加密的会话密钥（明文传输，但内容是加密的）
+	sessionKeyResponse := map[string]interface{}{
+		"type":    "session_key",
+		"status":  "success",
+		"message": "会话密钥",
+		"data": map[string]interface{}{
+			"encrypted_session_key": encryptedSessionKeyBase64,
+		},
+	}
+
+	// 会话密钥消息使用明文发送（内容是加密的，但传输是明文的）
+	if err := conn.WriteJSON(sessionKeyResponse); err != nil {
+		return err
+	}
+
+	// 设置会话密钥并启用加密
+	conn.SetSessionKey(sessionKey)
+	conn.EnableEncryption()
+
+	// 更新数据库中的 Agent 公钥和指纹
+	updateData := map[string]interface{}{
+		"agent_public_key":  agentPublicKey,
+		"agent_fingerprint": agentFingerprint,
+	}
+	if err := serverRepo.Update(serverID, updateData); err != nil {
+		facades.Log().Channel("websocket").Warningf("更新 Agent 公钥和指纹失败: %v", err)
+		// 不影响加密启用
+	}
+
+	facades.Log().Channel("websocket").Infof("密钥交换成功: server_id=%s, encryption_enabled=true", serverID)
+
+	return nil
+}
+
+// getOrGeneratePanelKeyPair 从 system_settings 获取或生成 panel 密钥对
+func (h *agentMessageHandler) getOrGeneratePanelKeyPair() (privateKey, publicKey string, err error) {
+	settingRepo := repositories.GetSystemSettingRepository()
+
+	// 尝试从 system_settings 读取 panel 密钥对
+	var panelKeys map[string]interface{}
+	err = settingRepo.GetJSON("panel_rsa_keys", &panelKeys)
+
+	if err == nil && panelKeys != nil {
+		if pk, ok := panelKeys["panel_private_key"].(string); ok && pk != "" {
+			if pub, ok := panelKeys["panel_public_key"].(string); ok && pub != "" {
+				// 返回已有的密钥对
+				return pk, pub, nil
+			}
+		}
+	}
+
+	// 如果不存在或无效，生成新的密钥对
+	facades.Log().Channel("websocket").Info("Panel 密钥对不存在，正在生成新的密钥对...")
+
+	privateKey, publicKey, err = h.generateRSAKeyPair()
+	if err != nil {
+		return "", "", err
+	}
+
+	// 保存到 system_settings
+	panelKeys = map[string]interface{}{
+		"panel_private_key": privateKey,
+		"panel_public_key":  publicKey,
+	}
+
+	if err := settingRepo.SetJSON("panel_rsa_keys", panelKeys); err != nil {
+		facades.Log().Channel("websocket").Errorf("保存 Panel 密钥对到 system_settings 失败: %v", err)
+		return "", "", fmt.Errorf("保存 Panel 密钥对失败: %w", err)
+	}
+
+	facades.Log().Channel("websocket").Info("Panel 密钥对已生成并保存到 system_settings")
+	return privateKey, publicKey, nil
+}
+
+// generateRSAKeyPair 生成 RSA 密钥对（2048位）
+func (h *agentMessageHandler) generateRSAKeyPair() (privateKey, publicKey string, err error) {
+	// 生成 2048 位 RSA 密钥对
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", "", fmt.Errorf("生成密钥对失败: %w", err)
+	}
+
+	// 编码私钥为 PEM 格式
+	privateKeyBytes := x509.MarshalPKCS1PrivateKey(key)
+	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: privateKeyBytes,
+	})
+	privateKey = string(privateKeyPEM)
+
+	// 编码公钥为 PEM 格式
+	publicKeyBytes, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		return "", "", fmt.Errorf("编码公钥失败: %w", err)
+	}
+	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "PUBLIC KEY",
+		Bytes: publicKeyBytes,
+	})
+	publicKey = string(publicKeyPEM)
+
+	return privateKey, publicKey, nil
+}
+
+// getPublicKeyFingerprint 计算公钥指纹（SHA256）
+func (h *agentMessageHandler) getPublicKeyFingerprint(publicKey string) (string, error) {
+	// 解析 PEM 格式的公钥
+	block, _ := pem.Decode([]byte(publicKey))
+	if block == nil {
+		return "", errors.New("无效的公钥格式")
+	}
+
+	// 解析公钥
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("解析公钥失败: %w", err)
+	}
+
+	// 将公钥编码为 DER 格式
+	pubDER, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		return "", fmt.Errorf("编码公钥失败: %w", err)
+	}
+
+	// 计算 SHA256 哈希
+	hash := sha256.Sum256(pubDER)
+	// 返回十六进制字符串（64字符）
+	return fmt.Sprintf("%x", hash), nil
+}
+
+// encryptWithPublicKey 使用公钥加密数据
+func (h *agentMessageHandler) encryptWithPublicKey(data []byte, publicKey string) ([]byte, error) {
+	// 解析 PEM 格式的公钥
+	block, _ := pem.Decode([]byte(publicKey))
+	if block == nil {
+		return nil, errors.New("无效的公钥格式")
+	}
+
+	// 解析公钥
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("解析公钥失败: %w", err)
+	}
+
+	// 类型断言为 RSA 公钥
+	rsaPub, ok := pub.(*rsa.PublicKey)
+	if !ok {
+		return nil, errors.New("不是有效的 RSA 公钥")
+	}
+
+	// RSA 加密（使用 OAEP）
+	encrypted, err := rsa.EncryptOAEP(
+		sha256.New(),
+		rand.Reader,
+		rsaPub,
+		data,
+		nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("加密失败: %w", err)
+	}
+
+	return encrypted, nil
+}
+
+// generateSessionKey 生成 AES-256 会话密钥（32字节）
+func (h *agentMessageHandler) generateSessionKey() ([]byte, error) {
+	key := make([]byte, 32) // AES-256 需要 32 字节密钥
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		return nil, fmt.Errorf("生成会话密钥失败: %w", err)
+	}
+	return key, nil
+}
+
 // HandleHeartbeat 处理心跳消息
 func (h *agentMessageHandler) HandleHeartbeat(conn *AgentConnection) error {
 	if conn.GetState() != StateAuthenticated {
@@ -155,6 +430,11 @@ func (h *agentMessageHandler) HandleHeartbeat(conn *AgentConnection) error {
 	response := map[string]interface{}{
 		"type":   MessageTypeHello,
 		"status": "success",
+	}
+
+	// 如果启用了加密，使用加密发送
+	if conn.IsEncryptionEnabled() {
+		return conn.WriteEncryptedJSON(response)
 	}
 	return conn.WriteJSON(response)
 }
