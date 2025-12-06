@@ -2,6 +2,12 @@ package websocket
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"io"
 	"sync"
 	"time"
 
@@ -191,7 +197,256 @@ func (c *AgentConnection) GetInfo() *AgentConnectionInfo {
 	// 返回副本避免并发问题
 	info := *c.info
 	info.LastPing = c.GetLastPing()
+	// 复制 SessionKey 避免外部修改
+	if info.SessionKey != nil {
+		info.SessionKey = make([]byte, len(c.info.SessionKey))
+		copy(info.SessionKey, c.info.SessionKey)
+	}
 	return &info
+}
+
+// SetSessionKey 设置 AES 会话密钥
+func (c *AgentConnection) SetSessionKey(key []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// 复制密钥避免外部修改
+	if key != nil {
+		c.info.SessionKey = make([]byte, len(key))
+		copy(c.info.SessionKey, key)
+	} else {
+		c.info.SessionKey = nil
+	}
+}
+
+// GetSessionKey 获取 AES 会话密钥（返回副本）
+func (c *AgentConnection) GetSessionKey() []byte {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.info.SessionKey == nil {
+		return nil
+	}
+	key := make([]byte, len(c.info.SessionKey))
+	copy(key, c.info.SessionKey)
+	return key
+}
+
+// SetAgentPublicKey 设置 Agent 公钥
+func (c *AgentConnection) SetAgentPublicKey(publicKey string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.info.AgentPublicKey = publicKey
+}
+
+// GetAgentPublicKey 获取 Agent 公钥
+func (c *AgentConnection) GetAgentPublicKey() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.info.AgentPublicKey
+}
+
+// SetAgentFingerprint 设置 Agent 公钥指纹
+func (c *AgentConnection) SetAgentFingerprint(fingerprint string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.info.AgentFingerprint = fingerprint
+}
+
+// GetAgentFingerprint 获取 Agent 公钥指纹
+func (c *AgentConnection) GetAgentFingerprint() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.info.AgentFingerprint
+}
+
+// EnableEncryption 启用加密
+func (c *AgentConnection) EnableEncryption() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.info.EncryptionEnabled = true
+}
+
+// IsEncryptionEnabled 检查是否启用加密
+func (c *AgentConnection) IsEncryptionEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.info.EncryptionEnabled
+}
+
+// encryptMessage 使用 AES-GCM 加密消息（内部方法）
+func (c *AgentConnection) encryptMessage(message []byte, key []byte) ([]byte, error) {
+	// 验证密钥长度（AES-256 需要 32 字节）
+	if len(key) != 32 {
+		return nil, ErrConnectionClosed
+	}
+
+	// 创建 AES 密码块
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	// 创建 GCM 模式
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	// 生成随机 nonce（12 字节，GCM 推荐长度）
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+
+	// 加密消息（Seal 会自动附加认证标签）
+	ciphertext := gcm.Seal(nonce, nonce, message, nil)
+
+	return ciphertext, nil
+}
+
+// decryptMessage 使用 AES-GCM 解密消息（内部方法）
+func (c *AgentConnection) decryptMessage(encryptedMessage []byte, key []byte) ([]byte, error) {
+	// 验证密钥长度（AES-256 需要 32 字节）
+	if len(key) != 32 {
+		return nil, ErrConnectionClosed
+	}
+
+	// 创建 AES 密码块
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	// 创建 GCM 模式
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	// 检查消息长度（至少需要 nonce + tag）
+	nonceSize := gcm.NonceSize()
+	if len(encryptedMessage) < nonceSize {
+		return nil, ErrConnectionClosed
+	}
+
+	// 提取 nonce 和密文
+	nonce, ciphertext := encryptedMessage[:nonceSize], encryptedMessage[nonceSize:]
+
+	// 解密消息（Open 会自动验证认证标签）
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return plaintext, nil
+}
+
+// WriteEncryptedJSON 发送加密的 JSON 消息
+func (c *AgentConnection) WriteEncryptedJSON(v interface{}) error {
+	// 检查是否启用加密
+	if !c.IsEncryptionEnabled() {
+		// 未启用加密，使用普通方式发送
+		return c.WriteJSON(v)
+	}
+
+	// 获取会话密钥
+	sessionKey := c.GetSessionKey()
+	if sessionKey == nil {
+		return ErrConnectionClosed
+	}
+
+	// 序列化 JSON
+	jsonData, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	// 使用 AES 加密
+	encryptedData, err := c.encryptMessage(jsonData, sessionKey)
+	if err != nil {
+		return err
+	}
+
+	// Base64 编码
+	encryptedBase64 := base64.StdEncoding.EncodeToString(encryptedData)
+
+	// 构造加密消息格式
+	encryptedMsg := map[string]interface{}{
+		"encrypted": true,
+		"data":      encryptedBase64,
+	}
+
+	// 使用写锁保护，防止并发写入导致 panic
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	// 检查连接是否已关闭
+	if c.IsClosed() {
+		return ErrConnectionClosed
+	}
+
+	if c.config != nil && c.config.WriteTimeout > 0 {
+		deadline := time.Now().Add(c.config.WriteTimeout)
+		if err := c.SetWriteDeadline(deadline); err != nil {
+			return err
+		}
+	}
+
+	return c.conn.WriteJSON(encryptedMsg)
+}
+
+// ReadEncryptedMessage 读取加密消息
+func (c *AgentConnection) ReadEncryptedMessage() ([]byte, error) {
+	// 检查是否启用加密
+	if !c.IsEncryptionEnabled() {
+		// 未启用加密，使用普通方式读取
+		_, message, err := c.ReadMessage()
+		return message, err
+	}
+
+	// 获取会话密钥
+	sessionKey := c.GetSessionKey()
+	if sessionKey == nil {
+		return nil, ErrConnectionClosed
+	}
+
+	// 读取消息
+	_, message, err := c.ReadMessage()
+	if err != nil {
+		return nil, err
+	}
+
+	// 解析消息
+	var msg map[string]interface{}
+	if err := json.Unmarshal(message, &msg); err != nil {
+		return nil, err
+	}
+
+	// 检查是否是加密消息
+	encrypted, ok := msg["encrypted"].(bool)
+	if !ok || !encrypted {
+		// 不是加密消息，直接返回原始数据
+		return message, nil
+	}
+
+	// 获取加密数据
+	encryptedDataBase64, ok := msg["data"].(string)
+	if !ok {
+		return nil, ErrConnectionClosed
+	}
+
+	// Base64 解码
+	encryptedData, err := base64.StdEncoding.DecodeString(encryptedDataBase64)
+	if err != nil {
+		return nil, err
+	}
+
+	// 使用 AES 解密
+	decryptedData, err := c.decryptMessage(encryptedData, sessionKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return decryptedData, nil
 }
 
 // FrontendConnection Frontend 连接

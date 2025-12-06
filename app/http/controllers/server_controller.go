@@ -33,7 +33,6 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 	type CreateServerRequest struct {
 		Name                   string   `json:"name" form:"name"`
 		IP                     string   `json:"ip" form:"ip"`
-		Port                   int      `json:"port" form:"port"`
 		Location               string   `json:"location" form:"location"`
 		OS                     string   `json:"os" form:"os"`
 		GroupID                *uint    `json:"group_id" form:"group_id"`
@@ -56,16 +55,6 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 	// 验证必填字段
 	if req.Name == "" || req.IP == "" {
 		return utils.ErrorResponse(ctx, http.StatusBadRequest, "名称和IP地址为必填项")
-	}
-
-	// 设置默认端口
-	if req.Port == 0 {
-		req.Port = 22
-	}
-
-	// 验证端口范围
-	if req.Port < 1 || req.Port > 65535 {
-		return utils.ErrorResponse(ctx, http.StatusBadRequest, "端口号必须在1-65535之间")
 	}
 
 	// 生成UUID作为server_id
@@ -977,7 +966,6 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 	type UpdateServerRequest struct {
 		Name                   string                  `json:"name" form:"name"`
 		IP                     string                  `json:"ip" form:"ip"`
-		Port                   int                     `json:"port" form:"port"`
 		Location               string                  `json:"location" form:"location"`
 		OS                     string                  `json:"os" form:"os"`
 		GroupID                *uint                   `json:"group_id" form:"group_id"`
@@ -1010,12 +998,6 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 	}
 	if req.IP != "" {
 		updateData["ip"] = req.IP
-	}
-	if req.Port > 0 {
-		if req.Port < 1 || req.Port > 65535 {
-			return utils.ErrorResponse(ctx, http.StatusBadRequest, "端口号必须在1-65535之间")
-		}
-		updateData["port"] = req.Port
 	}
 	if req.Location != "" {
 		updateData["location"] = req.Location
@@ -1402,9 +1384,11 @@ func (c *ServerController) ResetAgentKey(ctx http.Context) http.Response {
 	// 生成新的 agent_key
 	newAgentKey := uuid.New().String()
 
-	// 更新数据库
+	// 重置 agent_key 并清除指纹和公钥
 	err = serverRepo.Update(serverID, map[string]interface{}{
-		"agent_key": newAgentKey,
+		"agent_key":         newAgentKey,
+		"agent_public_key":  nil,
+		"agent_fingerprint": nil,
 	})
 	if err != nil {
 		facades.Log().Errorf("更新通信密钥失败: %v", err)
@@ -1422,7 +1406,7 @@ func (c *ServerController) ResetAgentKey(ctx http.Context) http.Response {
 
 	return ctx.Response().Json(http.StatusOK, http.Json{
 		"status":  true,
-		"message": "通信密钥已重置",
+		"message": "通信密钥和指纹已重置",
 		"data": map[string]interface{}{
 			"agent_key": newAgentKey,
 		},

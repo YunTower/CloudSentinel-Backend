@@ -77,8 +77,17 @@ func (c *WebSocketController) HandleAgentConnection(ctx http.Context) http.Respo
 			break
 		}
 
-		// 读取消息（使用超时控制）
-		_, message, err := agentConn.ReadMessage()
+		// 读取消息（支持加密）
+		var message []byte
+		var err error
+		if agentConn.IsEncryptionEnabled() {
+			// 如果启用了加密，使用加密读取
+			message, err = agentConn.ReadEncryptedMessage()
+		} else {
+			// 未启用加密，使用普通读取
+			_, message, err = agentConn.ReadMessage()
+		}
+
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				facades.Log().Channel("websocket").Errorf("WebSocket读取错误: %v", err)
@@ -305,6 +314,8 @@ func (c *WebSocketController) HandleFrontendConnection(ctx http.Context) http.Re
 
 // sendError 发送错误消息
 func (c *WebSocketController) sendError(conn *websocket.Conn, message string) {
+	// 注意：这里使用原始连接发送错误，因为此时可能还未建立加密连接
+	// 如果需要支持加密错误消息，需要传入 AgentConnection 而不是 websocket.Conn
 	response := map[string]interface{}{
 		"type":    ws.MessageTypeError,
 		"status":  "error",
