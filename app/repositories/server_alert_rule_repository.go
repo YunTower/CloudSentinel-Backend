@@ -1,6 +1,9 @@
 package repositories
 
 import (
+	"fmt"
+	"time"
+
 	"goravel/app/models"
 
 	"github.com/goravel/framework/facades"
@@ -52,6 +55,14 @@ func (r *ServerAlertRuleRepository) GetGlobalRules() ([]*models.ServerAlertRule,
 
 // CreateOrUpdate 创建或更新规则
 func (r *ServerAlertRuleRepository) CreateOrUpdate(rule *models.ServerAlertRule) error {
+	// 验证必要字段
+	if rule.RuleType == "" {
+		return fmt.Errorf("rule_type cannot be empty")
+	}
+	if rule.Config == "" {
+		return fmt.Errorf("config cannot be empty")
+	}
+
 	var existing models.ServerAlertRule
 	query := facades.Orm().Query().Where("rule_type", rule.RuleType)
 	if rule.ServerID == nil {
@@ -61,13 +72,23 @@ func (r *ServerAlertRuleRepository) CreateOrUpdate(rule *models.ServerAlertRule)
 	}
 	err := query.First(&existing)
 
-	if err != nil {
-		// 不存在则创建
+	// 检查是否是因为记录不存在而返回错误，或者 existing.ID 为 0（表示未找到）
+	if err != nil || existing.ID == 0 {
+		// 不存在则创建，确保时间字段正确设置
+		now := time.Now()
+		if rule.CreatedAt.IsZero() {
+			rule.CreatedAt = now
+		}
+		if rule.UpdatedAt.IsZero() {
+			rule.UpdatedAt = now
+		}
+
 		return facades.Orm().Query().Create(rule)
 	}
 
 	// 存在则更新
 	existing.Config = rule.Config
+	existing.UpdatedAt = time.Now()
 	return facades.Orm().Query().Save(&existing)
 }
 
@@ -88,5 +109,3 @@ func (r *ServerAlertRuleRepository) DeleteByServerIDAndType(serverID *string, ru
 	_, err := query.Delete()
 	return err
 }
-
-

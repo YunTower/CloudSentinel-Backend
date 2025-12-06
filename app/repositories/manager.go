@@ -3,19 +3,21 @@ package repositories
 import "sync"
 
 var (
-	systemSettingRepoOnce     sync.Once
-	serverRepoOnce            sync.Once
-	serverMetricRepoOnce      sync.Once
-	alertNotificationRepoOnce sync.Once
-	serverGroupRepoOnce       sync.Once
-	serverAlertRuleRepoOnce   sync.Once
+	systemSettingRepoOnce              sync.Once
+	serverRepoOnce                     sync.Once
+	serverMetricRepoOnce               sync.Once
+	alertNotificationRepoOnce          sync.Once
+	serverGroupRepoOnce                sync.Once
+	serverAlertRuleRepoOnce            sync.Once
+	serverNotificationChannelRepoOnce  sync.Once
 
-	systemSettingRepoInstance     *SystemSettingRepository
-	serverRepoInstance            *ServerRepository
-	serverMetricRepoInstance      *ServerMetricRepository
-	alertNotificationRepoInstance *AlertNotificationRepository
-	serverGroupRepoInstance       *ServerGroupRepository
-	serverAlertRuleRepoInstance   *ServerAlertRuleRepository
+	systemSettingRepoInstance             *SystemSettingRepository
+	serverRepoInstance                    *ServerRepository
+	serverMetricRepoInstance              *ServerMetricRepository
+	alertNotificationRepoInstance         *AlertNotificationRepository
+	serverGroupRepoInstance               *ServerGroupRepository
+	serverAlertRuleRepoInstance           *ServerAlertRuleRepository
+	serverNotificationChannelRepoInstance *ServerNotificationChannelRepository
 )
 
 // GetSystemSettingRepository 获取系统设置 Repository 单例
@@ -64,4 +66,12 @@ func GetServerAlertRuleRepository() *ServerAlertRuleRepository {
 		serverAlertRuleRepoInstance = &ServerAlertRuleRepository{}
 	})
 	return serverAlertRuleRepoInstance
+}
+
+// GetServerNotificationChannelRepository 获取服务器通知渠道 Repository 单例
+func GetServerNotificationChannelRepository() *ServerNotificationChannelRepository {
+	serverNotificationChannelRepoOnce.Do(func() {
+		serverNotificationChannelRepoInstance = &ServerNotificationChannelRepository{}
+	})
+	return serverNotificationChannelRepoInstance
 }

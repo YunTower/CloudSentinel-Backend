@@ -2,12 +2,14 @@ package controllers
 
 import (
 	"encoding/json"
+	"fmt"
 	"goravel/app/models"
 	"goravel/app/repositories"
 	"goravel/app/services"
 	"goravel/app/utils"
 
 	"github.com/goravel/framework/contracts/http"
+	"github.com/goravel/framework/facades"
 )
 
 type ServerAlertController struct{}
@@ -47,6 +49,72 @@ func (c *ServerAlertController) GetServerAlertRules(ctx http.Context) http.Respo
 			"warning":  rules.Disk.Warning,
 			"critical": rules.Disk.Critical,
 		},
+	}
+
+	// 获取其他类型的告警规则（bandwidth, traffic, expiration）
+	ruleRepo := repositories.GetServerAlertRuleRepository()
+	
+	// bandwidth: {enabled: bool, threshold: number}
+	bandwidthRule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "bandwidth")
+	if err == nil && bandwidthRule != nil {
+		var ruleConfig map[string]interface{}
+		if err := json.Unmarshal([]byte(bandwidthRule.Config), &ruleConfig); err == nil {
+			result["bandwidth"] = ruleConfig
+		} else {
+			// 解析失败，返回默认值
+			result["bandwidth"] = map[string]interface{}{
+				"enabled":   false,
+				"threshold": 100,
+			}
+		}
+	} else {
+		// 没有配置，返回默认禁用状态
+		result["bandwidth"] = map[string]interface{}{
+			"enabled":   false,
+			"threshold": 100,
+		}
+	}
+
+	// traffic: {enabled: bool, threshold_percent: number}
+	trafficRule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "traffic")
+	if err == nil && trafficRule != nil {
+		var ruleConfig map[string]interface{}
+		if err := json.Unmarshal([]byte(trafficRule.Config), &ruleConfig); err == nil {
+			result["traffic"] = ruleConfig
+		} else {
+			// 解析失败，返回默认值
+			result["traffic"] = map[string]interface{}{
+				"enabled":         false,
+				"threshold_percent": 80,
+			}
+		}
+	} else {
+		// 没有配置，返回默认禁用状态
+		result["traffic"] = map[string]interface{}{
+			"enabled":         false,
+			"threshold_percent": 80,
+		}
+	}
+
+	// expiration: {enabled: bool, alert_days: number}
+	expirationRule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "expiration")
+	if err == nil && expirationRule != nil {
+		var ruleConfig map[string]interface{}
+		if err := json.Unmarshal([]byte(expirationRule.Config), &ruleConfig); err == nil {
+			result["expiration"] = ruleConfig
+		} else {
+			// 解析失败，返回默认值
+			result["expiration"] = map[string]interface{}{
+				"enabled":    false,
+				"alert_days": 7,
+			}
+		}
+	} else {
+		// 没有配置，返回默认禁用状态
+		result["expiration"] = map[string]interface{}{
+			"enabled":    false,
+			"alert_days": 7,
+		}
 	}
 
 	return ctx.Response().Success().Json(http.Json{
@@ -111,7 +179,7 @@ func (c *ServerAlertController) UpdateServerAlertRules(ctx http.Context) http.Re
 		}
 	}
 
-	// 处理新增规则类型（需要特殊处理，因为结构不同）
+	// 处理新增规则类型
 	ruleRepo := repositories.GetServerAlertRuleRepository()
 	if req.Bandwidth != nil {
 		configJson, _ := json.Marshal(*req.Bandwidth)
@@ -151,3 +219,96 @@ func (c *ServerAlertController) UpdateServerAlertRules(ctx http.Context) http.Re
 	return utils.SuccessResponse(ctx, "success")
 }
 
+// CopyAlertRules 复制告警规则到多个服务器
+func (c *ServerAlertController) CopyAlertRules(ctx http.Context) http.Response {
+	type CopyAlertRulesRequest struct {
+		SourceServerID  string   `json:"source_server_id" form:"source_server_id"`
+		TargetServerIDs []string `json:"target_server_ids" form:"target_server_ids"`
+		RuleTypes       []string `json:"rule_types" form:"rule_types"` // cpu, memory, disk, bandwidth, traffic, expiration
+	}
+
+	var req CopyAlertRulesRequest
+	if err := ctx.Request().Bind(&req); err != nil {
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "请求参数错误")
+	}
+
+	if req.SourceServerID == "" {
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "源服务器ID不能为空")
+	}
+
+	if len(req.TargetServerIDs) == 0 {
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "目标服务器ID列表不能为空")
+	}
+
+	if len(req.RuleTypes) == 0 {
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "规则类型列表不能为空")
+	}
+
+	// 验证源服务器是否存在
+	serverRepo := repositories.GetServerRepository()
+	sourceServer, err := serverRepo.GetByID(req.SourceServerID)
+	if err != nil || sourceServer == nil {
+		return utils.ErrorResponse(ctx, http.StatusNotFound, "源服务器不存在")
+	}
+
+	// 获取源服务器的告警规则
+	ruleRepo := repositories.GetServerAlertRuleRepository()
+	sourceServerIDPtr := &req.SourceServerID
+
+	// 复制规则到目标服务器
+	successCount := 0
+	failCount := 0
+	var lastError error
+
+	for _, targetServerID := range req.TargetServerIDs {
+		// 排除源服务器
+		if targetServerID == req.SourceServerID {
+			continue
+		}
+
+		// 验证目标服务器是否存在
+		targetServer, err := serverRepo.GetByID(targetServerID)
+		if err != nil || targetServer == nil {
+			failCount++
+			lastError = err
+			continue
+		}
+
+		// 复制每个规则类型
+		for _, ruleType := range req.RuleTypes {
+			// 获取源服务器的规则
+			sourceRule, err := ruleRepo.GetByServerIDAndType(sourceServerIDPtr, ruleType)
+			if err != nil {
+				// 源服务器没有该规则，跳过
+				continue
+			}
+
+			// 创建目标服务器的规则
+			targetRule := &models.ServerAlertRule{
+				ServerID: &targetServerID,
+				RuleType: ruleType,
+				Config:   sourceRule.Config,
+			}
+
+			if err := ruleRepo.CreateOrUpdate(targetRule); err != nil {
+				failCount++
+				lastError = err
+				facades.Log().Warningf("复制告警规则失败: 源服务器=%s, 目标服务器=%s, 规则类型=%s, 错误=%v",
+					req.SourceServerID, targetServerID, ruleType, err)
+			} else {
+				successCount++
+			}
+		}
+	}
+
+	if failCount > 0 && successCount == 0 {
+		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "复制告警规则失败", lastError)
+	}
+
+	message := fmt.Sprintf("成功复制 %d 条规则", successCount)
+	if failCount > 0 {
+		message += fmt.Sprintf("，失败 %d 条", failCount)
+	}
+
+	return utils.SuccessResponse(ctx, message)
+}

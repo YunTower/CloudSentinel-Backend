@@ -89,79 +89,51 @@ func (s *AlertService) getRules() (*Rules, error) {
 	return s.GetServerRules(nil)
 }
 
-// GetServerRules 获取指定服务器的告警规则（合并逻辑：Server > Global > Default）
+// GetServerRules 获取指定服务器的告警规则
 func (s *AlertService) GetServerRules(serverID *string) (*Rules, error) {
-	// 默认规则
+	// 默认规则（禁用状态）
 	defaultRules := &Rules{
-		CPU:    Rule{Enabled: true, Warning: 80, Critical: 90},
-		Memory: Rule{Enabled: true, Warning: 85, Critical: 95},
-		Disk:   Rule{Enabled: true, Warning: 85, Critical: 95},
+		CPU:    Rule{Enabled: false, Warning: 80, Critical: 90},
+		Memory: Rule{Enabled: false, Warning: 85, Critical: 95},
+		Disk:   Rule{Enabled: false, Warning: 85, Critical: 95},
+	}
+
+	// 如果没有指定服务器ID，返回禁用状态的默认规则
+	if serverID == nil {
+		return defaultRules, nil
 	}
 
 	ruleRepo := repositories.GetServerAlertRuleRepository()
 	ruleTypes := []string{"cpu", "memory", "disk"}
 
-	// 先获取全局规则
-	globalRules := make(map[string]*Rule)
-	globalRuleList, err := ruleRepo.GetGlobalRules()
+	// 获取服务器特定规则
+	serverRules := make(map[string]*Rule)
+	serverRuleList, err := ruleRepo.GetByServerID(*serverID)
 	if err == nil {
-		for _, ruleRecord := range globalRuleList {
+		for _, ruleRecord := range serverRuleList {
 			var rule Rule
 			if err := json.Unmarshal([]byte(ruleRecord.Config), &rule); err == nil {
-				globalRules[ruleRecord.RuleType] = &rule
+				serverRules[ruleRecord.RuleType] = &rule
 			}
 		}
 	}
 
-	// 如果有指定服务器ID，获取服务器特定规则
-	serverRules := make(map[string]*Rule)
-	if serverID != nil {
-		serverRuleList, err := ruleRepo.GetByServerID(*serverID)
-		if err == nil {
-			for _, ruleRecord := range serverRuleList {
-				var rule Rule
-				if err := json.Unmarshal([]byte(ruleRecord.Config), &rule); err == nil {
-					serverRules[ruleRecord.RuleType] = &rule
-				}
-			}
-		}
-	}
-
-	// 合并规则：服务器规则 > 全局规则 > 默认规则
+	// 只使用服务器特定规则，没有则使用禁用状态的默认规则
 	result := &Rules{}
 	for _, ruleType := range ruleTypes {
 		var rule *Rule
-		if serverID != nil {
-			// 优先使用服务器特定规则
-			if r, ok := serverRules[ruleType]; ok {
-				rule = r
-			} else if r, ok := globalRules[ruleType]; ok {
-				rule = r
-			} else {
-				// 使用默认规则
-				switch ruleType {
-				case "cpu":
-					rule = &defaultRules.CPU
-				case "memory":
-					rule = &defaultRules.Memory
-				case "disk":
-					rule = &defaultRules.Disk
-				}
-			}
+		// 只使用服务器特定规则
+		if r, ok := serverRules[ruleType]; ok {
+			rule = r
 		} else {
-			// 只使用全局规则
-			if r, ok := globalRules[ruleType]; ok {
-				rule = r
-			} else {
-				// 使用默认规则
-				switch ruleType {
-				case "cpu":
-					rule = &defaultRules.CPU
-				case "memory":
-					rule = &defaultRules.Memory
-				case "disk":
-					rule = &defaultRules.Disk
-				}
+			// 使用禁用状态的默认规则
+			switch ruleType {
+			case "cpu":
+				rule = &defaultRules.CPU
+			case "memory":
+				rule = &defaultRules.Memory
+			case "disk":
+				rule = &defaultRules.Disk
 			}
 		}
 
@@ -179,8 +151,12 @@ func (s *AlertService) GetServerRules(serverID *string) (*Rules, error) {
 	return result, nil
 }
 
-// SaveServerRules 保存服务器告警规则（serverID 为 nil 时保存全局规则）
+// SaveServerRules 保存服务器告警规则（serverID 不能为 nil）
 func (s *AlertService) SaveServerRules(serverID *string, rules map[string]Rule) error {
+	if serverID == nil {
+		return fmt.Errorf("serverID cannot be nil")
+	}
+
 	ruleRepo := repositories.GetServerAlertRuleRepository()
 
 	for ruleType, rule := range rules {
@@ -370,8 +346,8 @@ func (s *AlertService) sendNotification(serverID, metricName string, value float
 		}
 	}
 
-	// 获取通知配置并发送
-	emailConfig, webhookConfig, err := s.getNotificationConfigs()
+	// 获取通知配置并发送（优先使用服务器特定配置）
+	emailConfig, webhookConfig, err := s.getNotificationConfigs(serverID)
 	if err != nil {
 		facades.Log().Warningf("获取通知配置失败: %v", err)
 		return
@@ -405,18 +381,18 @@ func (s *AlertService) sendNotification(serverID, metricName string, value float
 }
 
 // getNotificationConfigs 获取通知配置
-func (s *AlertService) getNotificationConfigs() (*notification.EmailConfig, *notification.WebhookConfig, error) {
+func (s *AlertService) getNotificationConfigs(serverID string) (*notification.EmailConfig, *notification.WebhookConfig, error) {
 	emailConfig := &notification.EmailConfig{Enabled: false}
 	webhookConfig := &notification.WebhookConfig{Enabled: false}
 
+	// 获取全局通知配置
 	notificationRepo := repositories.GetAlertNotificationRepository()
 	notifications, err := notificationRepo.GetAll()
-
 	if err != nil {
 		return emailConfig, webhookConfig, err
 	}
 
-	// 解析配置
+	// 解析全局配置
 	for _, notif := range notifications {
 		if !notif.Enabled || notif.ConfigJson == "" {
 			continue
@@ -425,11 +401,23 @@ func (s *AlertService) getNotificationConfigs() (*notification.EmailConfig, *not
 		switch notif.NotificationType {
 		case "email":
 			if err := json.Unmarshal([]byte(notif.ConfigJson), &emailConfig); err == nil {
-				emailConfig.Enabled = true
 			}
 		case "webhook":
 			if err := json.Unmarshal([]byte(notif.ConfigJson), &webhookConfig); err == nil {
-				webhookConfig.Enabled = true
+			}
+		}
+	}
+
+	// 获取服务器特定的通知渠道配置
+	channelRepo := repositories.GetServerNotificationChannelRepository()
+	serverChannels, err := channelRepo.GetByServerID(serverID)
+	if err == nil && len(serverChannels) > 0 {
+		// 只使用服务器配置的启用状态
+		for _, channel := range serverChannels {
+			if channel.NotificationType == "email" {
+				emailConfig.Enabled = channel.Enabled
+			} else if channel.NotificationType == "webhook" {
+				webhookConfig.Enabled = channel.Enabled
 			}
 		}
 	}
@@ -437,20 +425,57 @@ func (s *AlertService) getNotificationConfigs() (*notification.EmailConfig, *not
 	return emailConfig, webhookConfig, nil
 }
 
+// GetServerNotificationChannels 获取服务器启用的通知渠道
+func (s *AlertService) GetServerNotificationChannels(serverID string) (map[string]bool, error) {
+	channelRepo := repositories.GetServerNotificationChannelRepository()
+	channels, err := channelRepo.GetByServerID(serverID)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]bool)
+	for _, channel := range channels {
+		result[channel.NotificationType] = channel.Enabled
+	}
+
+	return result, nil
+}
+
+// SaveServerNotificationChannels 保存服务器通知渠道配置
+func (s *AlertService) SaveServerNotificationChannels(serverID string, channels map[string]bool) error {
+	channelRepo := repositories.GetServerNotificationChannelRepository()
+
+	for notificationType, enabled := range channels {
+		// 验证 notificationType 不为空
+		if notificationType == "" {
+			continue
+		}
+
+		channel := &models.ServerNotificationChannel{
+			ServerID:         serverID,
+			NotificationType: notificationType,
+			Enabled:          enabled,
+		}
+
+		if err := channelRepo.CreateOrUpdate(channel); err != nil {
+			facades.Log().Warningf("保存服务器通知渠道配置失败 %s: %v", notificationType, err)
+			return err
+		}
+	}
+
+	return nil
+}
+
 // CheckBandwidth 检查带宽峰值告警
 func (s *AlertService) CheckBandwidth(serverID string, currentMbps float64) error {
 	serverIDPtr := &serverID
 	ruleRepo := repositories.GetServerAlertRuleRepository()
 
-	// 先尝试获取服务器特定规则
+	// 获取服务器特定规则
 	rule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "bandwidth")
 	if err != nil {
-		// 如果不存在，尝试获取全局规则
-		rule, err = ruleRepo.GetByServerIDAndType(nil, "bandwidth")
-		if err != nil {
-			// 没有配置规则，不检查
-			return nil
-		}
+		// 没有配置规则，不检查
+		return nil
 	}
 
 	var config map[string]interface{}
@@ -491,7 +516,7 @@ func (s *AlertService) CheckBandwidth(serverID string, currentMbps float64) erro
 		facades.Cache().Put(cacheKey, true, 2*time.Minute)
 
 		// 发送通知
-		emailConfig, webhookConfig, _ := s.getNotificationConfigs()
+		emailConfig, webhookConfig, _ := s.getNotificationConfigs(serverID)
 		if emailConfig.Enabled {
 			configJson, _ := json.Marshal(emailConfig)
 			_ = facades.Queue().Job(&jobs.SendAlertJob{
@@ -525,15 +550,11 @@ func (s *AlertService) CheckTraffic(serverID string, usedBytes int64, limitBytes
 	serverIDPtr := &serverID
 	ruleRepo := repositories.GetServerAlertRuleRepository()
 
-	// 先尝试获取服务器特定规则
+	// 获取服务器特定规则
 	rule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "traffic")
 	if err != nil {
-		// 如果不存在，尝试获取全局规则
-		rule, err = ruleRepo.GetByServerIDAndType(nil, "traffic")
-		if err != nil {
-			// 没有配置规则，不检查
-			return nil
-		}
+		// 没有配置规则，不检查
+		return nil
 	}
 
 	var config map[string]interface{}
@@ -578,7 +599,7 @@ func (s *AlertService) CheckTraffic(serverID string, usedBytes int64, limitBytes
 		facades.Cache().Put(cacheKey, true, 2*time.Minute)
 
 		// 发送通知
-		emailConfig, webhookConfig, _ := s.getNotificationConfigs()
+		emailConfig, webhookConfig, _ := s.getNotificationConfigs(serverID)
 		if emailConfig.Enabled {
 			configJson, _ := json.Marshal(emailConfig)
 			_ = facades.Queue().Job(&jobs.SendAlertJob{
@@ -618,15 +639,11 @@ func (s *AlertService) CheckExpiration(serverID string) error {
 	serverIDPtr := &serverID
 	ruleRepo := repositories.GetServerAlertRuleRepository()
 
-	// 先尝试获取服务器特定规则
+	// 获取服务器特定规则
 	rule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "expiration")
 	if err != nil {
-		// 如果不存在，尝试获取全局规则
-		rule, err = ruleRepo.GetByServerIDAndType(nil, "expiration")
-		if err != nil {
-			// 没有配置规则，不检查
-			return nil
-		}
+		// 没有配置规则，不检查
+		return nil
 	}
 
 	var config map[string]interface{}
@@ -662,7 +679,7 @@ func (s *AlertService) CheckExpiration(serverID string) error {
 		facades.Cache().Put(cacheKey, true, 24*time.Hour)
 
 		// 发送通知
-		emailConfig, webhookConfig, _ := s.getNotificationConfigs()
+		emailConfig, webhookConfig, _ := s.getNotificationConfigs(serverID)
 		if emailConfig.Enabled {
 			configJson, _ := json.Marshal(emailConfig)
 			_ = facades.Queue().Job(&jobs.SendAlertJob{
