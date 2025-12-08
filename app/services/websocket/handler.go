@@ -1,17 +1,12 @@
 package websocket
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 
+	"goravel/app/cryptoutil"
 	"goravel/app/repositories"
 
 	"github.com/goravel/framework/facades"
@@ -299,9 +294,9 @@ func (h *agentMessageHandler) getOrGeneratePanelKeyPair() (privateKey, publicKey
 	// 如果不存在或无效，生成新的密钥对
 	facades.Log().Channel("websocket").Info("Panel 密钥对不存在，正在生成新的密钥对...")
 
-	privateKey, publicKey, err = h.generateRSAKeyPair()
+	privateKey, publicKey, err = cryptoutil.GenerateKeyPair()
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("生成密钥对失败: %w", err)
 	}
 
 	// 保存到 system_settings
@@ -319,104 +314,19 @@ func (h *agentMessageHandler) getOrGeneratePanelKeyPair() (privateKey, publicKey
 	return privateKey, publicKey, nil
 }
 
-// generateRSAKeyPair 生成 RSA 密钥对（2048位）
-func (h *agentMessageHandler) generateRSAKeyPair() (privateKey, publicKey string, err error) {
-	// 生成 2048 位 RSA 密钥对
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return "", "", fmt.Errorf("生成密钥对失败: %w", err)
-	}
-
-	// 编码私钥为 PEM 格式
-	privateKeyBytes := x509.MarshalPKCS1PrivateKey(key)
-	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: privateKeyBytes,
-	})
-	privateKey = string(privateKeyPEM)
-
-	// 编码公钥为 PEM 格式
-	publicKeyBytes, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
-	if err != nil {
-		return "", "", fmt.Errorf("编码公钥失败: %w", err)
-	}
-	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY",
-		Bytes: publicKeyBytes,
-	})
-	publicKey = string(publicKeyPEM)
-
-	return privateKey, publicKey, nil
-}
-
 // getPublicKeyFingerprint 计算公钥指纹（SHA256）
 func (h *agentMessageHandler) getPublicKeyFingerprint(publicKey string) (string, error) {
-	// 解析 PEM 格式的公钥
-	block, _ := pem.Decode([]byte(publicKey))
-	if block == nil {
-		return "", errors.New("无效的公钥格式")
-	}
-
-	// 解析公钥
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return "", fmt.Errorf("解析公钥失败: %w", err)
-	}
-
-	// 将公钥编码为 DER 格式
-	pubDER, err := x509.MarshalPKIXPublicKey(pub)
-	if err != nil {
-		return "", fmt.Errorf("编码公钥失败: %w", err)
-	}
-
-	// 计算 SHA256 哈希
-	hash := sha256.Sum256(pubDER)
-	// 返回十六进制字符串（64字符）
-	return fmt.Sprintf("%x", hash), nil
+	return cryptoutil.GetPublicKeyFingerprint(publicKey)
 }
 
 // encryptWithPublicKey 使用公钥加密数据
 func (h *agentMessageHandler) encryptWithPublicKey(data []byte, publicKey string) ([]byte, error) {
-	// 解析 PEM 格式的公钥
-	block, _ := pem.Decode([]byte(publicKey))
-	if block == nil {
-		return nil, errors.New("无效的公钥格式")
-	}
-
-	// 解析公钥
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("解析公钥失败: %w", err)
-	}
-
-	// 类型断言为 RSA 公钥
-	rsaPub, ok := pub.(*rsa.PublicKey)
-	if !ok {
-		return nil, errors.New("不是有效的 RSA 公钥")
-	}
-
-	// RSA 加密（使用 OAEP）
-	encrypted, err := rsa.EncryptOAEP(
-		sha256.New(),
-		rand.Reader,
-		rsaPub,
-		data,
-		nil,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("加密失败: %w", err)
-	}
-
-	return encrypted, nil
+	return cryptoutil.EncryptWithPublicKey(data, publicKey)
 }
 
 // generateSessionKey 生成 AES-256 会话密钥（32字节）
 func (h *agentMessageHandler) generateSessionKey() ([]byte, error) {
-	key := make([]byte, 32) // AES-256 需要 32 字节密钥
-	if _, err := io.ReadFull(rand.Reader, key); err != nil {
-		return nil, fmt.Errorf("生成会话密钥失败: %w", err)
-	}
-	return key, nil
+	return cryptoutil.GenerateSessionKey()
 }
 
 // HandleHeartbeat 处理心跳消息

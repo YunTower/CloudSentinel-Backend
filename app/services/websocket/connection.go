@@ -5,8 +5,9 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -272,74 +273,6 @@ func (c *AgentConnection) IsEncryptionEnabled() bool {
 	return c.info.EncryptionEnabled
 }
 
-// encryptMessage 使用 AES-GCM 加密消息（内部方法）
-func (c *AgentConnection) encryptMessage(message []byte, key []byte) ([]byte, error) {
-	// 验证密钥长度（AES-256 需要 32 字节）
-	if len(key) != 32 {
-		return nil, ErrConnectionClosed
-	}
-
-	// 创建 AES 密码块
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-
-	// 创建 GCM 模式
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	// 生成随机 nonce（12 字节，GCM 推荐长度）
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-
-	// 加密消息（Seal 会自动附加认证标签）
-	ciphertext := gcm.Seal(nonce, nonce, message, nil)
-
-	return ciphertext, nil
-}
-
-// decryptMessage 使用 AES-GCM 解密消息（内部方法）
-func (c *AgentConnection) decryptMessage(encryptedMessage []byte, key []byte) ([]byte, error) {
-	// 验证密钥长度（AES-256 需要 32 字节）
-	if len(key) != 32 {
-		return nil, ErrConnectionClosed
-	}
-
-	// 创建 AES 密码块
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-
-	// 创建 GCM 模式
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	// 检查消息长度（至少需要 nonce + tag）
-	nonceSize := gcm.NonceSize()
-	if len(encryptedMessage) < nonceSize {
-		return nil, ErrConnectionClosed
-	}
-
-	// 提取 nonce 和密文
-	nonce, ciphertext := encryptedMessage[:nonceSize], encryptedMessage[nonceSize:]
-
-	// 解密消息（Open 会自动验证认证标签）
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return plaintext, nil
-}
-
 // WriteEncryptedJSON 发送加密的 JSON 消息
 func (c *AgentConnection) WriteEncryptedJSON(v interface{}) error {
 	// 检查是否启用加密
@@ -360,19 +293,10 @@ func (c *AgentConnection) WriteEncryptedJSON(v interface{}) error {
 		return err
 	}
 
-	// 使用 AES 加密
-	encryptedData, err := c.encryptMessage(jsonData, sessionKey)
+	// 使用 AES-GCM 加密消息
+	encryptedData, err := encryptMessageAES(jsonData, sessionKey)
 	if err != nil {
 		return err
-	}
-
-	// Base64 编码
-	encryptedBase64 := base64.StdEncoding.EncodeToString(encryptedData)
-
-	// 构造加密消息格式
-	encryptedMsg := map[string]interface{}{
-		"encrypted": true,
-		"data":      encryptedBase64,
 	}
 
 	// 使用写锁保护，防止并发写入导致 panic
@@ -391,7 +315,8 @@ func (c *AgentConnection) WriteEncryptedJSON(v interface{}) error {
 		}
 	}
 
-	return c.conn.WriteJSON(encryptedMsg)
+	// 直接发送二进制消息（与 Agent 端保持一致）
+	return c.conn.WriteMessage(websocket.BinaryMessage, encryptedData)
 }
 
 // ReadEncryptedMessage 读取加密消息
@@ -409,44 +334,32 @@ func (c *AgentConnection) ReadEncryptedMessage() ([]byte, error) {
 		return nil, ErrConnectionClosed
 	}
 
+	// 设置读取超时
+	if c.config != nil && c.config.ReadTimeout > 0 {
+		deadline := time.Now().Add(c.config.ReadTimeout)
+		if err := c.SetReadDeadline(deadline); err != nil {
+			return nil, err
+		}
+	}
+
 	// 读取消息
-	_, message, err := c.ReadMessage()
+	messageType, message, err := c.conn.ReadMessage()
 	if err != nil {
 		return nil, err
 	}
 
-	// 解析消息
-	var msg map[string]interface{}
-	if err := json.Unmarshal(message, &msg); err != nil {
-		return nil, err
+	// 如果是二进制消息，直接解密
+	if messageType == websocket.BinaryMessage {
+		// 使用 AES-GCM 解密消息
+		decryptedData, err := decryptMessageAES(message, sessionKey)
+		if err != nil {
+			return nil, err
+		}
+		return decryptedData, nil
 	}
 
-	// 检查是否是加密消息
-	encrypted, ok := msg["encrypted"].(bool)
-	if !ok || !encrypted {
-		// 不是加密消息，直接返回原始数据
-		return message, nil
-	}
-
-	// 获取加密数据
-	encryptedDataBase64, ok := msg["data"].(string)
-	if !ok {
-		return nil, ErrConnectionClosed
-	}
-
-	// Base64 解码
-	encryptedData, err := base64.StdEncoding.DecodeString(encryptedDataBase64)
-	if err != nil {
-		return nil, err
-	}
-
-	// 使用 AES 解密
-	decryptedData, err := c.decryptMessage(encryptedData, sessionKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return decryptedData, nil
+	// 如果是文本消息，可能是明文消息（向后兼容）
+	return message, nil
 }
 
 // FrontendConnection Frontend 连接
@@ -516,4 +429,73 @@ func (c *FrontendConnection) GetInfo() *FrontendConnectionInfo {
 	info := *c.info
 	info.LastPing = c.GetLastPing()
 	return &info
+}
+
+// encryptMessageAES 使用 AES-GCM 加密消息（内部函数，避免导入循环）
+func encryptMessageAES(message []byte, key []byte) ([]byte, error) {
+	// 验证密钥长度（AES-256 需要 32 字节）
+	if len(key) != 32 {
+		return nil, errors.New("密钥长度必须是 32 字节（AES-256）")
+	}
+
+	// 创建 AES cipher
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("创建 AES cipher 失败: %w", err)
+	}
+
+	// 创建 GCM
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("创建 GCM 失败: %w", err)
+	}
+
+	// 生成 nonce
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, fmt.Errorf("生成 nonce 失败: %w", err)
+	}
+
+	// 加密消息
+	ciphertext := gcm.Seal(nonce, nonce, message, nil)
+
+	return ciphertext, nil
+}
+
+// decryptMessageAES 使用 AES-GCM 解密消息（内部函数，避免导入循环）
+func decryptMessageAES(encryptedMessage []byte, key []byte) ([]byte, error) {
+	// 验证密钥长度（AES-256 需要 32 字节）
+	if len(key) != 32 {
+		return nil, errors.New("密钥长度必须是 32 字节（AES-256）")
+	}
+
+	// 验证加密消息长度
+	if len(encryptedMessage) < 12 {
+		return nil, errors.New("加密消息长度不足")
+	}
+
+	// 创建 AES cipher
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("创建 AES cipher 失败: %w", err)
+	}
+
+	// 创建 GCM
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("创建 GCM 失败: %w", err)
+	}
+
+	// 提取 nonce 和密文
+	nonceSize := gcm.NonceSize()
+	nonce := encryptedMessage[:nonceSize]
+	ciphertext := encryptedMessage[nonceSize:]
+
+	// 解密消息
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("解密失败: %w", err)
+	}
+
+	return plaintext, nil
 }
