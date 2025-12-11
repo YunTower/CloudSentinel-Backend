@@ -17,9 +17,9 @@ func (r *M20250129000001CreateSystemSettingsTable) Up() error {
 	if !facades.Schema().HasTable("system_settings") {
 		return facades.Schema().Create("system_settings", func(table schema.Blueprint) {
 			table.ID()
-			table.String("setting_key").NotNull()
+			table.String("setting_key")
 			table.Text("setting_value").Nullable()
-			table.String("setting_type", 20).Default("string").NotNull()
+			table.String("setting_type", 20).Default("string")
 			table.Text("description").Nullable()
 			table.Timestamps()
 		})

@@ -18,8 +18,8 @@ func (r *M20250129000006CreateServerAlertRulesTable) Up() error {
 		err := facades.Schema().Create("server_alert_rules", func(table schema.Blueprint) {
 			table.ID()
 			table.String("server_id").Nullable()
-			table.String("rule_type").NotNull()
-			table.Text("config").NotNull()
+			table.String("rule_type")
+			table.Text("config")
 			table.Timestamps()
 		})
 		if err != nil {

@@ -17,9 +17,9 @@ func (r *M20250129000007CreateServerNotificationChannelsTable) Up() error {
 	if !facades.Schema().HasTable("server_notification_channels") {
 		err := facades.Schema().Create("server_notification_channels", func(table schema.Blueprint) {
 			table.ID()
-			table.String("server_id").NotNull()
-			table.String("notification_type").NotNull()
-			table.Boolean("enabled").Default(false).NotNull()
+			table.String("server_id")
+			table.String("notification_type")
+			table.Boolean("enabled").Default(false)
 			table.Timestamps()
 		})
 		if err != nil {

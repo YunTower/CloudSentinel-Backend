@@ -17,10 +17,10 @@ func (r *M20250129000015CreateServerNetworkSpeedTable) Up() error {
 	if !facades.Schema().HasTable("server_network_speed") {
 		return facades.Schema().Create("server_network_speed", func(table schema.Blueprint) {
 			table.ID()
-			table.String("server_id").NotNull()
-			table.Decimal("upload_speed").NotNull()
-			table.Decimal("download_speed").NotNull()
-			table.Timestamp("timestamp").UseCurrent().NotNull()
+			table.String("server_id")
+			table.Decimal("upload_speed")
+			table.Decimal("download_speed")
+			table.Timestamp("timestamp").UseCurrent()
 			table.Timestamps()
 
 			// 外键约束

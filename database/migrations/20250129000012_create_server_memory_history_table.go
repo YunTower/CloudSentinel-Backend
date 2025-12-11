@@ -17,11 +17,11 @@ func (r *M20250129000012CreateServerMemoryHistoryTable) Up() error {
 	if !facades.Schema().HasTable("server_memory_history") {
 		return facades.Schema().Create("server_memory_history", func(table schema.Blueprint) {
 			table.ID()
-			table.String("server_id").NotNull()
-			table.Integer("memory_total").NotNull()
-			table.Integer("memory_used").NotNull()
-			table.Decimal("memory_usage_percent").NotNull()
-			table.Timestamp("timestamp").UseCurrent().NotNull()
+			table.String("server_id")
+			table.Integer("memory_total")
+			table.Integer("memory_used")
+			table.Decimal("memory_usage_percent")
+			table.Timestamp("timestamp").UseCurrent()
 			table.Timestamps()
 
 			// 外键约束

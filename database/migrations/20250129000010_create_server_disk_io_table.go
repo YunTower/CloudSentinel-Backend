@@ -17,10 +17,10 @@ func (r *M20250129000010CreateServerDiskIoTable) Up() error {
 	if !facades.Schema().HasTable("server_disk_io") {
 		return facades.Schema().Create("server_disk_io", func(table schema.Blueprint) {
 			table.ID()
-			table.String("server_id").NotNull()
-			table.Decimal("read_speed").NotNull()
-			table.Decimal("write_speed").NotNull()
-			table.Timestamp("timestamp").UseCurrent().NotNull()
+			table.String("server_id")
+			table.Decimal("read_speed")
+			table.Decimal("write_speed")
+			table.Timestamp("timestamp").UseCurrent()
 
 			// 外键约束
 			table.Foreign("server_id").References("id").On("servers")

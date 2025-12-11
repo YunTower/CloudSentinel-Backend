@@ -17,7 +17,7 @@ func (r *M20250129000002CreateServerGroupsTable) Up() error {
 	if !facades.Schema().HasTable("server_groups") {
 		return facades.Schema().Create("server_groups", func(table schema.Blueprint) {
 			table.ID()
-			table.String("name").NotNull()
+			table.String("name")
 			table.Text("description").Nullable()
 			table.String("color").Nullable()
 			table.Timestamps()

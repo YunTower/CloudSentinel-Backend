@@ -17,15 +17,15 @@ func (r *M20250129000017CreateServerSwapTable) Up() error {
 	if !facades.Schema().HasTable("server_swap") {
 		err := facades.Schema().Create("server_swap", func(table schema.Blueprint) {
 			table.ID()
-			table.String("server_id", 255).NotNull()
-			table.BigInteger("swap_total").NotNull()
-			table.BigInteger("swap_used").NotNull()
-			table.BigInteger("swap_free").NotNull()
+			table.String("server_id", 255)
+			table.BigInteger("swap_total")
+			table.BigInteger("swap_used")
+			table.BigInteger("swap_free")
 			table.Timestamp("timestamp").UseCurrent()
 			table.Timestamps()
 
 			// 外键约束
-			table.Foreign("server_id").References("id").On("servers").OnDelete("CASCADE")
+			table.Foreign("server_id").References("id").On("servers")
 		})
 		if err != nil {
 			return err

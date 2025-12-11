@@ -16,16 +16,16 @@ func (r *M20250129000019CreateServiceMonitorAlertsTable) Signature() string {
 func (r *M20250129000019CreateServiceMonitorAlertsTable) Up() error {
 	if !facades.Schema().HasTable("service_monitor_alerts") {
 		return facades.Schema().Create("service_monitor_alerts", func(table schema.Blueprint) {
-			table.String("id").NotNull()
+			table.String("id")
 			table.Primary("id")
-			table.Integer("rule_id").NotNull()
-			table.String("server_id").NotNull()
-			table.String("type").NotNull()
-			table.String("title").NotNull()
+			table.Integer("rule_id")
+			table.String("server_id")
+			table.String("type")
+			table.String("title")
 			table.Text("message").Nullable()
 			table.Integer("response_time").Nullable()
-			table.Boolean("is_read").Default(false).NotNull()
-			table.Timestamp("timestamp").UseCurrent().NotNull()
+			table.Boolean("is_read").Default(false)
+			table.Timestamp("timestamp").UseCurrent()
 
 			// 外键约束
 			table.Foreign("rule_id").References("id").On("alert_rules")

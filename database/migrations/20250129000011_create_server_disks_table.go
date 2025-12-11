@@ -17,15 +17,15 @@ func (r *M20250129000011CreateServerDisksTable) Up() error {
 	if !facades.Schema().HasTable("server_disks") {
 		return facades.Schema().Create("server_disks", func(table schema.Blueprint) {
 			table.ID()
-			table.String("server_id").NotNull()
-			table.String("disk_name").NotNull()
+			table.String("server_id")
+			table.String("disk_name")
 			table.String("mount_point").Nullable()
 			table.String("filesystem").Nullable()
-			table.Integer("total_size").NotNull()
-			table.Integer("used_size").Default(0).NotNull()
-			table.Integer("free_size").Default(0).NotNull()
-			table.String("disk_type", 50).Default("unknown").NotNull()
-			table.Boolean("is_boot").Default(false).NotNull()
+			table.Integer("total_size")
+			table.Integer("used_size").Default(0)
+			table.Integer("free_size").Default(0)
+			table.String("disk_type", 50).Default("unknown")
+			table.Boolean("is_boot").Default(false)
 			table.Timestamps()
 
 			// 外键约束

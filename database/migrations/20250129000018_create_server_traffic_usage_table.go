@@ -17,11 +17,11 @@ func (r *M20250129000018CreateServerTrafficUsageTable) Up() error {
 	if !facades.Schema().HasTable("server_traffic_usage") {
 		err := facades.Schema().Create("server_traffic_usage", func(table schema.Blueprint) {
 			table.ID()
-			table.String("server_id").NotNull()
-			table.Integer("year").NotNull()
-			table.Integer("month").NotNull()
-			table.Integer("upload_bytes").Default(0).NotNull()
-			table.Integer("download_bytes").Default(0).NotNull()
+			table.String("server_id")
+			table.Integer("year")
+			table.Integer("month")
+			table.Integer("upload_bytes").Default(0)
+			table.Integer("download_bytes").Default(0)
 			table.Timestamps()
 
 			// 外键约束

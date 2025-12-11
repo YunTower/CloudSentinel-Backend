@@ -17,10 +17,10 @@ func (r *M20250129000014CreateServerNetworkConnectionsTable) Up() error {
 	if !facades.Schema().HasTable("server_network_connections") {
 		return facades.Schema().Create("server_network_connections", func(table schema.Blueprint) {
 			table.ID()
-			table.String("server_id").NotNull()
-			table.Integer("tcp_connections").Default(0).NotNull()
-			table.Integer("udp_connections").Default(0).NotNull()
-			table.Timestamp("timestamp").UseCurrent().NotNull()
+			table.String("server_id")
+			table.Integer("tcp_connections").Default(0)
+			table.Integer("udp_connections").Default(0)
+			table.Timestamp("timestamp").UseCurrent()
 
 			// 外键约束
 			table.Foreign("server_id").References("id").On("servers")

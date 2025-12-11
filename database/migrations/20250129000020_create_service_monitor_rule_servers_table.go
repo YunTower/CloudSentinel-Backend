@@ -17,9 +17,9 @@ func (r *M20250129000020CreateServiceMonitorRuleServersTable) Up() error {
 	if !facades.Schema().HasTable("service_monitor_rule_servers") {
 		err := facades.Schema().Create("service_monitor_rule_servers", func(table schema.Blueprint) {
 			table.ID()
-			table.Integer("rule_id").NotNull()
-			table.String("server_id").NotNull()
-			table.Timestamp("created_at").UseCurrent().NotNull()
+			table.Integer("rule_id")
+			table.String("server_id")
+			table.Timestamp("created_at").UseCurrent()
 
 			// 外键约束
 			table.Foreign("rule_id").References("id").On("alert_rules")

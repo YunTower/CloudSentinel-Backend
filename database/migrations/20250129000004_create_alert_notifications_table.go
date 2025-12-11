@@ -17,9 +17,9 @@ func (r *M20250129000004CreateAlertNotificationsTable) Up() error {
 	if !facades.Schema().HasTable("alert_notifications") {
 		return facades.Schema().Create("alert_notifications", func(table schema.Blueprint) {
 			table.ID()
-			table.String("notification_type").NotNull()
-			table.Boolean("enabled").Default(false).NotNull()
-			table.Text("config_json").NotNull()
+			table.String("notification_type")
+			table.Boolean("enabled").Default(false)
+			table.Text("config_json")
 			table.Timestamps()
 		})
 	}

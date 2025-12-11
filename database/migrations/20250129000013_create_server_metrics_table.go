@@ -17,14 +17,14 @@ func (r *M20250129000013CreateServerMetricsTable) Up() error {
 	if !facades.Schema().HasTable("server_metrics") {
 		return facades.Schema().Create("server_metrics", func(table schema.Blueprint) {
 			table.ID()
-			table.String("server_id").NotNull()
-			table.Decimal("cpu_usage").NotNull()
-			table.Decimal("memory_usage").NotNull()
-			table.Decimal("disk_usage").NotNull()
-			table.Decimal("network_upload").Default(0).NotNull()
-			table.Decimal("network_download").Default(0).NotNull()
+			table.String("server_id")
+			table.Decimal("cpu_usage")
+			table.Decimal("memory_usage")
+			table.Decimal("disk_usage")
+			table.Decimal("network_upload").Default(0)
+			table.Decimal("network_download").Default(0)
 			table.String("uptime").Nullable()
-			table.Timestamp("timestamp").UseCurrent().NotNull()
+			table.Timestamp("timestamp").UseCurrent()
 			table.Timestamps()
 
 			// 外键约束

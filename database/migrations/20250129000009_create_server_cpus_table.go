@@ -17,11 +17,11 @@ func (r *M20250129000009CreateServerCpusTable) Up() error {
 	if !facades.Schema().HasTable("server_cpus") {
 		return facades.Schema().Create("server_cpus", func(table schema.Blueprint) {
 			table.ID()
-			table.String("server_id").NotNull()
-			table.String("cpu_name").NotNull()
-			table.Decimal("cpu_usage").NotNull()
-			table.Integer("cores").NotNull()
-			table.Timestamp("timestamp").UseCurrent().NotNull()
+			table.String("server_id")
+			table.String("cpu_name")
+			table.Decimal("cpu_usage")
+			table.Integer("cores")
+			table.Timestamp("timestamp").UseCurrent()
 
 			// 外键约束
 			table.Foreign("server_id").References("id").On("servers")
