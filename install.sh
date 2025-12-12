@@ -68,6 +68,205 @@ if ! command -v sha256sum &> /dev/null; then
     exit 1
 fi
 
+# 检测 Linux 发行版
+detect_linux_distro() {
+    if [ ! -f /etc/os-release ]; then
+        print_warning "无法检测 Linux 发行版（/etc/os-release 不存在）"
+        return 1
+    fi
+    
+    # 读取发行版信息
+    . /etc/os-release
+    
+    DISTRO_ID=$(echo "$ID" | tr '[:upper:]' '[:lower:]')
+    DISTRO_ID_LIKE=$(echo "$ID_LIKE" | tr '[:upper:]' '[:lower:]')
+    
+    # 标准化发行版名称
+    case "$DISTRO_ID" in
+        ubuntu|debian)
+            LINUX_DISTRO="$DISTRO_ID"
+            PACKAGE_MANAGER="apt"
+            ;;
+        arch|archlinux|manjaro)
+            LINUX_DISTRO="arch"
+            PACKAGE_MANAGER="pacman"
+            ;;
+        centos|rhel|rocky|almalinux)
+            LINUX_DISTRO="rhel"
+            # 检测使用 yum 还是 dnf
+            if command -v dnf &> /dev/null; then
+                PACKAGE_MANAGER="dnf"
+            else
+                PACKAGE_MANAGER="yum"
+            fi
+            ;;
+        fedora)
+            LINUX_DISTRO="fedora"
+            PACKAGE_MANAGER="dnf"
+            ;;
+        opensuse*|sles)
+            LINUX_DISTRO="suse"
+            PACKAGE_MANAGER="zypper"
+            ;;
+        *)
+            # 尝试从 ID_LIKE 推断
+            if echo "$DISTRO_ID_LIKE" | grep -q "debian\|ubuntu"; then
+                LINUX_DISTRO="debian"
+                PACKAGE_MANAGER="apt"
+            elif echo "$DISTRO_ID_LIKE" | grep -q "rhel\|fedora\|centos"; then
+                LINUX_DISTRO="rhel"
+                if command -v dnf &> /dev/null; then
+                    PACKAGE_MANAGER="dnf"
+                else
+                    PACKAGE_MANAGER="yum"
+                fi
+            elif echo "$DISTRO_ID_LIKE" | grep -q "arch"; then
+                LINUX_DISTRO="arch"
+                PACKAGE_MANAGER="pacman"
+            else
+                print_warning "未识别的 Linux 发行版: $DISTRO_ID"
+                return 1
+            fi
+            ;;
+    esac
+    
+    print_info "检测到 Linux 发行版: ${BOLD}$LINUX_DISTRO${NC} (包管理器: $PACKAGE_MANAGER)"
+    return 0
+}
+
+# 检查 systemd 是否已安装
+check_systemd() {
+    # 检查 systemctl 命令是否存在
+    if command -v systemctl &> /dev/null; then
+        # 检查 systemd 目录是否存在
+        if [ -d /usr/lib/systemd ] || [ -d /lib/systemd ]; then
+            # 检查 systemd 是否正在运行
+            if systemctl --version &> /dev/null; then
+                print_success "systemd 已安装并可用"
+                return 0
+            fi
+        fi
+    fi
+    
+    print_warning "systemd 未安装或不可用"
+    return 1
+}
+
+# 安装 systemd
+install_systemd() {
+    if [ -z "$LINUX_DISTRO" ] || [ -z "$PACKAGE_MANAGER" ]; then
+        print_error "无法确定 Linux 发行版，无法自动安装 systemd"
+        return 1
+    fi
+    
+    # 检查是否有 root 权限
+    if [ "$EUID" -ne 0 ]; then
+        print_error "安装 systemd 需要 root 权限"
+        print_info "请使用 sudo 运行此脚本，或手动安装 systemd："
+        case "$PACKAGE_MANAGER" in
+            apt)
+                echo -e "  ${CYAN}sudo apt-get update && sudo apt-get install -y systemd${NC}"
+                ;;
+            pacman)
+                echo -e "  ${CYAN}sudo pacman -S --noconfirm systemd${NC}"
+                ;;
+            dnf|yum)
+                echo -e "  ${CYAN}sudo $PACKAGE_MANAGER install -y systemd${NC}"
+                ;;
+            zypper)
+                echo -e "  ${CYAN}sudo zypper install -y systemd${NC}"
+                ;;
+        esac
+        return 1
+    fi
+    
+    print_info "正在安装 systemd..."
+    
+    case "$PACKAGE_MANAGER" in
+        apt)
+            if ! apt-get update; then
+                print_error "更新软件包列表失败"
+                return 1
+            fi
+            if apt-get install -y systemd systemd-sysv; then
+                print_success "systemd 安装成功"
+                return 0
+            else
+                print_error "systemd 安装失败"
+                return 1
+            fi
+            ;;
+        pacman)
+            if pacman -S --noconfirm systemd; then
+                print_success "systemd 安装成功"
+                return 0
+            else
+                print_error "systemd 安装失败"
+                return 1
+            fi
+            ;;
+        dnf|yum)
+            if $PACKAGE_MANAGER install -y systemd; then
+                print_success "systemd 安装成功"
+                return 0
+            else
+                print_error "systemd 安装失败"
+                return 1
+            fi
+            ;;
+        zypper)
+            if zypper install -y systemd; then
+                print_success "systemd 安装成功"
+                return 0
+            else
+                print_error "systemd 安装失败"
+                return 1
+            fi
+            ;;
+        *)
+            print_error "不支持的包管理器: $PACKAGE_MANAGER"
+            return 1
+            ;;
+    esac
+}
+
+# 检查并安装 systemd（仅在 Linux 系统上）
+check_and_install_systemd() {
+    # 只在 Linux 系统上检查
+    if [ "$OS_TYPE" != "linux" ]; then
+        return 0
+    fi
+    
+    # 检测 Linux 发行版
+    if ! detect_linux_distro; then
+        print_warning "无法检测 Linux 发行版，跳过 systemd 检查"
+        return 0
+    fi
+    
+    # 检查 systemd 是否已安装
+    if check_systemd; then
+        return 0
+    fi
+    
+    # 如果未安装，尝试安装
+    print_info "systemd 未安装，尝试自动安装..."
+    if install_systemd; then
+        # 安装后再次检查
+        sleep 1
+        if check_systemd; then
+            return 0
+        else
+            print_warning "systemd 安装后仍不可用，可能需要重启系统"
+            print_warning "脚本将继续执行，但建议手动安装 systemd 以确保服务管理功能正常"
+            return 0
+        fi
+    else
+        print_warning "systemd 自动安装失败，请手动安装"
+        print_warning "脚本将继续执行，但建议手动安装 systemd 以确保服务管理功能正常"
+        return 0
+    fi
+}
+
 # 获取系统信息
 get_system_info() {
     OS_TYPE=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -732,6 +931,15 @@ main() {
     # 获取系统信息
     print_step "步骤 1/9: 检测系统环境"
     get_system_info
+    
+    # 检查并安装 systemd
+    if [ "$OS_TYPE" = "linux" ]; then
+        print_step "步骤 1.5/9: 检查 systemd"
+        # 临时禁用错误退出，允许 systemd 检查失败时继续执行
+        set +e
+        check_and_install_systemd
+        set -e
+    fi
     
     # 选择下载源
     print_step "步骤 2/9: 选择下载源"
