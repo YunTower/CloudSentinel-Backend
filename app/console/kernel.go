@@ -1,6 +1,7 @@
 package console
 
 import (
+	"goravel/app/console/commands"
 	"goravel/app/jobs"
 
 	"github.com/goravel/framework/contracts/console"
@@ -24,5 +25,12 @@ func (kernel Kernel) Schedule() []schedule.Event {
 }
 
 func (kernel Kernel) Commands() []console.Command {
-	return []console.Command{}
+	return []console.Command{
+		commands.NewStartCommand(),
+		commands.NewStopCommand(),
+		commands.NewRestartCommand(),
+		commands.NewResetPortCommand(),
+		commands.NewGenerateAdminCommand(),
+		commands.NewPanelInfoCommand(),
+	}
 }
