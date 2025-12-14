@@ -68,6 +68,205 @@ if ! command -v sha256sum &> /dev/null; then
     exit 1
 fi
 
+# 检测 Linux 发行版
+detect_linux_distro() {
+    if [ ! -f /etc/os-release ]; then
+        print_warning "无法检测 Linux 发行版（/etc/os-release 不存在）"
+        return 1
+    fi
+    
+    # 读取发行版信息
+    . /etc/os-release
+    
+    DISTRO_ID=$(echo "$ID" | tr '[:upper:]' '[:lower:]')
+    DISTRO_ID_LIKE=$(echo "$ID_LIKE" | tr '[:upper:]' '[:lower:]')
+    
+    # 标准化发行版名称
+    case "$DISTRO_ID" in
+        ubuntu|debian)
+            LINUX_DISTRO="$DISTRO_ID"
+            PACKAGE_MANAGER="apt"
+            ;;
+        arch|archlinux|manjaro)
+            LINUX_DISTRO="arch"
+            PACKAGE_MANAGER="pacman"
+            ;;
+        centos|rhel|rocky|almalinux)
+            LINUX_DISTRO="rhel"
+            # 检测使用 yum 还是 dnf
+            if command -v dnf &> /dev/null; then
+                PACKAGE_MANAGER="dnf"
+            else
+                PACKAGE_MANAGER="yum"
+            fi
+            ;;
+        fedora)
+            LINUX_DISTRO="fedora"
+            PACKAGE_MANAGER="dnf"
+            ;;
+        opensuse*|sles)
+            LINUX_DISTRO="suse"
+            PACKAGE_MANAGER="zypper"
+            ;;
+        *)
+            # 尝试从 ID_LIKE 推断
+            if echo "$DISTRO_ID_LIKE" | grep -q "debian\|ubuntu"; then
+                LINUX_DISTRO="debian"
+                PACKAGE_MANAGER="apt"
+            elif echo "$DISTRO_ID_LIKE" | grep -q "rhel\|fedora\|centos"; then
+                LINUX_DISTRO="rhel"
+                if command -v dnf &> /dev/null; then
+                    PACKAGE_MANAGER="dnf"
+                else
+                    PACKAGE_MANAGER="yum"
+                fi
+            elif echo "$DISTRO_ID_LIKE" | grep -q "arch"; then
+                LINUX_DISTRO="arch"
+                PACKAGE_MANAGER="pacman"
+            else
+                print_warning "未识别的 Linux 发行版: $DISTRO_ID"
+                return 1
+            fi
+            ;;
+    esac
+    
+    print_info "检测到 Linux 发行版: ${BOLD}$LINUX_DISTRO${NC} (包管理器: $PACKAGE_MANAGER)"
+    return 0
+}
+
+# 检查 systemd 是否已安装
+check_systemd() {
+    # 检查 systemctl 命令是否存在
+    if command -v systemctl &> /dev/null; then
+        # 检查 systemd 目录是否存在
+        if [ -d /usr/lib/systemd ] || [ -d /lib/systemd ]; then
+            # 检查 systemd 是否正在运行
+            if systemctl --version &> /dev/null; then
+                print_success "systemd 已安装并可用"
+                return 0
+            fi
+        fi
+    fi
+    
+    print_warning "systemd 未安装或不可用"
+    return 1
+}
+
+# 安装 systemd
+install_systemd() {
+    if [ -z "$LINUX_DISTRO" ] || [ -z "$PACKAGE_MANAGER" ]; then
+        print_error "无法确定 Linux 发行版，无法自动安装 systemd"
+        return 1
+    fi
+    
+    # 检查是否有 root 权限
+    if [ "$EUID" -ne 0 ]; then
+        print_error "安装 systemd 需要 root 权限"
+        print_info "请使用 sudo 运行此脚本，或手动安装 systemd："
+        case "$PACKAGE_MANAGER" in
+            apt)
+                echo -e "  ${CYAN}sudo apt-get update && sudo apt-get install -y systemd${NC}"
+                ;;
+            pacman)
+                echo -e "  ${CYAN}sudo pacman -S --noconfirm systemd${NC}"
+                ;;
+            dnf|yum)
+                echo -e "  ${CYAN}sudo $PACKAGE_MANAGER install -y systemd${NC}"
+                ;;
+            zypper)
+                echo -e "  ${CYAN}sudo zypper install -y systemd${NC}"
+                ;;
+        esac
+        return 1
+    fi
+    
+    print_info "正在安装 systemd..."
+    
+    case "$PACKAGE_MANAGER" in
+        apt)
+            if ! apt-get update; then
+                print_error "更新软件包列表失败"
+                return 1
+            fi
+            if apt-get install -y systemd systemd-sysv; then
+                print_success "systemd 安装成功"
+                return 0
+            else
+                print_error "systemd 安装失败"
+                return 1
+            fi
+            ;;
+        pacman)
+            if pacman -S --noconfirm systemd; then
+                print_success "systemd 安装成功"
+                return 0
+            else
+                print_error "systemd 安装失败"
+                return 1
+            fi
+            ;;
+        dnf|yum)
+            if $PACKAGE_MANAGER install -y systemd; then
+                print_success "systemd 安装成功"
+                return 0
+            else
+                print_error "systemd 安装失败"
+                return 1
+            fi
+            ;;
+        zypper)
+            if zypper install -y systemd; then
+                print_success "systemd 安装成功"
+                return 0
+            else
+                print_error "systemd 安装失败"
+                return 1
+            fi
+            ;;
+        *)
+            print_error "不支持的包管理器: $PACKAGE_MANAGER"
+            return 1
+            ;;
+    esac
+}
+
+# 检查并安装 systemd（仅在 Linux 系统上）
+check_and_install_systemd() {
+    # 只在 Linux 系统上检查
+    if [ "$OS_TYPE" != "linux" ]; then
+        return 0
+    fi
+    
+    # 检测 Linux 发行版
+    if ! detect_linux_distro; then
+        print_warning "无法检测 Linux 发行版，跳过 systemd 检查"
+        return 0
+    fi
+    
+    # 检查 systemd 是否已安装
+    if check_systemd; then
+        return 0
+    fi
+    
+    # 如果未安装，尝试安装
+    print_info "systemd 未安装，尝试自动安装..."
+    if install_systemd; then
+        # 安装后再次检查
+        sleep 1
+        if check_systemd; then
+            return 0
+        else
+            print_warning "systemd 安装后仍不可用，可能需要重启系统"
+            print_warning "脚本将继续执行，但建议手动安装 systemd 以确保服务管理功能正常"
+            return 0
+        fi
+    else
+        print_warning "systemd 自动安装失败，请手动安装"
+        print_warning "脚本将继续执行，但建议手动安装 systemd 以确保服务管理功能正常"
+        return 0
+    fi
+}
+
 # 获取系统信息
 get_system_info() {
     OS_TYPE=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -312,6 +511,60 @@ is_port_available() {
     return 0  # 端口可用
 }
 
+# 获取所有可用的IP地址
+get_all_ips() {
+    local ips=()
+    
+    # 根据操作系统获取IP地址
+    if [ "$OS_TYPE" = "windows" ] || [ -n "$WINDIR" ]; then
+        # Windows 系统
+        # 使用 ipconfig 获取IP地址
+        while IFS= read -r line; do
+            # 提取IPv4地址（排除127.0.0.1）
+            if echo "$line" | grep -qE "^[[:space:]]*IPv4" && ! echo "$line" | grep -q "127.0.0.1"; then
+                ip=$(echo "$line" | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | head -n1)
+                if [ -n "$ip" ] && [ "$ip" != "127.0.0.1" ]; then
+                    ips+=("$ip")
+                fi
+            fi
+        done < <(ipconfig 2>/dev/null || echo "")
+    else
+        # Linux/macOS 系统
+        # 使用 ip 命令（优先）
+        if command -v ip &> /dev/null; then
+            while IFS= read -r line; do
+                ip=$(echo "$line" | grep -oE "inet ([0-9]{1,3}\.){3}[0-9]{1,3}" | awk '{print $2}' | grep -v "^127\.")
+                if [ -n "$ip" ]; then
+                    ips+=("$ip")
+                fi
+            done < <(ip addr show 2>/dev/null | grep "inet " || echo "")
+        # 使用 ifconfig 命令
+        elif command -v ifconfig &> /dev/null; then
+            while IFS= read -r line; do
+                ip=$(echo "$line" | grep -oE "inet ([0-9]{1,3}\.){3}[0-9]{1,3}" | awk '{print $2}' | grep -v "^127\.")
+                if [ -n "$ip" ]; then
+                    ips+=("$ip")
+                fi
+            done < <(ifconfig 2>/dev/null | grep "inet " || echo "")
+        # 使用 hostname 命令作为备选
+        elif command -v hostname &> /dev/null; then
+            local hostname_ip
+            hostname_ip=$(hostname -I 2>/dev/null | awk '{print $1}' | grep -v "^127\.")
+            if [ -n "$hostname_ip" ]; then
+                ips+=("$hostname_ip")
+            fi
+        fi
+    fi
+    
+    # 去重并排序
+    if [ ${#ips[@]} -gt 0 ]; then
+        printf '%s\n' "${ips[@]}" | sort -u -t. -k1,1n -k2,2n -k3,3n -k4,4n
+    else
+        # 如果没有找到IP，返回localhost
+        echo "127.0.0.1"
+    fi
+}
+
 # 生成随机高位端口（8000-65535）
 generate_random_port() {
     local min_port=8000
@@ -429,7 +682,7 @@ init_app() {
     # 生成 APP_KEY
     print_info "正在生成 APP_KEY..."
     local key_output
-    key_output=$("$binary_path" artisan key:generate 2>&1)
+    key_output=$("$binary_path" key:generate 2>&1)
     local key_exit_code=$?
     
     if [ $key_exit_code -eq 0 ]; then
@@ -464,7 +717,7 @@ init_app() {
     # 生成 JWT_SECRET
     print_info "正在生成 JWT_SECRET..."
     local jwt_output
-    jwt_output=$("$binary_path" artisan jwt:secret 2>&1)
+    jwt_output=$("$binary_path" jwt:secret 2>&1)
     local jwt_exit_code=$?
     
     if [ $jwt_exit_code -eq 0 ]; then
@@ -584,7 +837,7 @@ run_migration() {
     
     print_info "正在执行数据库迁移..."
     local migrate_output
-    migrate_output=$("$binary_path" artisan migrate 2>&1)
+    migrate_output=$("$binary_path" migrate 2>&1)
     local migrate_exit_code=$?
     
     # 恢复 APP_ENV（如果修改过）
@@ -604,6 +857,94 @@ run_migration() {
         print_error "数据库迁移失败"
         if [ -n "$migrate_output" ]; then
             echo -e "  ${RED}$migrate_output${NC}" | head -n 5
+        fi
+        cd "$original_dir" || true
+        return 1
+    fi
+}
+
+# 生成管理员账号
+generate_admin_account() {
+    local binary_path=$1
+    local install_dir=$2
+    
+    if [ -z "$binary_path" ] || [ -z "$install_dir" ]; then
+        print_error "generate_admin_account 函数需要二进制文件路径和安装目录参数"
+        return 1
+    fi
+    
+    # 确保使用绝对路径
+    if [ ! -f "$binary_path" ]; then
+        print_error "二进制文件不存在: $binary_path"
+        return 1
+    fi
+    
+    # 转换为绝对路径
+    binary_path=$(cd "$(dirname "$binary_path")" && pwd)/$(basename "$binary_path")
+    install_dir=$(cd "$install_dir" && pwd)
+    
+    # 保存当前目录
+    local original_dir=$(pwd)
+    
+    # 切换到安装目录执行命令（需要读取 .env 文件）
+    cd "$install_dir" || {
+        print_error "无法切换到安装目录: $install_dir"
+        return 1
+    }
+    
+    # 验证 .env 文件是否存在
+    if [ ! -f ".env" ]; then
+        print_error ".env 文件不存在: $install_dir/.env"
+        cd "$original_dir" || true
+        return 1
+    fi
+    
+    # 临时修改 APP_ENV 为 local（如果需要）
+    local original_app_env
+    original_app_env=$(grep "^APP_ENV=" .env | cut -d'=' -f2 || echo "production")
+    
+    # 如果当前是 production，临时改为 local
+    if [ "$original_app_env" = "production" ]; then
+        if grep -q "^APP_ENV=" .env; then
+            sed -i.bak 's/^APP_ENV=.*/APP_ENV=local/' .env
+        else
+            echo "APP_ENV=local" >> .env
+        fi
+    fi
+    
+    print_info "正在生成随机管理员账号..."
+    local admin_output
+    admin_output=$("$binary_path" generate:admin 2>&1)
+    local admin_exit_code=$?
+    
+    # 恢复 APP_ENV（如果修改过）
+    if [ "$original_app_env" = "production" ] && [ -f ".env.bak" ]; then
+        mv .env.bak .env
+    fi
+    
+    if [ $admin_exit_code -eq 0 ]; then
+        print_success "管理员账号生成完成"
+        # 显示生成的用户名和密码
+        if [ -n "$admin_output" ]; then
+            echo -e "  ${CYAN}$admin_output${NC}" | grep -E "用户名|密码" | head -n 2
+            
+            # 提取用户名和密码（去除 ANSI 颜色码和前后空格）
+            # 输出格式：  \033[36m用户名: xxxxx\033[0m
+            ADMIN_USERNAME=$(echo "$admin_output" | grep "用户名:" | sed 's/\x1b\[[0-9;]*m//g' | sed 's/^[[:space:]]*//' | sed -n 's/.*用户名:[[:space:]]*\([^[:space:]]*\).*/\1/p' | tr -d '[:space:]')
+            ADMIN_PASSWORD=$(echo "$admin_output" | grep "密码:" | sed 's/\x1b\[[0-9;]*m//g' | sed 's/^[[:space:]]*//' | sed -n 's/.*密码:[[:space:]]*\([^[:space:]]*\).*/\1/p' | tr -d '[:space:]')
+            
+            # 如果 sed 提取失败，尝试使用 awk
+            if [ -z "$ADMIN_USERNAME" ] || [ -z "$ADMIN_PASSWORD" ]; then
+                ADMIN_USERNAME=$(echo "$admin_output" | grep "用户名:" | sed 's/\x1b\[[0-9;]*m//g' | sed 's/^[[:space:]]*//' | awk -F': ' '{print $2}' | awk '{print $1}' | tr -d '[:space:]')
+                ADMIN_PASSWORD=$(echo "$admin_output" | grep "密码:" | sed 's/\x1b\[[0-9;]*m//g' | sed 's/^[[:space:]]*//' | awk -F': ' '{print $2}' | awk '{print $1}' | tr -d '[:space:]')
+            fi
+        fi
+        cd "$original_dir" || true
+        return 0
+    else
+        print_error "管理员账号生成失败"
+        if [ -n "$admin_output" ]; then
+            echo -e "  ${RED}$admin_output${NC}" | head -n 5
         fi
         cd "$original_dir" || true
         return 1
@@ -724,6 +1065,10 @@ start_service() {
 
 # 主安装流程
 main() {
+    # 初始化全局变量
+    ADMIN_USERNAME=""
+    ADMIN_PASSWORD=""
+    
     clear
     echo -e "${BOLD}${CYAN}"
     echo "CloudSentinel 安装脚本"
@@ -732,6 +1077,15 @@ main() {
     # 获取系统信息
     print_step "步骤 1/9: 检测系统环境"
     get_system_info
+    
+    # 检查并安装 systemd
+    if [ "$OS_TYPE" = "linux" ]; then
+        print_step "步骤 1.5/9: 检查 systemd"
+        # 临时禁用错误退出，允许 systemd 检查失败时继续执行
+        set +e
+        check_and_install_systemd
+        set -e
+    fi
     
     # 选择下载源
     print_step "步骤 2/9: 选择下载源"
@@ -867,8 +1221,8 @@ main() {
         echo ""
         print_info "请手动执行以下命令初始化："
         echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
-        echo -e "  ${CYAN}./dashboard artisan key:generate${NC}"
-        echo -e "  ${CYAN}./dashboard artisan jwt:secret${NC}"
+        echo -e "  ${CYAN}./dashboard key:generate${NC}"
+        echo -e "  ${CYAN}./dashboard jwt:secret${NC}"
         exit 1
     fi
     
@@ -879,8 +1233,18 @@ main() {
         echo ""
         print_info "请手动执行以下命令迁移数据库："
         echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
-        echo -e "  ${CYAN}./dashboard artisan migrate${NC}"
+        echo -e "  ${CYAN}./dashboard migrate${NC}"
         exit 1
+    fi
+    
+    # 生成管理员账号
+    print_step "步骤 8.5/9: 生成管理员账号"
+    if ! generate_admin_account "$INSTALLED_BINARY" "$INSTALL_DIR"; then
+        print_warning "生成管理员账号失败"
+        echo ""
+        print_info "请手动执行以下命令生成管理员账号："
+        echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
+        echo -e "  ${CYAN}./dashboard generate:admin${NC}"
     fi
     
     # 启动服务
@@ -949,7 +1313,28 @@ main() {
     fi
     echo ""
     echo -e "${CYAN}访问地址：${NC}"
-    echo -e "  ${BOLD}http://0.0.0.0:$PORT${NC}"
+    
+    # 获取所有可用IP地址
+    local all_ips
+    all_ips=$(get_all_ips)
+    
+    # 显示所有IP地址的访问链接
+    while IFS= read -r ip; do
+        if [ -n "$ip" ]; then
+            echo -e "  ${BOLD}http://$ip:$PORT${NC}"
+        fi
+    done <<< "$all_ips"
+    
+    # 显示管理员账号信息（如果有）
+    if [ -n "$ADMIN_USERNAME" ] && [ -n "$ADMIN_PASSWORD" ]; then
+        echo ""
+        echo -e "${BOLD}管理员账号：${NC}"
+        echo -e "  ${CYAN}用户名:${NC}     ${BOLD}${GREEN}$ADMIN_USERNAME${NC}"
+        echo -e "  ${CYAN}密码:${NC}       ${BOLD}${GREEN}$ADMIN_PASSWORD${NC}"
+        echo ""
+        print_info "请妥善保管管理员账号和密码。如果遗忘了账号或密码，可使用 ./dashboard artisan panel:info 命令重置"
+    fi
+    
     echo ""
     echo -e "${CYAN}管理命令：${NC}"
     if [ "$OS_TYPE" = "windows" ]; then

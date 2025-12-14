@@ -2,7 +2,7 @@
 
 # Build frontend first
 echo "Building frontend..."
-cd ../frontend
+cd ../../frontend
 
 if [ ! -d "node_modules" ]; then
     echo "Installing frontend dependencies..."
@@ -21,7 +21,7 @@ fi
 echo "Frontend build completed successfully!"
 
 # Return to backend directory and build backend
-cd ../backend
+cd ../../backend
 echo "Building backend..."
 
 # Check if public directory exists and has content
