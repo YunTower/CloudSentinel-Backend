@@ -95,8 +95,7 @@ func (c *PanelInfoCommand) Handle(ctx console.Context) error {
 		return err
 	}
 
-	// 获取面板地址和端口
-	appHost := facades.Config().GetString("http.host", "0.0.0.0")
+	// 获取面板端口
 	appPort := facades.Config().GetString("http.port", "3000")
 
 	// 获取所有可用IP地址
