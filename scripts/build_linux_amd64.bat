@@ -17,7 +17,7 @@ if errorlevel 1 (
 echo Frontend build completed successfully!
 
 REM Return to backend directory and build backend
-cd ..\..\backend
+cd ..\backend
 echo Building backend...
 
 REM Check if public directory exists and has content
