@@ -69,20 +69,19 @@ func (c *StartCommand) Handle(ctx console.Context) error {
 
 	if daemonFlag {
 		// 守护进程模式：后台启动
+		// 设置环境变量标记，让新进程知道要启动服务器
+		env := os.Environ()
+		env = append(env, "CLOUDSENTINEL_SERVER_MODE=1")
+		env = append(env, "CLOUDSENTINEL_DAEMON_MODE=1")
+
+		// 重新执行程序（不带 start 参数，main 会检测环境变量启动服务）
 		cmd := exec.Command(exePath)
 		cmd.Dir = filepath.Dir(exePath)
-		cmd.Env = os.Environ()
+		cmd.Env = env
 
 		// 启动进程
 		if err := cmd.Start(); err != nil {
 			PrintError(fmt.Sprintf("启动服务失败: %v", err))
-			return err
-		}
-
-		// 写入 PID 文件
-		if err := WritePID(c.pidFile); err != nil {
-			PrintError(fmt.Sprintf("写入PID文件失败: %v", err))
-			_ = cmd.Process.Kill()
 			return err
 		}
 
@@ -93,11 +92,10 @@ func (c *StartCommand) Handle(ctx console.Context) error {
 			PrintInfo(fmt.Sprintf("PID文件: %s", c.pidFile))
 		} else {
 			PrintError("服务启动后立即退出，请检查日志")
-			_ = RemovePID(c.pidFile)
 			return fmt.Errorf("服务启动失败")
 		}
 	} else {
-		// 前台模式：直接运行
+		// 前台模式：写入 PID 文件，然后返回（由 main 启动服务）
 		PrintInfo("正在启动服务...")
 		PrintInfo("按 Ctrl+C 停止服务")
 
@@ -106,21 +104,9 @@ func (c *StartCommand) Handle(ctx console.Context) error {
 			PrintError(fmt.Sprintf("写入PID文件失败: %v", err))
 			return err
 		}
-		defer RemovePID(c.pidFile)
-
-		// 直接运行（这会阻塞）
-		cmd := exec.Command(exePath)
-		cmd.Dir = filepath.Dir(exePath)
-		cmd.Env = os.Environ()
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-
-		if err := cmd.Run(); err != nil {
-			PrintError(fmt.Sprintf("服务运行失败: %v", err))
-			return err
-		}
+		// 注意：不在这里 defer RemovePID，因为服务会在 main 中运行
+		// PID 文件的清理应该在服务停止时进行（通过 stop 命令或信号处理）
 	}
 
 	return nil
 }
-
