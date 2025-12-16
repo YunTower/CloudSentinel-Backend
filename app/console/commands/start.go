@@ -68,13 +68,13 @@ func (c *StartCommand) Handle(ctx console.Context) error {
 	daemonFlag := ctx.Option("daemon") == "true" || ctx.Option("daemon") == "1"
 
 	if daemonFlag {
-		// 守护进程模式：后台启动
-		// 设置环境变量标记，让新进程知道要启动服务器
+		// 守护进程模式
+		// 设置环境变量标记
 		env := os.Environ()
 		env = append(env, "CLOUDSENTINEL_SERVER_MODE=1")
 		env = append(env, "CLOUDSENTINEL_DAEMON_MODE=1")
 
-		// 重新执行程序（不带 start 参数，main 会检测环境变量启动服务）
+		// 重新执行程序
 		cmd := exec.Command(exePath)
 		cmd.Dir = filepath.Dir(exePath)
 		cmd.Env = env
@@ -95,7 +95,7 @@ func (c *StartCommand) Handle(ctx console.Context) error {
 			return fmt.Errorf("服务启动失败")
 		}
 	} else {
-		// 前台模式：写入 PID 文件，然后返回（由 main 启动服务）
+		// 前台模式
 		PrintInfo("正在启动服务...")
 		PrintInfo("按 Ctrl+C 停止服务")
 
@@ -104,8 +104,6 @@ func (c *StartCommand) Handle(ctx console.Context) error {
 			PrintError(fmt.Sprintf("写入PID文件失败: %v", err))
 			return err
 		}
-		// 注意：不在这里 defer RemovePID，因为服务会在 main 中运行
-		// PID 文件的清理应该在服务停止时进行（通过 stop 命令或信号处理）
 	}
 
 	return nil
