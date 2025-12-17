@@ -277,11 +277,8 @@ get_system_info() {
         linux)
             OS_TYPE="linux"
             ;;
-        darwin)
-            OS_TYPE="darwin"
-            ;;
         *)
-            print_error "不支持的操作系统: $OS_TYPE"
+            print_error "不支持的操作系统: $OS_TYPE（install.sh 仅支持 Linux）"
             exit 1
             ;;
     esac
@@ -515,21 +512,7 @@ is_port_available() {
 get_all_ips() {
     local ips=()
 
-    # 根据操作系统获取IP地址
-    if [ "$OS_TYPE" = "windows" ] || [ -n "$WINDIR" ]; then
-        # Windows 系统
-        # 使用 ipconfig 获取IP地址
-        while IFS= read -r line; do
-            # 提取IPv4地址（排除127.0.0.1）
-            if echo "$line" | grep -qE "^[[:space:]]*IPv4" && ! echo "$line" | grep -q "127.0.0.1"; then
-                ip=$(echo "$line" | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | head -n1)
-                if [ -n "$ip" ] && [ "$ip" != "127.0.0.1" ]; then
-                    ips+=("$ip")
-                fi
-            fi
-        done < <(ipconfig 2>/dev/null || echo "")
-    else
-        # Linux/macOS 系统
+    # Linux 系统
         # 使用 ip 命令（优先）
         if command -v ip &> /dev/null; then
             while IFS= read -r line; do
@@ -552,7 +535,6 @@ get_all_ips() {
             hostname_ip=$(hostname -I 2>/dev/null | awk '{print $1}' | grep -v "^127\.")
             if [ -n "$hostname_ip" ]; then
                 ips+=("$hostname_ip")
-            fi
         fi
     fi
 
@@ -621,17 +603,57 @@ create_cloudsentinel_user() {
         fi
     fi
 
-    # 设置目录所有权
+    # 设置目录所有权（同时授予 root 组访问权限）
     print_info "正在设置目录权限..."
-    if chown -R cloudsentinel:cloudsentinel "$cloudsentinel_dir"; then
+    if chown -R cloudsentinel:root "$cloudsentinel_dir"; then
         print_success "目录权限设置成功"
     else
         print_error "设置目录权限失败"
         return 1
     fi
 
-    # 设置目录权限
-    chmod 700 "$cloudsentinel_dir"
+    # 设置目录权限：
+    # - 2770: owner/group 可读写执行，其他无权限；setgid 确保新文件继承 root 组
+    chmod 2770 "$cloudsentinel_dir"
+
+    return 0
+}
+
+# 确保 cloudsentinel 用户可以进入安装目录（修复父目录不可 traverse 导致的 cd 失败）
+ensure_cloudsentinel_can_access_dir() {
+    local base_dir=$1
+    local target_dir=$2
+
+    # 仅在 root 且 cloudsentinel 用户存在时处理
+    if [ "$EUID" -ne 0 ] || ! id "cloudsentinel" &>/dev/null; then
+        return 0
+    fi
+
+    # 若已可进入则直接返回
+    if sudo -u cloudsentinel test -d "$target_dir" 2>/dev/null && sudo -u cloudsentinel test -x "$target_dir" 2>/dev/null; then
+        return 0
+    fi
+
+    print_warning "cloudsentinel 用户无法进入安装目录，尝试修复父目录权限（最小化授权）..."
+
+    # 优先使用 ACL（更安全：不需要放开整个 base_dir 的访问权限）
+    if command -v setfacl &>/dev/null; then
+        # 允许 cloudsentinel traverse base_dir，允许其访问 target_dir
+        setfacl -m "u:cloudsentinel:--x" "$base_dir" || true
+        setfacl -m "u:cloudsentinel:rwx" "$target_dir" || true
+        # 让 target_dir 下新建文件默认也给 cloudsentinel rwx（避免后续写入问题）
+        setfacl -d -m "u:cloudsentinel:rwx" "$target_dir" || true
+    else
+        print_warning "未检测到 setfacl，将退化为 chmod o+x 方式放开父目录可进入权限"
+        chmod o+x "$base_dir" || true
+    fi
+
+    # 再次校验
+    if ! sudo -u cloudsentinel test -d "$target_dir" 2>/dev/null || ! sudo -u cloudsentinel test -x "$target_dir" 2>/dev/null; then
+        print_error "仍无法让 cloudsentinel 进入安装目录：$target_dir"
+        print_error "建议将安装目录选在 /opt 或 /srv 等公共路径，例如：/opt/cloudsentinel"
+        return 1
+    fi
 
     return 0
 }
@@ -1034,7 +1056,7 @@ start_service() {
     binary_path=$(cd "$(dirname "$binary_path")" && pwd)/$(basename "$binary_path")
     install_dir=$(cd "$install_dir" && pwd)
 
-    print_info "正在启动服务（守护进程模式）..."
+    print_info "正在启动服务（后台运行）..."
     print_info "服务将在后台运行，端口: ${BOLD}$port${NC}"
 
     # 保存当前目录
@@ -1051,21 +1073,51 @@ start_service() {
         print_warning "端口 $port 已被占用，服务可能无法启动"
     fi
 
-    # 在后台启动服务
-    if [ "$OS_TYPE" = "windows" ]; then
-        # Windows 系统
-        start /B "$binary_path" start --daemon > "$install_dir/dashboard.log" 2>&1
-        local start_exit_code=$?
-    else
-        # Linux/macOS 系统
+    # 在后台启动服务 local start_exit_code=0
+
+    # 清空旧日志，避免旧错误影响判断
+    : > "$install_dir/dashboard.log" || true
+    # 为 PID 文件指定可写路径（避免 /var/run 权限问题）
+    local pid_file="$install_dir/cloudsentinel-dashboard.pid"
+    : > "$pid_file" || true
+    if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
+        chown cloudsentinel:root "$pid_file" 2>/dev/null || true
+        chmod 0660 "$pid_file" 2>/dev/null || true
+    fi
+
+    if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
         # 以 cloudsentinel 用户运行
-        if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
-            # 使用 runuser 或 sudo 以 cloudsentinel 用户运行
-            sudo -u cloudsentinel sh -c "cd '$install_dir' && '$binary_path' start --daemon" > "$install_dir/dashboard.log" 2>&1
-            local start_exit_code=$?
-        else
-            "$binary_path" start --daemon > "$install_dir/dashboard.log" 2>&1
-            local start_exit_code=$?
+        sudo -u cloudsentinel sh -c "cd '$install_dir' && CLOUDSENTINEL_PID_FILE='$pid_file' nohup '$binary_path' start --daemon > '$install_dir/dashboard.log' 2>&1 &"
+        start_exit_code=$?
+        sleep 1
+        if [ $start_exit_code -ne 0 ] || grep -q "option does not exist" "$install_dir/dashboard.log" 2>/dev/null; then
+            : > "$install_dir/dashboard.log" || true
+            sudo -u cloudsentinel sh -c "cd '$install_dir' && CLOUDSENTINEL_PID_FILE='$pid_file' nohup '$binary_path' start > '$install_dir/dashboard.log' 2>&1 &"
+            start_exit_code=$?
+            sleep 1
+        fi
+        if [ $start_exit_code -ne 0 ] || grep -q -E "Command .*start.*(does not exist|not defined)|start.*not found" "$install_dir/dashboard.log" 2>/dev/null; then
+            : > "$install_dir/dashboard.log" || true
+            sudo -u cloudsentinel sh -c "cd '$install_dir' && CLOUDSENTINEL_PID_FILE='$pid_file' nohup '$binary_path' > '$install_dir/dashboard.log' 2>&1 &"
+            start_exit_code=$?
+            sleep 1
+        fi
+    else
+        # 当前用户运行
+        (cd "$install_dir" && CLOUDSENTINEL_PID_FILE="$pid_file" nohup "$binary_path" start --daemon > "$install_dir/dashboard.log" 2>&1 &)
+        start_exit_code=$?
+        sleep 1
+        if [ $start_exit_code -ne 0 ] || grep -q "option does not exist" "$install_dir/dashboard.log" 2>/dev/null; then
+            : > "$install_dir/dashboard.log" || true
+            (cd "$install_dir" && CLOUDSENTINEL_PID_FILE="$pid_file" nohup "$binary_path" start > "$install_dir/dashboard.log" 2>&1 &)
+            start_exit_code=$?
+            sleep 1
+        fi
+        if [ $start_exit_code -ne 0 ] || grep -q -E "Command .*start.*(does not exist|not defined)|start.*not found" "$install_dir/dashboard.log" 2>/dev/null; then
+            : > "$install_dir/dashboard.log" || true
+            (cd "$install_dir" && CLOUDSENTINEL_PID_FILE="$pid_file" nohup "$binary_path" > "$install_dir/dashboard.log" 2>&1 &)
+            start_exit_code=$?
+            sleep 1
         fi
     fi
 
@@ -1075,44 +1127,41 @@ start_service() {
 
         # 检查服务是否正在运行
         local service_running=false
-        
-        # 检查进程是否存在
-        if [ "$OS_TYPE" != "windows" ]; then
-            if pgrep -f "$binary_path" > /dev/null 2>&1; then
-                service_running=true
-            fi
 
-        # 再等待一下，让服务完全启动
-        sleep 2
+        # 检查进程是否存在（Linux）
+        if pgrep -f "$binary_path" > /dev/null 2>&1; then
+            service_running=true
+        fi
+
+                # 再等待一下，让服务完全启动
+                sleep 2
         
         # 检查端口是否被监听
         if ! is_port_available "$port"; then
-            print_success "服务已启动（守护进程模式）"
-            print_info "日志文件: $install_dir/dashboard.log"
-            if [ "$OS_TYPE" != "windows" ]; then
-                local service_pid=$(pgrep -f "$binary_path" | head -n1)
-                if [ -n "$service_pid" ]; then
-                    print_info "进程 PID: $service_pid"
-                fi
+            print_success "服务已启动"
+                    print_info "日志文件: $install_dir/dashboard.log"
+            local service_pid=$(pgrep -f "$binary_path" | head -n1)
+            if [ -n "$service_pid" ]; then
+                print_info "进程 PID: $service_pid"
             fi
-            cd "$original_dir" || true
-            return 0
+                    cd "$original_dir" || true
+                    return 0
         elif [ "$service_running" = true ]; then
-            print_warning "服务进程存在但端口未监听，请检查日志"
-            print_info "日志文件: $install_dir/dashboard.log"
-            if [ -f "$install_dir/dashboard.log" ]; then
-                echo -e "  ${YELLOW}$(tail -n 3 "$install_dir/dashboard.log")${NC}"
-            fi
-            cd "$original_dir" || true
-            return 1
-        else
+                    print_warning "服务进程存在但端口未监听，请检查日志"
+                    print_info "日志文件: $install_dir/dashboard.log"
+                    if [ -f "$install_dir/dashboard.log" ]; then
+                        echo -e "  ${YELLOW}$(tail -n 3 "$install_dir/dashboard.log")${NC}"
+                    fi
+                    cd "$original_dir" || true
+                    return 1
+            else
             print_error "服务启动失败，进程未运行"
-            if [ -f "$install_dir/dashboard.log" ]; then
-                print_info "错误日志: $install_dir/dashboard.log"
-                echo -e "  ${RED}$(tail -n 5 "$install_dir/dashboard.log")${NC}"
-            fi
-            cd "$original_dir" || true
-            return 1
+                if [ -f "$install_dir/dashboard.log" ]; then
+                    print_info "错误日志: $install_dir/dashboard.log"
+                    echo -e "  ${RED}$(tail -n 5 "$install_dir/dashboard.log")${NC}"
+                fi
+                cd "$original_dir" || true
+                return 1
         fi
     else
         print_error "服务启动失败"
@@ -1206,9 +1255,6 @@ main() {
 
     # 查找解压后的二进制文件
     BINARY_EXE="dashboard-$OS_TYPE-$ARCH"
-    if [ "$OS_TYPE" = "windows" ]; then
-        BINARY_EXE="${BINARY_EXE}.exe"
-    fi
 
     EXTRACTED_BINARY="$EXTRACT_DIR/$BINARY_EXE"
 
@@ -1252,21 +1298,23 @@ main() {
         fi
     fi
 
+    # 确保 cloudsentinel 用户能进入安装目录（常见于安装在 /home/<user> 下）
+    if [ "$OS_TYPE" = "linux" ]; then
+        if ! ensure_cloudsentinel_can_access_dir "$BASE_INSTALL_DIR" "$INSTALL_DIR"; then
+            print_warning "目录访问修复失败，后续初始化可能需要手动执行"
+        fi
+    fi
+
     # 复制二进制文件
     INSTALLED_BINARY="$INSTALL_DIR/dashboard"
-    if [ "$OS_TYPE" = "windows" ]; then
-        INSTALLED_BINARY="$INSTALL_DIR/dashboard.exe"
-    fi
 
     print_info "正在复制二进制文件..."
     if cp "$EXTRACTED_BINARY" "$INSTALLED_BINARY"; then
         # 设置可执行权限
-        if [ "$OS_TYPE" != "windows" ]; then
             chmod +x "$INSTALLED_BINARY"
-            # 如果是 Linux 且有 cloudsentinel 用户，设置所有权
-            if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
-                chown cloudsentinel:cloudsentinel "$INSTALLED_BINARY"
-            fi
+        # 如果是 Linux 且有 cloudsentinel 用户，设置所有权
+        if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
+            chown cloudsentinel:root "$INSTALLED_BINARY"
         fi
         print_success "二进制文件已复制"
     else
@@ -1283,7 +1331,7 @@ main() {
     
     # 如果是 Linux 且有 cloudsentinel 用户，设置 .env 文件所有权
     if [ "$OS_TYPE" = "linux" ] && [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
-        chown cloudsentinel:cloudsentinel "$INSTALL_DIR/.env"
+        chown cloudsentinel:root "$INSTALL_DIR/.env"
     fi
 
     # 验证 .env 文件是否创建成功
@@ -1302,9 +1350,9 @@ main() {
             echo -e "  ${CYAN}sudo -u cloudsentinel $INSTALL_DIR/dashboard key:generate${NC}"
             echo -e "  ${CYAN}sudo -u cloudsentinel $INSTALL_DIR/dashboard jwt:secret${NC}"
         else
-            echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
-            echo -e "  ${CYAN}./dashboard key:generate${NC}"
-            echo -e "  ${CYAN}./dashboard jwt:secret${NC}"
+        echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
+        echo -e "  ${CYAN}./dashboard key:generate${NC}"
+        echo -e "  ${CYAN}./dashboard jwt:secret${NC}"
         fi
         exit 1
     fi
@@ -1317,8 +1365,8 @@ main() {
         if [ "$OS_TYPE" = "linux" ] && id "cloudsentinel" &>/dev/null; then
             echo -e "  ${CYAN}sudo -u cloudsentinel $INSTALL_DIR/dashboard migrate${NC}"
         else
-            echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
-            echo -e "  ${CYAN}./dashboard migrate${NC}"
+        echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
+        echo -e "  ${CYAN}./dashboard migrate${NC}"
         fi
         exit 1
     fi
@@ -1331,29 +1379,27 @@ main() {
         if [ "$OS_TYPE" = "linux" ] && id "cloudsentinel" &>/dev/null; then
             echo -e "  ${CYAN}sudo -u cloudsentinel $INSTALL_DIR/dashboard generate:admin${NC}"
         else
-            echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
-            echo -e "  ${CYAN}./dashboard generate:admin${NC}"
+        echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
+        echo -e "  ${CYAN}./dashboard generate:admin${NC}"
         fi
     fi
     
     # 设置所有文件的所有权（如果是 Linux 且有 cloudsentinel 用户）
     if [ "$OS_TYPE" = "linux" ] && [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
         print_info "正在设置文件所有权..."
-        chown -R cloudsentinel:cloudsentinel "$INSTALL_DIR"
+        chown -R cloudsentinel:root "$INSTALL_DIR"
         print_success "文件所有权设置完成"
     fi
 
     # 启动服务
+    local service_start_ok=true
     if ! start_service "$INSTALLED_BINARY" "$INSTALL_DIR" "$PORT"; then
+        service_start_ok=false
         print_warning "服务启动失败，请手动启动"
         echo ""
         print_info "手动启动命令："
         echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
-        if [ "$OS_TYPE" = "windows" ]; then
-            echo -e "  ${CYAN}.\\dashboard.exe${NC}"
-        else
-            echo -e "  ${CYAN}./dashboard${NC}"
-        fi
+        echo -e "  ${CYAN}nohup ./dashboard start > dashboard.log 2>&1 &${NC}"
     fi
 
     # 完成
@@ -1380,6 +1426,7 @@ main() {
     if [ "$OS_TYPE" = "linux" ] && id "cloudsentinel" &>/dev/null; then
         echo -e "  ${CYAN}运行用户:${NC}     ${BOLD}cloudsentinel${NC}"
     fi
+    echo -e "  ${CYAN}日志文件:${NC}     ${BOLD}$INSTALL_DIR/dashboard.log${NC}"
     echo ""
 
     if [ -n "$app_key_check" ] && [ ${#app_key_check} -ge 32 ] && [ -n "$jwt_secret_check" ] && [ ${#jwt_secret_check} -ge 32 ]; then
@@ -1395,20 +1442,14 @@ main() {
     fi
 
     echo ""
-    print_separator
-    echo -e "${BOLD}服务信息：${NC}"
-    echo ""
     echo -e "${CYAN}服务状态：${NC}"
-    if [ -f "$INSTALL_DIR/dashboard.log" ]; then
-        # 检查服务是否还在运行
-        if [ "$OS_TYPE" != "windows" ]; then
-            if pgrep -f "$INSTALLED_BINARY" > /dev/null 2>&1; then
-                echo -e "  ${GREEN}✓ 服务正在运行${NC}"
-            else
-                echo -e "  ${RED}✗ 服务未运行${NC}"
-            fi
+    if pgrep -f "$INSTALLED_BINARY" > /dev/null 2>&1 && ! is_port_available "$PORT"; then
+        echo -e "  ${GREEN}✓ 服务正在运行${NC}"
+    else
+        echo -e "  ${RED}✗ 服务未运行${NC}"
+        if [ "$service_start_ok" = false ]; then
+            echo -e "  ${YELLOW}提示:${NC} 启动失败时可手动执行：${BOLD}cd $INSTALL_DIR && nohup ./dashboard start > dashboard.log 2>&1 &${NC}"
         fi
-        echo -e "  ${CYAN}日志文件:${NC} $INSTALL_DIR/dashboard.log"
     fi
     echo ""
     echo -e "${CYAN}访问地址：${NC}"
@@ -1424,38 +1465,31 @@ main() {
         fi
     done <<< "$all_ips"
 
-    # 显示管理员账号信息（如果有）
+    echo ""
+    echo -e "${BOLD}管理员账号：${NC}"
     if [ -n "$ADMIN_USERNAME" ] && [ -n "$ADMIN_PASSWORD" ]; then
-        echo ""
-        echo -e "${BOLD}管理员账号：${NC}"
         echo -e "  ${CYAN}用户名:${NC}     ${BOLD}${GREEN}$ADMIN_USERNAME${NC}"
         echo -e "  ${CYAN}密码:${NC}       ${BOLD}${GREEN}$ADMIN_PASSWORD${NC}"
-        echo ""
-        print_info "请妥善保管管理员账号和密码。如果遗忘了账号或密码，可使用以下命令重置："
-        if [ "$OS_TYPE" = "linux" ] && id "cloudsentinel" &>/dev/null; then
-            echo -e "  ${CYAN}sudo -u cloudsentinel $INSTALL_DIR/dashboard panel:info${NC}"
-        else
-            echo -e "  ${CYAN}$INSTALL_DIR/dashboard panel:info${NC}"
-        fi
+        echo -e "  ${YELLOW}提示:${NC} 建议立即登录并修改密码"
+    else
+        echo -e "  ${YELLOW}未能从输出中解析管理员账号/密码（但已写入系统设置）。${NC}"
+        echo -e "  ${YELLOW}可重新生成：${NC} ${BOLD}sudo -u cloudsentinel $INSTALL_DIR/dashboard generate:admin${NC}"
     fi
+    echo ""
+    echo -e "${CYAN}账号重置命令:${NC} ${BOLD}sudo -u cloudsentinel $INSTALL_DIR/dashboard panel:info${NC}"
 
     echo ""
     echo -e "${CYAN}管理命令：${NC}"
-    if [ "$OS_TYPE" = "windows" ]; then
-        echo -e "  停止服务: ${BOLD}taskkill /F /IM dashboard.exe${NC}"
-        echo -e "  查看日志: ${BOLD}type $INSTALL_DIR\\dashboard.log${NC}"
+    if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
+        echo -e "  停止服务: ${BOLD}sudo -u cloudsentinel $INSTALL_DIR/dashboard stop${NC}"
+        echo -e "  启动服务(后台): ${BOLD}sudo -u cloudsentinel sh -c \"cd '$INSTALL_DIR' && nohup ./dashboard start > dashboard.log 2>&1 &\"${NC}"
+        echo -e "  重启服务: ${BOLD}sudo -u cloudsentinel $INSTALL_DIR/dashboard restart${NC}"
+        echo -e "  查看日志: ${BOLD}tail -f $INSTALL_DIR/dashboard.log${NC}"
     else
-        if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
-            echo -e "  停止服务: ${BOLD}sudo -u cloudsentinel $INSTALL_DIR/dashboard stop${NC}"
-            echo -e "  启动服务: ${BOLD}sudo -u cloudsentinel $INSTALL_DIR/dashboard start --daemon${NC}"
-            echo -e "  重启服务: ${BOLD}sudo -u cloudsentinel $INSTALL_DIR/dashboard restart${NC}"
-            echo -e "  查看日志: ${BOLD}tail -f $INSTALL_DIR/dashboard.log${NC}"
-        else
-            echo -e "  停止服务: ${BOLD}$INSTALL_DIR/dashboard stop${NC}"
-            echo -e "  启动服务: ${BOLD}$INSTALL_DIR/dashboard start --daemon${NC}"
-            echo -e "  重启服务: ${BOLD}$INSTALL_DIR/dashboard restart${NC}"
-            echo -e "  查看日志: ${BOLD}tail -f $INSTALL_DIR/dashboard.log${NC}"
-        fi
+        echo -e "  停止服务: ${BOLD}$INSTALL_DIR/dashboard stop${NC}"
+        echo -e "  启动服务(后台): ${BOLD}cd '$INSTALL_DIR' && nohup ./dashboard start > dashboard.log 2>&1 &${NC}"
+        echo -e "  重启服务: ${BOLD}$INSTALL_DIR/dashboard restart${NC}"
+        echo -e "  查看日志: ${BOLD}tail -f $INSTALL_DIR/dashboard.log${NC}"
     fi
     echo ""
     print_separator
