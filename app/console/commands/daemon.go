@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"runtime"
 )
 
 var (
@@ -22,11 +23,22 @@ var (
 
 // getDefaultPIDFile 根据操作系统获取默认 PID 文件路径
 func getDefaultPIDFile() string {
-	if os.Getenv("OS") == "Windows_NT" || filepath.Separator == '\\' {
-		// Windows 系统：使用临时目录
+	// 允许通过环境变量覆写 PID 文件位置
+	if pidFile := os.Getenv("CLOUDSENTINEL_PID_FILE"); pidFile != "" {
+		return pidFile
+	}
+
+	// Windows 系统：使用临时目录
+	if runtime.GOOS == "windows" || filepath.Separator == '\\' {
 		return filepath.Join(os.TempDir(), "cloudsentinel-dashboard.pid")
 	}
-	// Linux/macOS 系统：使用 /var/run
+
+	// 非 root 用户默认使用临时目录，避免 /var/run 权限问题
+	if os.Geteuid() != 0 {
+		return filepath.Join(os.TempDir(), "cloudsentinel-dashboard.pid")
+	}
+
+	// root 用户使用 /var/run
 	return "/var/run/cloudsentinel-dashboard.pid"
 }
 

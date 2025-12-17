@@ -13,6 +13,18 @@ import (
 	"goravel/bootstrap"
 )
 
+func hasDaemonFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--daemon" || arg == "-d" {
+			return true
+		}
+		if strings.HasPrefix(arg, "--daemon=") || strings.HasPrefix(arg, "-d=") {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
 	bootstrap.Boot()
 
@@ -51,6 +63,10 @@ func main() {
 
 		commandName := args[0]
 		if commandName == "start" {
+			// start --daemon/-d: 仅启动后台进程，当前进程直接退出（避免阻塞安装脚本等场景）
+			if hasDaemonFlag(args) {
+				return
+			}
 			shouldStartServer = true
 		} else {
 			return
