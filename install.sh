@@ -306,42 +306,13 @@ get_system_info() {
     print_info "系统类型: ${BOLD}$OS_TYPE-$ARCH${NC}"
 }
 
-# 询问用户选择下载源
-select_download_source() {
-    echo ""
-    echo -e "${CYAN}请选择下载源：${NC}"
-    echo -e "  ${BOLD}1)${NC} GitHub ${GREEN}(推荐，全球可用)${NC}"
-    echo -e "  ${BOLD}2)${NC} Gitee  ${YELLOW}(国内服务器推荐)${NC}"
-    echo ""
-    read -p "$(echo -e ${CYAN}请输入选项${NC} $(echo -e ${YELLOW}[1-2, 默认: 1]${NC}): )" choice
-
-    case "$choice" in
-        1|"")
-            DOWNLOAD_SOURCE="github"
-            API_URL="https://api.github.com/repos/YunTower/CloudSentinel/releases/latest"
-            ;;
-        2)
-            DOWNLOAD_SOURCE="gitee"
-            API_URL="https://gitee.com/api/v5/repos/YunTower/CloudSentinel/releases/latest"
-            ;;
-        *)
-            print_error "无效的选项"
-            exit 1
-            ;;
-    esac
-
-    print_success "已选择下载源: ${BOLD}$DOWNLOAD_SOURCE${NC}"
-}
-
 # 获取最新版本信息
 get_latest_version() {
     print_info "正在获取最新版本信息..."
 
-    if [ "$DOWNLOAD_SOURCE" = "gitee" ]; then
-        RESPONSE=$(curl -s "$API_URL")
-    else
-        RESPONSE=$(curl -s -H "Accept: application/vnd.github.v3+json" "$API_URL")
-    fi
+    # 默认且仅使用 GitHub
+    API_URL="https://api.github.com/repos/YunTower/CloudSentinel/releases/latest"
+    RESPONSE=$(curl -s -H "Accept: application/vnd.github.v3+json" "$API_URL")
 
     if [ $? -ne 0 ]; then
         print_error "获取版本信息失败"
@@ -382,14 +353,8 @@ find_asset() {
 
         if [ "$name" = "$expected_name" ]; then
             asset_name="$name"
-
-            if [ "$DOWNLOAD_SOURCE" = "gitee" ]; then
-                # Gitee 可能使用 browser_download_url 或 download_url
-                download_url=$(echo "$asset" | jq -r '.browser_download_url // .download_url // empty')
-            else
-                # GitHub 使用 browser_download_url
-                download_url=$(echo "$asset" | jq -r '.browser_download_url // empty')
-            fi
+            # GitHub 使用 browser_download_url
+            download_url=$(echo "$asset" | jq -r '.browser_download_url // empty')
 
             if [ -n "$download_url" ] && [ "$download_url" != "null" ]; then
                 echo "$asset_name|$download_url"
@@ -487,25 +452,31 @@ extract_tar_gz() {
 is_port_available() {
     local port=$1
 
-    # 尝试使用不同的工具检查端口
+    # 优先使用 lsof
     if command -v lsof &> /dev/null; then
-        # macOS/Linux 使用 lsof
         if lsof -i ":$port" &> /dev/null; then
-            return 1  # 端口被占用
+            return 1  # 占用
         fi
-    elif command -v netstat &> /dev/null; then
-        # Linux 使用 netstat
-        if netstat -an 2>/dev/null | grep -q ":$port "; then
-            return 1  # 端口被占用
-        fi
-    elif command -v ss &> /dev/null; then
-        # Linux 使用 ss
-        if ss -an 2>/dev/null | grep -q ":$port "; then
-            return 1  # 端口被占用
-        fi
+        return 0
     fi
 
-    return 0  # 端口可用
+    # 备选使用 netstat (兼容 IPv4/IPv6)
+    if command -v netstat &> /dev/null; then
+        if netstat -ln 2>/dev/null | grep -qE "[:.]$port "; then
+            return 1  # 占用
+        fi
+        return 0
+    fi
+
+    # 备选使用 ss
+    if command -v ss &> /dev/null; then
+        if ss -ln 2>/dev/null | grep -qE "[:.]$port "; then
+            return 1  # 占用
+        fi
+        return 0
+    fi
+
+    return 0  # 默认认为可用
 }
 
 # 获取所有可用的IP地址
@@ -1008,21 +979,20 @@ generate_admin_account() {
 
     if [ $admin_exit_code -eq 0 ]; then
         print_success "管理员账号生成完成"
-        # 显示生成的用户名和密码
-        if [ -n "$admin_output" ]; then
-            echo -e "  ${CYAN}$admin_output${NC}" | grep -E "用户名|密码" | head -n 2
-
-            # 提取用户名和密码（去除 ANSI 颜色码和前后空格）
-            # 输出格式：  \033[36m用户名: xxxxx\033[0m
-            ADMIN_USERNAME=$(echo "$admin_output" | grep "用户名:" | sed 's/\x1b\[[0-9;]*m//g' | sed 's/^[[:space:]]*//' | sed -n 's/.*用户名:[[:space:]]*\([^[:space:]]*\).*/\1/p' | tr -d '[:space:]')
-            ADMIN_PASSWORD=$(echo "$admin_output" | grep "密码:" | sed 's/\x1b\[[0-9;]*m//g' | sed 's/^[[:space:]]*//' | sed -n 's/.*密码:[[:space:]]*\([^[:space:]]*\).*/\1/p' | tr -d '[:space:]')
-
-            # 如果 sed 提取失败，尝试使用 awk
-            if [ -z "$ADMIN_USERNAME" ] || [ -z "$ADMIN_PASSWORD" ]; then
-                ADMIN_USERNAME=$(echo "$admin_output" | grep "用户名:" | sed 's/\x1b\[[0-9;]*m//g' | sed 's/^[[:space:]]*//' | awk -F': ' '{print $2}' | awk '{print $1}' | tr -d '[:space:]')
-                ADMIN_PASSWORD=$(echo "$admin_output" | grep "密码:" | sed 's/\x1b\[[0-9;]*m//g' | sed 's/^[[:space:]]*//' | awk -F': ' '{print $2}' | awk '{print $1}' | tr -d '[:space:]')
-            fi
+        
+        # 优先使用专门的机器可读行提取
+        if echo "$admin_output" | grep -q "ADMIN_CREDENTIALS:"; then
+            local creds=$(echo "$admin_output" | grep "ADMIN_CREDENTIALS:" | head -n1 | cut -d':' -f2-)
+            ADMIN_USERNAME=$(echo "$creds" | cut -d':' -f1 | tr -d '[:space:]')
+            ADMIN_PASSWORD=$(echo "$creds" | cut -d':' -f2 | tr -d '[:space:]')
         fi
+
+        # 兜底提取逻辑
+        if [ -z "$ADMIN_USERNAME" ] || [ -z "$ADMIN_PASSWORD" ]; then
+            ADMIN_USERNAME=$(echo "$admin_output" | sed 's/\x1b\[[0-9;]*m//g' | grep "用户名" | sed 's/.*用户名[:： ]*//' | tr -d '[:space:]')
+            ADMIN_PASSWORD=$(echo "$admin_output" | sed 's/\x1b\[[0-9;]*m//g' | grep "密码" | sed 's/.*密码[:： ]*//' | tr -d '[:space:]')
+        fi
+        
         cd "$original_dir" || true
         return 0
     else
@@ -1073,52 +1043,66 @@ start_service() {
         print_warning "端口 $port 已被占用，服务可能无法启动"
     fi
 
-    # 在后台启动服务 local start_exit_code=0
-
-    # 清空旧日志，避免旧错误影响判断
-    : > "$install_dir/dashboard.log" || true
-    # 为 PID 文件指定可写路径（避免 /var/run 权限问题）
+    # 在后台启动服务
+    local start_exit_code=0
+    local log_file="$install_dir/dashboard.log"
     local pid_file="$install_dir/cloudsentinel-dashboard.pid"
-    : > "$pid_file" || true
-    if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
-        chown cloudsentinel:root "$pid_file" 2>/dev/null || true
-        chmod 0660 "$pid_file" 2>/dev/null || true
+
+    # 1. 强制清理：先杀掉所有正在使用目标端口的进程（确保新分配的端口可用）
+    if command -v fuser &>/dev/null; then
+        fuser -k "${port}/tcp" &>/dev/null || true
     fi
 
+    # 2. 彻底清理旧进程：杀掉所有名为 dashboard 的进程，确保干净启动
+    local old_pids=$(pgrep -f "dashboard" || true)
+    if [ -n "$old_pids" ]; then
+        print_info "正在清理冲突进程..."
+        echo "$old_pids" | xargs kill -9 2>/dev/null || true
+        sleep 1
+    fi
+
+    # 3. 准备环境：确保整个目录的所有权正确
     if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
-        # 以 cloudsentinel 用户运行
-        sudo -u cloudsentinel sh -c "cd '$install_dir' && CLOUDSENTINEL_PID_FILE='$pid_file' nohup '$binary_path' start --daemon > '$install_dir/dashboard.log' 2>&1 &"
+        chown -R cloudsentinel:root "$install_dir"
+        # 允许组权限，方便 root 调试
+        chmod -R 770 "$install_dir"
+    fi
+
+    # 4. 预先创建日志文件并授权（关键：修复 Permission denied）
+    touch "$log_file"
+    if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
+        chown cloudsentinel:root "$log_file"
+    fi
+    chmod 664 "$log_file"
+    : > "$log_file"
+
+    print_info "正在启动后台服务..."
+
+    # 5. 启动逻辑：不再依赖二进制内部的 --daemon 参数，统一使用标准的 nohup 启动
+    # 这样更稳定，且避免了 "option does not exist" 的问题
+    if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
+        # 以 cloudsentinel 用户身份执行，但重定向操作由 root shell 完成（确保日志权限）
+        # 我们先尝试执行 start 命令，如果报错则直接执行二进制
+        sudo -u cloudsentinel sh -c "cd '$install_dir' && export CLOUDSENTINEL_PID_FILE='$pid_file' && nohup ./dashboard start > '$log_file' 2>&1 &"
         start_exit_code=$?
-        sleep 1
-        if [ $start_exit_code -ne 0 ] || grep -q "option does not exist" "$install_dir/dashboard.log" 2>/dev/null; then
-            : > "$install_dir/dashboard.log" || true
-            sudo -u cloudsentinel sh -c "cd '$install_dir' && CLOUDSENTINEL_PID_FILE='$pid_file' nohup '$binary_path' start > '$install_dir/dashboard.log' 2>&1 &"
-            start_exit_code=$?
-            sleep 1
-        fi
-        if [ $start_exit_code -ne 0 ] || grep -q -E "Command .*start.*(does not exist|not defined)|start.*not found" "$install_dir/dashboard.log" 2>/dev/null; then
-            : > "$install_dir/dashboard.log" || true
-            sudo -u cloudsentinel sh -c "cd '$install_dir' && CLOUDSENTINEL_PID_FILE='$pid_file' nohup '$binary_path' > '$install_dir/dashboard.log' 2>&1 &"
-            start_exit_code=$?
-            sleep 1
-        fi
     else
-        # 当前用户运行
-        (cd "$install_dir" && CLOUDSENTINEL_PID_FILE="$pid_file" nohup "$binary_path" start --daemon > "$install_dir/dashboard.log" 2>&1 &)
+        (cd "$install_dir" && export CLOUDSENTINEL_PID_FILE="$pid_file" && nohup ./dashboard start > "$log_file" 2>&1 &)
         start_exit_code=$?
-        sleep 1
-        if [ $start_exit_code -ne 0 ] || grep -q "option does not exist" "$install_dir/dashboard.log" 2>/dev/null; then
-            : > "$install_dir/dashboard.log" || true
-            (cd "$install_dir" && CLOUDSENTINEL_PID_FILE="$pid_file" nohup "$binary_path" start > "$install_dir/dashboard.log" 2>&1 &)
-            start_exit_code=$?
-            sleep 1
+    fi
+
+    # 检查刚才的启动是否因为不支持 "start" 命令而失败
+    sleep 2
+    if grep -qE "not defined|does not exist|not found" "$log_file" 2>/dev/null; then
+        print_info "检测到不支持 start 命令，切换到直接启动模式..."
+        # 杀掉刚才启动失败可能残留在后台的任务
+        pgrep -f "dashboard" | xargs kill -9 2>/dev/null || true
+        : > "$log_file"
+        if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
+            sudo -u cloudsentinel sh -c "cd '$install_dir' && export CLOUDSENTINEL_PID_FILE='$pid_file' && nohup ./dashboard > '$log_file' 2>&1 &"
+        else
+            (cd "$install_dir" && export CLOUDSENTINEL_PID_FILE="$pid_file" && nohup ./dashboard > "$log_file" 2>&1 &)
         fi
-        if [ $start_exit_code -ne 0 ] || grep -q -E "Command .*start.*(does not exist|not defined)|start.*not found" "$install_dir/dashboard.log" 2>/dev/null; then
-            : > "$install_dir/dashboard.log" || true
-            (cd "$install_dir" && CLOUDSENTINEL_PID_FILE="$pid_file" nohup "$binary_path" > "$install_dir/dashboard.log" 2>&1 &)
-            start_exit_code=$?
-            sleep 1
-        fi
+        start_exit_code=$?
     fi
 
     if [ $start_exit_code -eq 0 ]; then
@@ -1147,21 +1131,21 @@ start_service() {
                     cd "$original_dir" || true
                     return 0
         elif [ "$service_running" = true ]; then
-                    print_warning "服务进程存在但端口未监听，请检查日志"
-                    print_info "日志文件: $install_dir/dashboard.log"
-                    if [ -f "$install_dir/dashboard.log" ]; then
-                        echo -e "  ${YELLOW}$(tail -n 3 "$install_dir/dashboard.log")${NC}"
-                    fi
-                    cd "$original_dir" || true
-                    return 1
-            else
+            print_warning "服务进程存在但端口未监听，请检查日志"
+            print_info "日志文件: $install_dir/dashboard.log"
+            if [ -f "$install_dir/dashboard.log" ]; then
+                echo -e "  ${YELLOW}$(tail -n 3 "$install_dir/dashboard.log")${NC}"
+            fi
+            cd "$original_dir" || true
+            return 1
+        else
             print_error "服务启动失败，进程未运行"
-                if [ -f "$install_dir/dashboard.log" ]; then
-                    print_info "错误日志: $install_dir/dashboard.log"
-                    echo -e "  ${RED}$(tail -n 5 "$install_dir/dashboard.log")${NC}"
-                fi
-                cd "$original_dir" || true
-                return 1
+            if [ -f "$install_dir/dashboard.log" ]; then
+                print_info "错误日志: $install_dir/dashboard.log"
+                echo -e "  ${RED}$(tail -n 5 "$install_dir/dashboard.log")${NC}"
+            fi
+            cd "$original_dir" || true
+            return 1
         fi
     else
         print_error "服务启动失败"
@@ -1195,9 +1179,6 @@ main() {
         check_and_install_systemd
         set -e
     fi
-
-    # 选择下载源
-    select_download_source
 
     # 获取最新版本
     get_latest_version
@@ -1322,6 +1303,20 @@ main() {
         exit 1
     fi
 
+    # 查找并移动数据库文件（如果存在）
+    local extracted_db=$(find "$EXTRACT_DIR" -name "database.db" -type f | head -n1)
+    if [ -n "$extracted_db" ]; then
+        print_info "正在预置数据库文件..."
+        if cp "$extracted_db" "$INSTALL_DIR/database.db"; then
+            if [ "$OS_TYPE" = "linux" ] && [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
+                chown cloudsentinel:root "$INSTALL_DIR/database.db"
+            fi
+            print_success "数据库文件已预置"
+        else
+            print_warning "移动数据库文件失败"
+        fi
+    fi
+
     # 生成随机端口
     PORT=$(generate_random_port)
     print_info "分配端口: ${BOLD}$PORT${NC}"
@@ -1417,79 +1412,56 @@ main() {
         jwt_secret_check=$(grep "^JWT_SECRET=" "$INSTALL_DIR/.env" | cut -d'=' -f2- | tr -d '[:space:]')
     fi
 
-    echo -e "${BOLD}安装信息：${NC}"
-    echo -e "  ${CYAN}基础安装目录:${NC} ${BOLD}$BASE_INSTALL_DIR${NC}"
-    echo -e "  ${CYAN}CloudSentinel 目录:${NC} ${BOLD}$INSTALL_DIR${NC}"
-    echo -e "  ${CYAN}二进制文件:${NC}   ${BOLD}$INSTALLED_BINARY${NC}"
-    echo -e "  ${CYAN}配置文件:${NC}     ${BOLD}$INSTALL_DIR/.env${NC}"
+    echo -e "${BOLD}安装与服务信息：${NC}"
+    echo -e "  ${CYAN}安装目录:${NC}     ${BOLD}$INSTALL_DIR${NC}"
     echo -e "  ${CYAN}服务端口:${NC}     ${BOLD}$PORT${NC}"
     if [ "$OS_TYPE" = "linux" ] && id "cloudsentinel" &>/dev/null; then
         echo -e "  ${CYAN}运行用户:${NC}     ${BOLD}cloudsentinel${NC}"
     fi
-    echo -e "  ${CYAN}日志文件:${NC}     ${BOLD}$INSTALL_DIR/dashboard.log${NC}"
+    echo -e "  ${CYAN}日志文件:${NC}     $INSTALL_DIR/dashboard.log"
     echo ""
+
+    # 管理员账号信息（置于核心位置）
+    if [ -n "$ADMIN_USERNAME" ] && [ -n "$ADMIN_PASSWORD" ]; then
+        echo -e "  ${GREEN}${BOLD}管理员账号：${NC}"
+        echo -e "    ${CYAN}用户名:${NC}   ${BOLD}${GREEN}$ADMIN_USERNAME${NC}"
+        echo -e "    ${CYAN}密码:${NC}     ${BOLD}${GREEN}$ADMIN_PASSWORD${NC}"
+        echo ""
+    else
+        echo -e "  ${YELLOW}未能解析管理员账号（已写入数据库），可手动重置：${NC}"
+        echo -e "    sudo -u cloudsentinel $INSTALL_DIR/dashboard generate:admin"
+        echo ""
+    fi
 
     if [ -n "$app_key_check" ] && [ ${#app_key_check} -ge 32 ] && [ -n "$jwt_secret_check" ] && [ ${#jwt_secret_check} -ge 32 ]; then
-        echo -e "  ${GREEN}✓ APP_KEY 已配置${NC}"
-        echo -e "  ${GREEN}✓ JWT_SECRET 已配置${NC}"
-    else
-        if [ -z "$app_key_check" ] || [ ${#app_key_check} -lt 32 ]; then
-            echo -e "  ${RED}✗ APP_KEY 未配置${NC}"
-        fi
-        if [ -z "$jwt_secret_check" ] || [ ${#jwt_secret_check} -lt 32 ]; then
-            echo -e "  ${RED}✗ JWT_SECRET 未配置${NC}"
-        fi
+        echo -e "  ${GREEN}✓ 系统密钥已配置${NC}"
     fi
 
-    echo ""
-    echo -e "${CYAN}服务状态：${NC}"
+    echo -e "  ${CYAN}服务状态：${NC}"
     if pgrep -f "$INSTALLED_BINARY" > /dev/null 2>&1 && ! is_port_available "$PORT"; then
-        echo -e "  ${GREEN}✓ 服务正在运行${NC}"
+        echo -e "    ${GREEN}✓ 正在运行${NC}"
     else
-        echo -e "  ${RED}✗ 服务未运行${NC}"
-        if [ "$service_start_ok" = false ]; then
-            echo -e "  ${YELLOW}提示:${NC} 启动失败时可手动执行：${BOLD}cd $INSTALL_DIR && nohup ./dashboard start > dashboard.log 2>&1 &${NC}"
-        fi
+        echo -e "    ${RED}✗ 未运行${NC}"
     fi
-    echo ""
-    echo -e "${CYAN}访问地址：${NC}"
-
-    # 获取所有可用IP地址
-    local all_ips
-    all_ips=$(get_all_ips)
-
-    # 显示所有IP地址的访问链接
+    
+    echo -e "  ${CYAN}访问地址：${NC}"
+    local all_ips=$(get_all_ips)
     while IFS= read -r ip; do
-        if [ -n "$ip" ]; then
-            echo -e "  ${BOLD}http://$ip:$PORT${NC}"
-        fi
+        [ -n "$ip" ] && echo -e "    ${BOLD}http://$ip:$PORT${NC}"
     done <<< "$all_ips"
 
     echo ""
-    echo -e "${BOLD}管理员账号：${NC}"
-    if [ -n "$ADMIN_USERNAME" ] && [ -n "$ADMIN_PASSWORD" ]; then
-        echo -e "  ${CYAN}用户名:${NC}     ${BOLD}${GREEN}$ADMIN_USERNAME${NC}"
-        echo -e "  ${CYAN}密码:${NC}       ${BOLD}${GREEN}$ADMIN_PASSWORD${NC}"
-        echo -e "  ${YELLOW}提示:${NC} 建议立即登录并修改密码"
-    else
-        echo -e "  ${YELLOW}未能从输出中解析管理员账号/密码（但已写入系统设置）。${NC}"
-        echo -e "  ${YELLOW}可重新生成：${NC} ${BOLD}sudo -u cloudsentinel $INSTALL_DIR/dashboard generate:admin${NC}"
-    fi
+    echo -e "  ${CYAN}账号重置:${NC}   sudo -u cloudsentinel $INSTALL_DIR/dashboard panel:info"
     echo ""
-    echo -e "${CYAN}账号重置命令:${NC} ${BOLD}sudo -u cloudsentinel $INSTALL_DIR/dashboard panel:info${NC}"
-
-    echo ""
-    echo -e "${CYAN}管理命令：${NC}"
+    echo -e "${BOLD}管理命令：${NC}"
     if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
-        echo -e "  停止服务: ${BOLD}sudo -u cloudsentinel $INSTALL_DIR/dashboard stop${NC}"
-        echo -e "  启动服务(后台): ${BOLD}sudo -u cloudsentinel sh -c \"cd '$INSTALL_DIR' && nohup ./dashboard start > dashboard.log 2>&1 &\"${NC}"
-        echo -e "  重启服务: ${BOLD}sudo -u cloudsentinel $INSTALL_DIR/dashboard restart${NC}"
-        echo -e "  查看日志: ${BOLD}tail -f $INSTALL_DIR/dashboard.log${NC}"
+        echo -e "  ${CYAN}停止:${NC} sudo -u cloudsentinel $INSTALL_DIR/dashboard stop"
+        echo -e "  ${CYAN}启动:${NC} sudo -u cloudsentinel sh -c \"cd '$INSTALL_DIR' && CLOUDSENTINEL_PID_FILE='$INSTALL_DIR/cloudsentinel-dashboard.pid' nohup ./dashboard start > dashboard.log 2>&1 &\""
+        echo -e "  ${CYAN}日志:${NC} tail -f $INSTALL_DIR/dashboard.log"
     else
-        echo -e "  停止服务: ${BOLD}$INSTALL_DIR/dashboard stop${NC}"
-        echo -e "  启动服务(后台): ${BOLD}cd '$INSTALL_DIR' && nohup ./dashboard start > dashboard.log 2>&1 &${NC}"
-        echo -e "  重启服务: ${BOLD}$INSTALL_DIR/dashboard restart${NC}"
-        echo -e "  查看日志: ${BOLD}tail -f $INSTALL_DIR/dashboard.log${NC}"
+        echo -e "  ${CYAN}停止:${NC} $INSTALL_DIR/dashboard stop"
+        echo -e "  ${CYAN}启动:${NC} cd '$INSTALL_DIR' && CLOUDSENTINEL_PID_FILE='$INSTALL_DIR/cloudsentinel-dashboard.pid' nohup ./dashboard start > dashboard.log 2>&1 &"
+        echo -e "  ${CYAN}日志:${NC} tail -f $INSTALL_DIR/dashboard.log"
     fi
     echo ""
     print_separator
