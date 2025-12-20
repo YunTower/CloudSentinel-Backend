@@ -47,26 +47,8 @@ check_command() {
 
 # 检查必要的命令
 check_command "curl"
-
-# 检查 jq
-if ! command -v jq &> /dev/null; then
-    print_error "jq 命令未找到，请先安装 jq"
-    print_info "安装方法："
-    print_info "  Ubuntu/Debian: sudo apt-get install jq"
-    print_info "  CentOS/RHEL: sudo yum install jq"
-    print_info "  macOS: brew install jq"
-    exit 1
-fi
-
-# 检查 sha256sum
-if ! command -v sha256sum &> /dev/null; then
-    print_error "sha256sum 命令未找到，请先安装 sha256sum"
-    print_info "安装方法："
-    print_info "  Ubuntu/Debian: sudo apt-get install coreutils"
-    print_info "  CentOS/RHEL: sudo yum install coreutils"
-    print_info "  macOS: 通常已预装，如未安装请使用 Homebrew"
-    exit 1
-fi
+check_command "jq"
+check_command "sha256sum"
 
 # 检测 Linux 发行版
 detect_linux_distro() {
@@ -154,29 +136,19 @@ check_systemd() {
 
 # 安装 systemd
 install_systemd() {
-    if [ -z "$LINUX_DISTRO" ] || [ -z "$PACKAGE_MANAGER" ]; then
-        print_error "无法确定 Linux 发行版，无法自动安装 systemd"
-        return 1
-    fi
+    [ -z "$LINUX_DISTRO" ] || [ -z "$PACKAGE_MANAGER" ] && print_error "无法确定 Linux 发行版，无法自动安装 systemd" && return 1
 
-    # 检查是否有 root 权限
     if [ "$EUID" -ne 0 ]; then
         print_error "安装 systemd 需要 root 权限"
         print_info "请使用 sudo 运行此脚本，或手动安装 systemd："
+        local install_cmd
         case "$PACKAGE_MANAGER" in
-            apt)
-                echo -e "  ${CYAN}sudo apt-get update && sudo apt-get install -y systemd${NC}"
-                ;;
-            pacman)
-                echo -e "  ${CYAN}sudo pacman -S --noconfirm systemd${NC}"
-                ;;
-            dnf|yum)
-                echo -e "  ${CYAN}sudo $PACKAGE_MANAGER install -y systemd${NC}"
-                ;;
-            zypper)
-                echo -e "  ${CYAN}sudo zypper install -y systemd${NC}"
-                ;;
+            apt) install_cmd="sudo apt-get update && sudo apt-get install -y systemd" ;;
+            pacman) install_cmd="sudo pacman -S --noconfirm systemd" ;;
+            dnf|yum) install_cmd="sudo $PACKAGE_MANAGER install -y systemd" ;;
+            zypper) install_cmd="sudo zypper install -y systemd" ;;
         esac
+        echo -e "  ${CYAN}$install_cmd${NC}"
         return 1
     fi
 
@@ -184,59 +156,29 @@ install_systemd() {
 
     case "$PACKAGE_MANAGER" in
         apt)
-            if ! apt-get update; then
-                print_error "更新软件包列表失败"
-                return 1
-            fi
-            if apt-get install -y systemd systemd-sysv; then
-                print_success "systemd 安装成功"
-                return 0
-            else
-                print_error "systemd 安装失败"
-                return 1
-            fi
+            apt-get update && apt-get install -y systemd systemd-sysv && print_success "systemd 安装成功" && return 0
             ;;
         pacman)
-            if pacman -S --noconfirm systemd; then
-                print_success "systemd 安装成功"
-                return 0
-            else
-                print_error "systemd 安装失败"
-                return 1
-            fi
+            pacman -S --noconfirm systemd && print_success "systemd 安装成功" && return 0
             ;;
         dnf|yum)
-            if $PACKAGE_MANAGER install -y systemd; then
-                print_success "systemd 安装成功"
-                return 0
-            else
-                print_error "systemd 安装失败"
-                return 1
-            fi
+            $PACKAGE_MANAGER install -y systemd && print_success "systemd 安装成功" && return 0
             ;;
         zypper)
-            if zypper install -y systemd; then
-                print_success "systemd 安装成功"
-                return 0
-            else
-                print_error "systemd 安装失败"
-                return 1
-            fi
+            zypper install -y systemd && print_success "systemd 安装成功" && return 0
             ;;
         *)
             print_error "不支持的包管理器: $PACKAGE_MANAGER"
             return 1
             ;;
     esac
+
+    print_error "systemd 安装失败"
+    return 1
 }
 
-# 检查并安装 systemd（仅在 Linux 系统上）
+# 检查并安装 systemd
 check_and_install_systemd() {
-    # 只在 Linux 系统上检查
-    if [ "$OS_TYPE" != "linux" ]; then
-        return 0
-    fi
-
     # 检测 Linux 发行版
     if ! detect_linux_distro; then
         print_warning "无法检测 Linux 发行版，跳过 systemd 检查"
@@ -251,7 +193,6 @@ check_and_install_systemd() {
     # 如果未安装，尝试安装
     print_info "systemd 未安装，尝试自动安装..."
     if install_systemd; then
-        # 安装后再次检查
         sleep 1
         if check_systemd; then
             return 0
@@ -269,34 +210,15 @@ check_and_install_systemd() {
 
 # 获取系统信息
 get_system_info() {
-    OS_TYPE=$(uname -s | tr '[:upper:]' '[:lower:]')
+    OS_TYPE="linux"
     ARCH=$(uname -m)
-
-    # 标准化 OS 名称
-    case "$OS_TYPE" in
-        linux)
-            OS_TYPE="linux"
-            ;;
-        *)
-            print_error "不支持的操作系统: $OS_TYPE（install.sh 仅支持 Linux）"
-            exit 1
-            ;;
-    esac
 
     # 标准化架构名称
     case "$ARCH" in
-        x86_64)
-            ARCH="amd64"
-            ;;
-        aarch64|arm64)
-            ARCH="arm64"
-            ;;
-        armv7l|arm)
-            ARCH="arm"
-            ;;
-        i386|i686)
-            ARCH="386"
-            ;;
+        x86_64) ARCH="amd64" ;;
+        aarch64|arm64) ARCH="arm64" ;;
+        armv7l|arm) ARCH="arm" ;;
+        i386|i686) ARCH="386" ;;
         *)
             print_error "不支持的架构: $ARCH"
             exit 1
@@ -451,69 +373,50 @@ extract_tar_gz() {
 # 检查端口是否可用
 is_port_available() {
     local port=$1
-
-    # 优先使用 lsof
-    if command -v lsof &> /dev/null; then
-        if lsof -i ":$port" &> /dev/null; then
-            return 1  # 占用
+    for cmd in lsof netstat ss; do
+        if command -v "$cmd" &> /dev/null; then
+            case "$cmd" in
+                lsof) lsof -i ":$port" &> /dev/null && return 1 ;;
+                netstat) netstat -ln 2>/dev/null | grep -qE "[:.]$port " && return 1 ;;
+                ss) ss -ln 2>/dev/null | grep -qE "[:.]$port " && return 1 ;;
+            esac
+            return 0
         fi
-        return 0
-    fi
-
-    # 备选使用 netstat (兼容 IPv4/IPv6)
-    if command -v netstat &> /dev/null; then
-        if netstat -ln 2>/dev/null | grep -qE "[:.]$port "; then
-            return 1  # 占用
-        fi
-        return 0
-    fi
-
-    # 备选使用 ss
-    if command -v ss &> /dev/null; then
-        if ss -ln 2>/dev/null | grep -qE "[:.]$port "; then
-            return 1  # 占用
-        fi
-        return 0
-    fi
-
+    done
     return 0  # 默认认为可用
 }
 
 # 获取所有可用的IP地址
 get_all_ips() {
     local ips=()
+    local ip
 
-    # Linux 系统
-        # 使用 ip 命令（优先）
-        if command -v ip &> /dev/null; then
-            while IFS= read -r line; do
-                ip=$(echo "$line" | grep -oE "inet ([0-9]{1,3}\.){3}[0-9]{1,3}" | awk '{print $2}' | grep -v "^127\.")
-                if [ -n "$ip" ]; then
-                    ips+=("$ip")
-                fi
-            done < <(ip addr show 2>/dev/null | grep "inet " || echo "")
-        # 使用 ifconfig 命令
-        elif command -v ifconfig &> /dev/null; then
-            while IFS= read -r line; do
-                ip=$(echo "$line" | grep -oE "inet ([0-9]{1,3}\.){3}[0-9]{1,3}" | awk '{print $2}' | grep -v "^127\.")
-                if [ -n "$ip" ]; then
-                    ips+=("$ip")
-                fi
-            done < <(ifconfig 2>/dev/null | grep "inet " || echo "")
-        # 使用 hostname 命令作为备选
-        elif command -v hostname &> /dev/null; then
-            local hostname_ip
-            hostname_ip=$(hostname -I 2>/dev/null | awk '{print $1}' | grep -v "^127\.")
-            if [ -n "$hostname_ip" ]; then
-                ips+=("$hostname_ip")
+    # 提取 IP 的通用函数
+    extract_ips() {
+        local cmd_output=$1
+        while IFS= read -r line; do
+            ip=$(echo "$line" | grep -oE "inet ([0-9]{1,3}\.){3}[0-9]{1,3}" | awk '{print $2}' | grep -v "^127\.")
+            [ -n "$ip" ] && ips+=("$ip")
+        done <<< "$cmd_output"
+    }
+
+    # 按优先级尝试不同命令
+    for cmd in "ip addr show" "ifconfig" "hostname -I"; do
+        if command -v $(echo "$cmd" | awk '{print $1}') &> /dev/null; then
+            if [ "$cmd" = "hostname -I" ]; then
+                ip=$(eval "$cmd" 2>/dev/null | awk '{print $1}' | grep -v "^127\.")
+                [ -n "$ip" ] && ips+=("$ip")
+            else
+                extract_ips "$(eval "$cmd" 2>/dev/null | grep "inet " || echo "")"
+            fi
+            [ ${#ips[@]} -gt 0 ] && break
         fi
-    fi
+    done
 
     # 去重并排序
     if [ ${#ips[@]} -gt 0 ]; then
         printf '%s\n' "${ips[@]}" | sort -u -t. -k1,1n -k2,2n -k3,3n -k4,4n
     else
-        # 如果没有找到IP，返回localhost
         echo "127.0.0.1"
     fi
 }
@@ -629,27 +532,82 @@ ensure_cloudsentinel_can_access_dir() {
     return 0
 }
 
+# 检查是否为 root 且 cloudsentinel 用户存在
+is_root_with_cloudsentinel() {
+    [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null
+}
+
+# 显示手动执行命令提示
+show_manual_command() {
+    local cmd=$1
+    if id "cloudsentinel" &>/dev/null; then
+        echo -e "  ${CYAN}sudo -u cloudsentinel $INSTALL_DIR/dashboard $cmd${NC}"
+    else
+        echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
+        echo -e "  ${CYAN}./dashboard $cmd${NC}"
+    fi
+}
+
 # 以 cloudsentinel 用户执行命令
 run_as_cloudsentinel() {
     local command=$1
     local working_dir=$2
 
-    # 只在 Linux 系统上使用 sudo
-    if [ "$OS_TYPE" = "linux" ] && [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
-        # 有 root 权限且用户存在，使用 sudo -u 切换用户
+    if is_root_with_cloudsentinel; then
         if [ -n "$working_dir" ]; then
             sudo -u cloudsentinel sh -c "cd '$working_dir' && $command"
         else
             sudo -u cloudsentinel sh -c "$command"
         fi
     else
-        # 非 Linux 或非 root 或用户不存在，直接执行
         if [ -n "$working_dir" ]; then
             (cd "$working_dir" && eval "$command")
         else
             eval "$command"
         fi
     fi
+}
+
+# 准备执行环境
+prepare_exec_env() {
+    local binary_path=$1
+    local install_dir=$2
+    local original_dir=$(pwd)
+
+    # 验证参数
+    [ -z "$binary_path" ] || [ -z "$install_dir" ] && return 1
+    [ ! -f "$binary_path" ] && return 1
+
+    # 转换为绝对路径
+    binary_path=$(cd "$(dirname "$binary_path")" && pwd)/$(basename "$binary_path")
+    install_dir=$(cd "$install_dir" && pwd)
+
+    # 切换到安装目录
+    cd "$install_dir" || return 1
+    [ ! -f ".env" ] && cd "$original_dir" && return 1
+
+    # 临时修改 APP_ENV 为 local
+    local original_app_env=$(grep "^APP_ENV=" .env | cut -d'=' -f2 || echo "production")
+    if [ "$original_app_env" = "production" ]; then
+        grep -q "^APP_ENV=" .env && sed -i.bak 's/^APP_ENV=.*/APP_ENV=local/' .env || echo "APP_ENV=local" >> .env
+    fi
+
+    # 返回信息
+    _PREP_BINARY_PATH="$binary_path"
+    _PREP_INSTALL_DIR="$install_dir"
+    _PREP_ORIGINAL_DIR="$original_dir"
+    _PREP_ORIGINAL_APP_ENV="$original_app_env"
+    _PREP_HAS_BACKUP=$([ "$original_app_env" = "production" ] && echo "true" || echo "false")
+
+    return 0
+}
+
+# 恢复执行环境
+restore_exec_env() {
+    if [ "$_PREP_HAS_BACKUP" = "true" ] && [ -f ".env.bak" ]; then
+        mv .env.bak .env
+    fi
+    cd "$_PREP_ORIGINAL_DIR" || true
 }
 
 # 生成 .env 配置文件
@@ -685,159 +643,76 @@ EOF
     print_success "配置文件已生成: $env_file"
 }
 
+# 验证并保存密钥值
+verify_secret() {
+    local key_name=$1
+    local min_length=${2:-32}
+    local value=$(grep "^$key_name=" .env | cut -d'=' -f2- | tr -d '[:space:]')
+    [ -n "$value" ] && [ ${#value} -ge $min_length ]
+}
+
 # 初始化程序
 init_app() {
     local binary_path=$1
     local install_dir=$2
 
-    if [ -z "$binary_path" ] || [ -z "$install_dir" ]; then
-        print_error "init_app 函数需要二进制文件路径和安装目录参数"
+    if ! prepare_exec_env "$binary_path" "$install_dir"; then
+        print_error "init_app 初始化环境失败"
         return 1
     fi
-
-    # 确保使用绝对路径
-    if [ ! -f "$binary_path" ]; then
-        print_error "二进制文件不存在: $binary_path"
-        return 1
-    fi
-
-    # 转换为绝对路径
-    binary_path=$(cd "$(dirname "$binary_path")" && pwd)/$(basename "$binary_path")
-    install_dir=$(cd "$install_dir" && pwd)
 
     print_info "正在初始化应用配置..."
 
-    # 保存当前目录
-    local original_dir=$(pwd)
-
-    # 切换到安装目录执行命令（需要读取 .env 文件）
-    cd "$install_dir" || {
-        print_error "无法切换到安装目录: $install_dir"
-        return 1
-    }
-
-    # 验证 .env 文件是否存在
-    if [ ! -f ".env" ]; then
-        print_error ".env 文件不存在: $install_dir/.env"
-        cd "$original_dir" || true
-        return 1
-    fi
-
-    # 临时修改 APP_ENV 为 local
-    local original_app_env
-    original_app_env=$(grep "^APP_ENV=" .env | cut -d'=' -f2 || echo "production")
-
-    # 备份并修改 APP_ENV
-    if grep -q "^APP_ENV=" .env; then
-        sed -i.bak 's/^APP_ENV=.*/APP_ENV=local/' .env
-    else
-        echo "APP_ENV=local" >> .env
-    fi
-
     # 生成 APP_KEY
     print_info "正在生成 APP_KEY..."
-    local key_output
-    key_output=$(run_as_cloudsentinel "\"$binary_path\" key:generate" "$install_dir" 2>&1)
-    local key_exit_code=$?
-
-    if [ $key_exit_code -eq 0 ]; then
-        # 等待一下，确保文件写入完成
+    local key_output=$(run_as_cloudsentinel "\"$_PREP_BINARY_PATH\" key:generate" "$_PREP_INSTALL_DIR" 2>&1)
+    if [ $? -eq 0 ]; then
         sleep 0.5
-        # 验证 APP_KEY 是否已写入（检查是否非空）
-        local app_key_value
-        app_key_value=$(grep "^APP_KEY=" .env | cut -d'=' -f2- | tr -d '[:space:]')
-        if [ -n "$app_key_value" ] && [ ${#app_key_value} -ge 32 ]; then
+        if verify_secret "APP_KEY"; then
             print_success "APP_KEY 生成成功"
         else
             print_warning "APP_KEY 可能未正确写入"
-            if [ -n "$key_output" ]; then
-                echo -e "  ${YELLOW}$key_output${NC}" | head -n 3
-            fi
+            [ -n "$key_output" ] && echo -e "  ${YELLOW}$key_output${NC}" | head -n 3
         fi
     else
         print_error "APP_KEY 生成失败"
-        if [ -n "$key_output" ]; then
-            echo -e "  ${RED}$key_output${NC}" | head -n 3
-        fi
-        # 恢复 APP_ENV
-        if [ -f ".env.bak" ]; then
-            mv .env.bak .env
-        else
-            sed -i 's/^APP_ENV=.*/APP_ENV='"$original_app_env"'/' .env
-        fi
-        cd "$original_dir" || true
+        [ -n "$key_output" ] && echo -e "  ${RED}$key_output${NC}" | head -n 3
+        restore_exec_env
         return 1
     fi
 
     # 生成 JWT_SECRET
     print_info "正在生成 JWT_SECRET..."
-    local jwt_output
-    jwt_output=$(run_as_cloudsentinel "\"$binary_path\" jwt:secret" "$install_dir" 2>&1)
-    local jwt_exit_code=$?
-
-    if [ $jwt_exit_code -eq 0 ]; then
-        # 等待一下，确保文件写入完成
+    local jwt_output=$(run_as_cloudsentinel "\"$_PREP_BINARY_PATH\" jwt:secret" "$_PREP_INSTALL_DIR" 2>&1)
+    if [ $? -eq 0 ]; then
         sleep 0.5
-        # 验证 JWT_SECRET 是否已写入（检查是否非空）
-        local jwt_secret_value
-        jwt_secret_value=$(grep "^JWT_SECRET=" .env | cut -d'=' -f2- | tr -d '[:space:]')
-        if [ -n "$jwt_secret_value" ] && [ ${#jwt_secret_value} -ge 32 ]; then
+        if verify_secret "JWT_SECRET"; then
             print_success "JWT_SECRET 生成成功"
         else
             print_warning "JWT_SECRET 可能未正确写入"
-            if [ -n "$jwt_output" ]; then
-                echo -e "  ${YELLOW}$jwt_output${NC}" | head -n 3
-            fi
+            [ -n "$jwt_output" ] && echo -e "  ${YELLOW}$jwt_output${NC}" | head -n 3
         fi
     else
         print_error "JWT_SECRET 生成失败"
-        if [ -n "$jwt_output" ]; then
-            echo -e "  ${RED}$jwt_output${NC}" | head -n 3
-        fi
-        # 恢复 APP_ENV
-        if [ -f ".env.bak" ]; then
-            mv .env.bak .env
-        else
-            sed -i 's/^APP_ENV=.*/APP_ENV='"$original_app_env"'/' .env
-        fi
-        cd "$original_dir" || true
+        [ -n "$jwt_output" ] && echo -e "  ${RED}$jwt_output${NC}" | head -n 3
+        restore_exec_env
         return 1
     fi
 
-    # 恢复 APP_ENV 为原始值
-    if [ -f ".env.bak" ]; then
-        # 从备份恢复，但保留新生成的 APP_KEY 和 JWT_SECRET
-        local app_key_value
-        local jwt_secret_value
-        app_key_value=$(grep "^APP_KEY=" .env | cut -d'=' -f2-)
-        jwt_secret_value=$(grep "^JWT_SECRET=" .env | cut -d'=' -f2-)
-
+    # 恢复 APP_ENV 为原始值（保留生成的密钥）
+    if [ "$_PREP_HAS_BACKUP" = "true" ] && [ -f ".env.bak" ]; then
+        local app_key_value=$(grep "^APP_KEY=" .env | cut -d'=' -f2-)
+        local jwt_secret_value=$(grep "^JWT_SECRET=" .env | cut -d'=' -f2-)
         mv .env.bak .env
-        # 更新 APP_ENV
-        sed -i 's/^APP_ENV=.*/APP_ENV='"$original_app_env"'/' .env
-        # 确保 APP_KEY 和 JWT_SECRET 仍然存在
-        if [ -n "$app_key_value" ]; then
-            if grep -q "^APP_KEY=" .env; then
-                sed -i "s|^APP_KEY=.*|APP_KEY=$app_key_value|" .env
-            else
-                echo "APP_KEY=$app_key_value" >> .env
-            fi
-        fi
-        if [ -n "$jwt_secret_value" ]; then
-            if grep -q "^JWT_SECRET=" .env; then
-                sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$jwt_secret_value|" .env
-            else
-                echo "JWT_SECRET=$jwt_secret_value" >> .env
-            fi
-        fi
+        sed -i 's/^APP_ENV=.*/APP_ENV='"$_PREP_ORIGINAL_APP_ENV"'/' .env
+        [ -n "$app_key_value" ] && (grep -q "^APP_KEY=" .env && sed -i "s|^APP_KEY=.*|APP_KEY=$app_key_value|" .env || echo "APP_KEY=$app_key_value" >> .env)
+        [ -n "$jwt_secret_value" ] && (grep -q "^JWT_SECRET=" .env && sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$jwt_secret_value|" .env || echo "JWT_SECRET=$jwt_secret_value" >> .env)
         rm -f .env.bak
     else
-        sed -i 's/^APP_ENV=.*/APP_ENV='"$original_app_env"'/' .env
+        sed -i 's/^APP_ENV=.*/APP_ENV='"$_PREP_ORIGINAL_APP_ENV"'/' .env
     fi
 
-    # 恢复原目录
-    cd "$original_dir" || true
-
+    restore_exec_env
     print_success "应用配置初始化完成"
 }
 
@@ -846,74 +721,24 @@ run_migration() {
     local binary_path=$1
     local install_dir=$2
 
-    if [ -z "$binary_path" ] || [ -z "$install_dir" ]; then
-        print_error "run_migration 函数需要二进制文件路径和安装目录参数"
+    if ! prepare_exec_env "$binary_path" "$install_dir"; then
+        print_error "run_migration 初始化环境失败"
         return 1
-    fi
-
-    # 确保使用绝对路径
-    if [ ! -f "$binary_path" ]; then
-        print_error "二进制文件不存在: $binary_path"
-        return 1
-    fi
-
-    # 转换为绝对路径
-    binary_path=$(cd "$(dirname "$binary_path")" && pwd)/$(basename "$binary_path")
-    install_dir=$(cd "$install_dir" && pwd)
-
-    # 保存当前目录
-    local original_dir=$(pwd)
-
-    # 切换到安装目录执行命令（需要读取 .env 文件）
-    cd "$install_dir" || {
-        print_error "无法切换到安装目录: $install_dir"
-        return 1
-    }
-
-    # 验证 .env 文件是否存在
-    if [ ! -f ".env" ]; then
-        print_error ".env 文件不存在: $install_dir/.env"
-        cd "$original_dir" || true
-        return 1
-    fi
-
-    # 临时修改 APP_ENV 为 local（如果需要）
-    local original_app_env
-    original_app_env=$(grep "^APP_ENV=" .env | cut -d'=' -f2 || echo "production")
-
-    # 如果当前是 production，临时改为 local
-    if [ "$original_app_env" = "production" ]; then
-        if grep -q "^APP_ENV=" .env; then
-            sed -i.bak 's/^APP_ENV=.*/APP_ENV=local/' .env
-        else
-            echo "APP_ENV=local" >> .env
-        fi
     fi
 
     print_info "正在执行数据库迁移..."
-    local migrate_output
-    migrate_output=$(run_as_cloudsentinel "\"$binary_path\" migrate" "$install_dir" 2>&1)
+    local migrate_output=$(run_as_cloudsentinel "\"$_PREP_BINARY_PATH\" migrate" "$_PREP_INSTALL_DIR" 2>&1)
     local migrate_exit_code=$?
 
-    # 恢复 APP_ENV（如果修改过）
-    if [ "$original_app_env" = "production" ] && [ -f ".env.bak" ]; then
-        mv .env.bak .env
-    fi
+    restore_exec_env
 
     if [ $migrate_exit_code -eq 0 ]; then
         print_success "数据库迁移完成"
-        # 显示迁移输出（如果有重要信息）
-        if [ -n "$migrate_output" ] && echo "$migrate_output" | grep -q -i "migrated\|migration"; then
-            echo -e "  ${CYAN}$migrate_output${NC}" | grep -i "migrated\|migration" | head -n 5
-        fi
-        cd "$original_dir" || true
+        [ -n "$migrate_output" ] && echo "$migrate_output" | grep -qi "migrated\|migration" && echo -e "  ${CYAN}$migrate_output${NC}" | grep -i "migrated\|migration" | head -n 5
         return 0
     else
         print_error "数据库迁移失败"
-        if [ -n "$migrate_output" ]; then
-            echo -e "  ${RED}$migrate_output${NC}" | head -n 5
-        fi
-        cd "$original_dir" || true
+        [ -n "$migrate_output" ] && echo -e "  ${RED}$migrate_output${NC}" | head -n 5
         return 1
     fi
 }
@@ -923,84 +748,39 @@ generate_admin_account() {
     local binary_path=$1
     local install_dir=$2
 
-    if [ -z "$binary_path" ] || [ -z "$install_dir" ]; then
-        print_error "generate_admin_account 函数需要二进制文件路径和安装目录参数"
+    if ! prepare_exec_env "$binary_path" "$install_dir"; then
+        print_error "generate_admin_account 初始化环境失败"
         return 1
-    fi
-
-    # 确保使用绝对路径
-    if [ ! -f "$binary_path" ]; then
-        print_error "二进制文件不存在: $binary_path"
-        return 1
-    fi
-
-    # 转换为绝对路径
-    binary_path=$(cd "$(dirname "$binary_path")" && pwd)/$(basename "$binary_path")
-    install_dir=$(cd "$install_dir" && pwd)
-
-    # 保存当前目录
-    local original_dir=$(pwd)
-
-    # 切换到安装目录执行命令（需要读取 .env 文件）
-    cd "$install_dir" || {
-        print_error "无法切换到安装目录: $install_dir"
-        return 1
-    }
-
-    # 验证 .env 文件是否存在
-    if [ ! -f ".env" ]; then
-        print_error ".env 文件不存在: $install_dir/.env"
-        cd "$original_dir" || true
-        return 1
-    fi
-
-    # 临时修改 APP_ENV 为 local（如果需要）
-    local original_app_env
-    original_app_env=$(grep "^APP_ENV=" .env | cut -d'=' -f2 || echo "production")
-
-    # 如果当前是 production，临时改为 local
-    if [ "$original_app_env" = "production" ]; then
-        if grep -q "^APP_ENV=" .env; then
-            sed -i.bak 's/^APP_ENV=.*/APP_ENV=local/' .env
-        else
-            echo "APP_ENV=local" >> .env
-        fi
     fi
 
     print_info "正在生成随机管理员账号..."
-    local admin_output
-    admin_output=$(run_as_cloudsentinel "\"$binary_path\" generate:admin" "$install_dir" 2>&1)
+    local admin_output=$(run_as_cloudsentinel "\"$_PREP_BINARY_PATH\" generate:admin" "$_PREP_INSTALL_DIR" 2>&1)
     local admin_exit_code=$?
 
-    # 恢复 APP_ENV（如果修改过）
-    if [ "$original_app_env" = "production" ] && [ -f ".env.bak" ]; then
-        mv .env.bak .env
-    fi
+    restore_exec_env
 
     if [ $admin_exit_code -eq 0 ]; then
         print_success "管理员账号生成完成"
         
         # 优先使用专门的机器可读行提取
-        if echo "$admin_output" | grep -q "ADMIN_CREDENTIALS:"; then
-            local creds=$(echo "$admin_output" | grep "ADMIN_CREDENTIALS:" | head -n1 | cut -d':' -f2-)
-            ADMIN_USERNAME=$(echo "$creds" | cut -d':' -f1 | tr -d '[:space:]')
-            ADMIN_PASSWORD=$(echo "$creds" | cut -d':' -f2 | tr -d '[:space:]')
+        local creds_line=$(echo "$admin_output" | grep "^ADMIN_CREDENTIALS|" | head -n1)
+        if [ -n "$creds_line" ]; then
+            ADMIN_USERNAME=$(echo "$creds_line" | cut -d'|' -f2 | tr -d '[:space:]')
+            ADMIN_PASSWORD=$(echo "$creds_line" | cut -d'|' -f3 | tr -d '[:space:]')
         fi
 
         # 兜底提取逻辑
         if [ -z "$ADMIN_USERNAME" ] || [ -z "$ADMIN_PASSWORD" ]; then
-            ADMIN_USERNAME=$(echo "$admin_output" | sed 's/\x1b\[[0-9;]*m//g' | grep "用户名" | sed 's/.*用户名[:： ]*//' | tr -d '[:space:]')
-            ADMIN_PASSWORD=$(echo "$admin_output" | sed 's/\x1b\[[0-9;]*m//g' | grep "密码" | sed 's/.*密码[:： ]*//' | tr -d '[:space:]')
+            # 移除 ANSI 颜色代码后提取
+            local clean_output=$(echo "$admin_output" | sed 's/\x1b\[[0-9;]*m//g')
+            ADMIN_USERNAME=$(echo "$clean_output" | grep "用户名" | sed 's/.*用户名[:：][[:space:]]*//' | awk '{print $1}' | tr -d '[:space:]')
+            ADMIN_PASSWORD=$(echo "$clean_output" | grep "密码" | sed 's/.*密码[:：][[:space:]]*//' | awk '{print $1}' | tr -d '[:space:]')
         fi
         
-        cd "$original_dir" || true
         return 0
     else
         print_error "管理员账号生成失败"
-        if [ -n "$admin_output" ]; then
-            echo -e "  ${RED}$admin_output${NC}" | head -n 5
-        fi
-        cd "$original_dir" || true
+        [ -n "$admin_output" ] && echo -e "  ${RED}$admin_output${NC}" | head -n 5
         return 1
     fi
 }
@@ -1048,12 +828,12 @@ start_service() {
     local log_file="$install_dir/dashboard.log"
     local pid_file="$install_dir/cloudsentinel-dashboard.pid"
 
-    # 1. 强制清理：先杀掉所有正在使用目标端口的进程（确保新分配的端口可用）
+    # 强制清理：先杀掉所有正在使用目标端口的进程
     if command -v fuser &>/dev/null; then
         fuser -k "${port}/tcp" &>/dev/null || true
     fi
 
-    # 2. 彻底清理旧进程：杀掉所有名为 dashboard 的进程，确保干净启动
+    # 彻底清理旧进程：杀掉所有名为 dashboard 的进程，确保干净启动
     local old_pids=$(pgrep -f "dashboard" || true)
     if [ -n "$old_pids" ]; then
         print_info "正在清理冲突进程..."
@@ -1061,44 +841,37 @@ start_service() {
         sleep 1
     fi
 
-    # 3. 准备环境：确保整个目录的所有权正确
-    if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
+    # 准备环境：确保整个目录的所有权正确
+    if is_root_with_cloudsentinel; then
         chown -R cloudsentinel:root "$install_dir"
-        # 允许组权限，方便 root 调试
         chmod -R 770 "$install_dir"
     fi
 
-    # 4. 预先创建日志文件并授权（关键：修复 Permission denied）
+    # 预先创建日志文件并授权
     touch "$log_file"
-    if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
-        chown cloudsentinel:root "$log_file"
-    fi
+    is_root_with_cloudsentinel && chown cloudsentinel:root "$log_file"
     chmod 664 "$log_file"
     : > "$log_file"
 
     print_info "正在启动后台服务..."
 
-    # 5. 启动逻辑：不再依赖二进制内部的 --daemon 参数，统一使用标准的 nohup 启动
-    # 这样更稳定，且避免了 "option does not exist" 的问题
-    if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
-        # 以 cloudsentinel 用户身份执行，但重定向操作由 root shell 完成（确保日志权限）
-        # 我们先尝试执行 start 命令，如果报错则直接执行二进制
-        sudo -u cloudsentinel sh -c "cd '$install_dir' && export CLOUDSENTINEL_PID_FILE='$pid_file' && nohup ./dashboard start > '$log_file' 2>&1 &"
-        start_exit_code=$?
+    # 启动逻辑：统一使用标准的 nohup 启动
+    local start_cmd="cd '$install_dir' && export CLOUDSENTINEL_PID_FILE='$pid_file' && nohup ./dashboard"
+    if is_root_with_cloudsentinel; then
+        sudo -u cloudsentinel sh -c "$start_cmd start > '$log_file' 2>&1 &"
     else
         (cd "$install_dir" && export CLOUDSENTINEL_PID_FILE="$pid_file" && nohup ./dashboard start > "$log_file" 2>&1 &)
-        start_exit_code=$?
     fi
+    start_exit_code=$?
 
-    # 检查刚才的启动是否因为不支持 "start" 命令而失败
+    # 检查是否因为不支持 "start" 命令而失败
     sleep 2
     if grep -qE "not defined|does not exist|not found" "$log_file" 2>/dev/null; then
         print_info "检测到不支持 start 命令，切换到直接启动模式..."
-        # 杀掉刚才启动失败可能残留在后台的任务
         pgrep -f "dashboard" | xargs kill -9 2>/dev/null || true
         : > "$log_file"
-        if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
-            sudo -u cloudsentinel sh -c "cd '$install_dir' && export CLOUDSENTINEL_PID_FILE='$pid_file' && nohup ./dashboard > '$log_file' 2>&1 &"
+        if is_root_with_cloudsentinel; then
+            sudo -u cloudsentinel sh -c "$start_cmd > '$log_file' 2>&1 &"
         else
             (cd "$install_dir" && export CLOUDSENTINEL_PID_FILE="$pid_file" && nohup ./dashboard > "$log_file" 2>&1 &)
         fi
@@ -1111,8 +884,6 @@ start_service() {
 
         # 检查服务是否正在运行
         local service_running=false
-
-        # 检查进程是否存在（Linux）
         if pgrep -f "$binary_path" > /dev/null 2>&1; then
             service_running=true
         fi
@@ -1173,12 +944,9 @@ main() {
     get_system_info
 
     # 检查并安装 systemd
-    if [ "$OS_TYPE" = "linux" ]; then
-        # 临时禁用错误退出，允许 systemd 检查失败时继续执行
-        set +e
-        check_and_install_systemd
-        set -e
-    fi
+    set +e
+    check_and_install_systemd
+    set -e
 
     # 获取最新版本
     get_latest_version
@@ -1272,18 +1040,14 @@ main() {
         mkdir -p "$INSTALL_DIR"
     fi
 
-    # 创建 cloudsentinel 用户并设置权限（Linux 系统）
-    if [ "$OS_TYPE" = "linux" ]; then
-        if ! create_cloudsentinel_user "$INSTALL_DIR"; then
-            print_warning "用户创建失败，将使用当前用户运行"
-        fi
+    # 创建 cloudsentinel 用户并设置权限
+    if ! create_cloudsentinel_user "$INSTALL_DIR"; then
+        print_warning "用户创建失败，将使用当前用户运行"
     fi
 
     # 确保 cloudsentinel 用户能进入安装目录（常见于安装在 /home/<user> 下）
-    if [ "$OS_TYPE" = "linux" ]; then
-        if ! ensure_cloudsentinel_can_access_dir "$BASE_INSTALL_DIR" "$INSTALL_DIR"; then
-            print_warning "目录访问修复失败，后续初始化可能需要手动执行"
-        fi
+    if ! ensure_cloudsentinel_can_access_dir "$BASE_INSTALL_DIR" "$INSTALL_DIR"; then
+        print_warning "目录访问修复失败，后续初始化可能需要手动执行"
     fi
 
     # 复制二进制文件
@@ -1291,12 +1055,8 @@ main() {
 
     print_info "正在复制二进制文件..."
     if cp "$EXTRACTED_BINARY" "$INSTALLED_BINARY"; then
-        # 设置可执行权限
-            chmod +x "$INSTALLED_BINARY"
-        # 如果是 Linux 且有 cloudsentinel 用户，设置所有权
-        if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
-            chown cloudsentinel:root "$INSTALLED_BINARY"
-        fi
+        chmod +x "$INSTALLED_BINARY"
+        is_root_with_cloudsentinel && chown cloudsentinel:root "$INSTALLED_BINARY"
         print_success "二进制文件已复制"
     else
         print_error "复制二进制文件失败"
@@ -1308,9 +1068,7 @@ main() {
     if [ -n "$extracted_db" ]; then
         print_info "正在预置数据库文件..."
         if cp "$extracted_db" "$INSTALL_DIR/database.db"; then
-            if [ "$OS_TYPE" = "linux" ] && [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
-                chown cloudsentinel:root "$INSTALL_DIR/database.db"
-            fi
+            is_root_with_cloudsentinel && chown cloudsentinel:root "$INSTALL_DIR/database.db"
             print_success "数据库文件已预置"
         else
             print_warning "移动数据库文件失败"
@@ -1323,11 +1081,7 @@ main() {
 
     # 生成 .env 文件
     generate_env_file "$INSTALL_DIR" "$PORT"
-    
-    # 如果是 Linux 且有 cloudsentinel 用户，设置 .env 文件所有权
-    if [ "$OS_TYPE" = "linux" ] && [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
-        chown cloudsentinel:root "$INSTALL_DIR/.env"
-    fi
+    is_root_with_cloudsentinel && chown cloudsentinel:root "$INSTALL_DIR/.env"
 
     # 验证 .env 文件是否创建成功
     if [ ! -f "$INSTALL_DIR/.env" ]; then
@@ -1341,14 +1095,8 @@ main() {
         print_error "应用配置初始化失败"
         echo ""
         print_info "请手动执行以下命令初始化："
-        if [ "$OS_TYPE" = "linux" ] && id "cloudsentinel" &>/dev/null; then
-            echo -e "  ${CYAN}sudo -u cloudsentinel $INSTALL_DIR/dashboard key:generate${NC}"
-            echo -e "  ${CYAN}sudo -u cloudsentinel $INSTALL_DIR/dashboard jwt:secret${NC}"
-        else
-        echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
-        echo -e "  ${CYAN}./dashboard key:generate${NC}"
-        echo -e "  ${CYAN}./dashboard jwt:secret${NC}"
-        fi
+        show_manual_command "key:generate"
+        show_manual_command "jwt:secret"
         exit 1
     fi
 
@@ -1357,12 +1105,7 @@ main() {
         print_error "数据库迁移失败"
         echo ""
         print_info "请手动执行以下命令迁移数据库："
-        if [ "$OS_TYPE" = "linux" ] && id "cloudsentinel" &>/dev/null; then
-            echo -e "  ${CYAN}sudo -u cloudsentinel $INSTALL_DIR/dashboard migrate${NC}"
-        else
-        echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
-        echo -e "  ${CYAN}./dashboard migrate${NC}"
-        fi
+        show_manual_command "migrate"
         exit 1
     fi
 
@@ -1371,16 +1114,11 @@ main() {
         print_warning "生成管理员账号失败"
         echo ""
         print_info "请手动执行以下命令生成管理员账号："
-        if [ "$OS_TYPE" = "linux" ] && id "cloudsentinel" &>/dev/null; then
-            echo -e "  ${CYAN}sudo -u cloudsentinel $INSTALL_DIR/dashboard generate:admin${NC}"
-        else
-        echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
-        echo -e "  ${CYAN}./dashboard generate:admin${NC}"
-        fi
+        show_manual_command "generate:admin"
     fi
     
-    # 设置所有文件的所有权（如果是 Linux 且有 cloudsentinel 用户）
-    if [ "$OS_TYPE" = "linux" ] && [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
+    # 设置所有文件的所有权
+    if is_root_with_cloudsentinel; then
         print_info "正在设置文件所有权..."
         chown -R cloudsentinel:root "$INSTALL_DIR"
         print_success "文件所有权设置完成"
@@ -1404,68 +1142,28 @@ main() {
     print_separator
     echo ""
 
-    # 验证 .env 文件关键配置
-    local app_key_check
-    local jwt_secret_check
-    if [ -f "$INSTALL_DIR/.env" ]; then
-        app_key_check=$(grep "^APP_KEY=" "$INSTALL_DIR/.env" | cut -d'=' -f2- | tr -d '[:space:]')
-        jwt_secret_check=$(grep "^JWT_SECRET=" "$INSTALL_DIR/.env" | cut -d'=' -f2- | tr -d '[:space:]')
-    fi
-
-    echo -e "${BOLD}安装与服务信息：${NC}"
-    echo -e "  ${CYAN}安装目录:${NC}     ${BOLD}$INSTALL_DIR${NC}"
-    echo -e "  ${CYAN}服务端口:${NC}     ${BOLD}$PORT${NC}"
-    if [ "$OS_TYPE" = "linux" ] && id "cloudsentinel" &>/dev/null; then
-        echo -e "  ${CYAN}运行用户:${NC}     ${BOLD}cloudsentinel${NC}"
-    fi
-    echo -e "  ${CYAN}日志文件:${NC}     $INSTALL_DIR/dashboard.log"
-    echo ""
-
-    # 管理员账号信息（置于核心位置）
-    if [ -n "$ADMIN_USERNAME" ] && [ -n "$ADMIN_PASSWORD" ]; then
-        echo -e "  ${GREEN}${BOLD}管理员账号：${NC}"
-        echo -e "    ${CYAN}用户名:${NC}   ${BOLD}${GREEN}$ADMIN_USERNAME${NC}"
-        echo -e "    ${CYAN}密码:${NC}     ${BOLD}${GREEN}$ADMIN_PASSWORD${NC}"
-        echo ""
-    else
-        echo -e "  ${YELLOW}未能解析管理员账号（已写入数据库），可手动重置：${NC}"
-        echo -e "    sudo -u cloudsentinel $INSTALL_DIR/dashboard generate:admin"
-        echo ""
-    fi
-
-    if [ -n "$app_key_check" ] && [ ${#app_key_check} -ge 32 ] && [ -n "$jwt_secret_check" ] && [ ${#jwt_secret_check} -ge 32 ]; then
-        echo -e "  ${GREEN}✓ 系统密钥已配置${NC}"
-    fi
-
-    echo -e "  ${CYAN}服务状态：${NC}"
+    # 检查服务状态
+    local service_status
     if pgrep -f "$INSTALLED_BINARY" > /dev/null 2>&1 && ! is_port_available "$PORT"; then
-        echo -e "    ${GREEN}✓ 正在运行${NC}"
+        service_status="${GREEN}✓ 运行中${NC}"
     else
-        echo -e "    ${RED}✗ 未运行${NC}"
+        service_status="${RED}✗ 未运行${NC}"
     fi
-    
-    echo -e "  ${CYAN}访问地址：${NC}"
+
+    # 管理员账号信息
+    if [ -n "$ADMIN_USERNAME" ] && [ -n "$ADMIN_PASSWORD" ]; then
+        echo -e "${BOLD}管理员账号：${NC} ${BOLD}${GREEN}$ADMIN_USERNAME${NC} / ${BOLD}${GREEN}$ADMIN_PASSWORD${NC}"
+    fi
+
+    # 访问地址
     local all_ips=$(get_all_ips)
+    echo -e "${BOLD}访问地址：${NC}"
     while IFS= read -r ip; do
-        [ -n "$ip" ] && echo -e "    ${BOLD}http://$ip:$PORT${NC}"
+        [ -n "$ip" ] && echo -e "  ${BOLD}http://$ip:$PORT${NC}"
     done <<< "$all_ips"
 
-    echo ""
-    echo -e "  ${CYAN}账号重置:${NC}   sudo -u cloudsentinel $INSTALL_DIR/dashboard panel:info"
-    echo ""
-    echo -e "${BOLD}管理命令：${NC}"
-    if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null; then
-        echo -e "  ${CYAN}停止:${NC} sudo -u cloudsentinel $INSTALL_DIR/dashboard stop"
-        echo -e "  ${CYAN}启动:${NC} sudo -u cloudsentinel sh -c \"cd '$INSTALL_DIR' && CLOUDSENTINEL_PID_FILE='$INSTALL_DIR/cloudsentinel-dashboard.pid' nohup ./dashboard start > dashboard.log 2>&1 &\""
-        echo -e "  ${CYAN}日志:${NC} tail -f $INSTALL_DIR/dashboard.log"
-    else
-        echo -e "  ${CYAN}停止:${NC} $INSTALL_DIR/dashboard stop"
-        echo -e "  ${CYAN}启动:${NC} cd '$INSTALL_DIR' && CLOUDSENTINEL_PID_FILE='$INSTALL_DIR/cloudsentinel-dashboard.pid' nohup ./dashboard start > dashboard.log 2>&1 &"
-        echo -e "  ${CYAN}日志:${NC} tail -f $INSTALL_DIR/dashboard.log"
-    fi
-    echo ""
-    print_separator
-    echo ""
+    # 服务状态和安装目录（一行显示）
+    echo -e "${BOLD}服务状态：${NC} $service_status  |  ${BOLD}端口：${NC} $PORT  |  ${BOLD}目录：${NC} $INSTALL_DIR"
 }
 
 # 执行主函数
