@@ -386,6 +386,31 @@ is_port_available() {
     return 0  # 默认认为可用
 }
 
+# 获取公网IP地址
+get_public_ip() {
+    local public_ip=""
+    
+    # 尝试多个公网IP查询服务
+    local ip_services=(
+        "https://api.ip.sb/ip"
+        "https://api.ipify.org"
+        "https://icanhazip.com"
+        "https://ipinfo.io/ip"
+    )
+    
+    for service in "${ip_services[@]}"; do
+        if command -v curl &> /dev/null; then
+            public_ip=$(curl -s --max-time 3 "$service" 2>/dev/null | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | head -n1)
+            if [ -n "$public_ip" ] && [ "$public_ip" != "127.0.0.1" ]; then
+                echo "$public_ip"
+                return 0
+            fi
+        fi
+    done
+    
+    return 1
+}
+
 # 获取所有可用的IP地址
 get_all_ips() {
     local ips=()
@@ -763,18 +788,48 @@ generate_admin_account() {
         print_success "管理员账号生成完成"
         
         # 优先使用专门的机器可读行提取
-        local creds_line=$(echo "$admin_output" | grep "^ADMIN_CREDENTIALS|" | head -n1)
+        local creds_line=$(echo "$admin_output" | grep "ADMIN_CREDENTIALS|" | head -n1)
         if [ -n "$creds_line" ]; then
+            # 提取 ADMIN_CREDENTIALS|username|password 格式
+            # 使用 cut 命令更可靠
             ADMIN_USERNAME=$(echo "$creds_line" | cut -d'|' -f2 | tr -d '[:space:]')
             ADMIN_PASSWORD=$(echo "$creds_line" | cut -d'|' -f3 | tr -d '[:space:]')
         fi
 
-        # 兜底提取逻辑
+        # 兜底提取逻辑：从格式化的输出中提取
         if [ -z "$ADMIN_USERNAME" ] || [ -z "$ADMIN_PASSWORD" ]; then
             # 移除 ANSI 颜色代码后提取
             local clean_output=$(echo "$admin_output" | sed 's/\x1b\[[0-9;]*m//g')
-            ADMIN_USERNAME=$(echo "$clean_output" | grep "用户名" | sed 's/.*用户名[:：][[:space:]]*//' | awk '{print $1}' | tr -d '[:space:]')
-            ADMIN_PASSWORD=$(echo "$clean_output" | grep "密码" | sed 's/.*密码[:：][[:space:]]*//' | awk '{print $1}' | tr -d '[:space:]')
+            
+            # 尝试提取用户名
+            if [ -z "$ADMIN_USERNAME" ]; then
+                # 使用更简单的提取方式
+                ADMIN_USERNAME=$(echo "$clean_output" | grep -iE "(用户名|username)" | sed -n 's/.*[用户名username][:：]\s*\([a-zA-Z0-9]\{10\}\).*/\1/p' | head -n1 | tr -d '[:space:]')
+            fi
+            
+            # 尝试提取密码
+            if [ -z "$ADMIN_PASSWORD" ]; then
+                # 使用更简单的提取方式，避免字符类中的特殊字符问题
+                ADMIN_PASSWORD=$(echo "$clean_output" | grep -iE "(密码|password)" | sed -n 's/.*[密码password][:：]\s*\([^[:space:]]\{20,\}\).*/\1/p' | head -n1 | tr -d '[:space:]')
+            fi
+        fi
+        
+        # 调试输出
+        if [ -z "$ADMIN_USERNAME" ] || [ -z "$ADMIN_PASSWORD" ]; then
+            print_warning "无法从输出中提取管理员账号信息"
+            
+            # 检查是否是命令未定义的错误
+            if echo "$admin_output" | grep -qi "not defined\|not found\|未定义"; then
+                print_error "命令 generate:admin 未定义或不可用"
+                print_info "这可能是因为："
+                print_info "1. 二进制文件版本过旧，不包含此命令"
+                print_info "2. 命令未正确注册"
+                print_info "请手动检查二进制文件是否支持此命令："
+                echo -e "  ${CYAN}cd $install_dir && ./dashboard list${NC}"
+            else
+                print_info "原始输出（前10行）："
+                echo "$admin_output" | head -n 10 | sed 's/^/  /'
+            fi
         fi
         
         return 0
@@ -855,74 +910,98 @@ start_service() {
 
     print_info "正在启动后台服务..."
 
-    # 启动逻辑：统一使用标准的 nohup 启动
-    local start_cmd="cd '$install_dir' && export CLOUDSENTINEL_PID_FILE='$pid_file' && nohup ./dashboard"
+    # 启动逻辑：使用 start --daemon 以守护进程模式启动
+    local start_cmd="cd '$install_dir' && export CLOUDSENTINEL_PID_FILE='$pid_file' && nohup ./dashboard start --daemon"
     if is_root_with_cloudsentinel; then
-        sudo -u cloudsentinel sh -c "$start_cmd start > '$log_file' 2>&1 &"
+        sudo -u cloudsentinel sh -c "$start_cmd > '$log_file' 2>&1 &"
     else
-        (cd "$install_dir" && export CLOUDSENTINEL_PID_FILE="$pid_file" && nohup ./dashboard start > "$log_file" 2>&1 &)
+        (cd "$install_dir" && export CLOUDSENTINEL_PID_FILE="$pid_file" && nohup ./dashboard start --daemon > "$log_file" 2>&1 &)
     fi
     start_exit_code=$?
 
-    # 检查是否因为不支持 "start" 命令而失败
+    # 如果 start --daemon 失败，尝试使用 -d 短选项
     sleep 2
-    if grep -qE "not defined|does not exist|not found" "$log_file" 2>/dev/null; then
-        print_info "检测到不支持 start 命令，切换到直接启动模式..."
+    if grep -qE "not defined|does not exist|not found|unknown flag|invalid" "$log_file" 2>/dev/null || [ $start_exit_code -ne 0 ]; then
+        print_info "检测到 --daemon 选项可能不支持，尝试使用 -d 选项..."
         pgrep -f "dashboard" | xargs kill -9 2>/dev/null || true
+        sleep 1
         : > "$log_file"
+        local start_cmd_short="cd '$install_dir' && export CLOUDSENTINEL_PID_FILE='$pid_file' && nohup ./dashboard start -d"
         if is_root_with_cloudsentinel; then
-            sudo -u cloudsentinel sh -c "$start_cmd > '$log_file' 2>&1 &"
+            sudo -u cloudsentinel sh -c "$start_cmd_short > '$log_file' 2>&1 &"
         else
-            (cd "$install_dir" && export CLOUDSENTINEL_PID_FILE="$pid_file" && nohup ./dashboard > "$log_file" 2>&1 &)
+            (cd "$install_dir" && export CLOUDSENTINEL_PID_FILE="$pid_file" && nohup ./dashboard start -d > "$log_file" 2>&1 &)
         fi
         start_exit_code=$?
     fi
 
-    if [ $start_exit_code -eq 0 ]; then
-        # 等待一下，让服务启动
-        sleep 3
-
-        # 检查服务是否正在运行
-        local service_running=false
-        if pgrep -f "$binary_path" > /dev/null 2>&1; then
-            service_running=true
-        fi
-
-                # 再等待一下，让服务完全启动
-                sleep 2
-        
-        # 检查端口是否被监听
-        if ! is_port_available "$port"; then
-            print_success "服务已启动"
-                    print_info "日志文件: $install_dir/dashboard.log"
-            local service_pid=$(pgrep -f "$binary_path" | head -n1)
-            if [ -n "$service_pid" ]; then
-                print_info "进程 PID: $service_pid"
-            fi
-                    cd "$original_dir" || true
-                    return 0
-        elif [ "$service_running" = true ]; then
-            print_warning "服务进程存在但端口未监听，请检查日志"
-            print_info "日志文件: $install_dir/dashboard.log"
-            if [ -f "$install_dir/dashboard.log" ]; then
-                echo -e "  ${YELLOW}$(tail -n 3 "$install_dir/dashboard.log")${NC}"
-            fi
-            cd "$original_dir" || true
-            return 1
+    # 如果仍然失败，尝试使用环境变量方式直接启动
+    sleep 2
+    if grep -qE "not defined|does not exist|not found|unknown flag|invalid|command.*not" "$log_file" 2>/dev/null || [ $start_exit_code -ne 0 ]; then
+        print_info "检测到 start 命令可能不支持，尝试使用环境变量方式启动..."
+        pgrep -f "dashboard" | xargs kill -9 2>/dev/null || true
+        sleep 1
+        : > "$log_file"
+        local start_cmd_env="cd '$install_dir' && export CLOUDSENTINEL_PID_FILE='$pid_file' && export CLOUDSENTINEL_SERVER_MODE=1 && export CLOUDSENTINEL_DAEMON_MODE=1 && nohup ./dashboard"
+        if is_root_with_cloudsentinel; then
+            sudo -u cloudsentinel sh -c "$start_cmd_env > '$log_file' 2>&1 &"
         else
-            print_error "服务启动失败，进程未运行"
-            if [ -f "$install_dir/dashboard.log" ]; then
-                print_info "错误日志: $install_dir/dashboard.log"
-                echo -e "  ${RED}$(tail -n 5 "$install_dir/dashboard.log")${NC}"
-            fi
-            cd "$original_dir" || true
-            return 1
+            (cd "$install_dir" && export CLOUDSENTINEL_PID_FILE="$pid_file" && export CLOUDSENTINEL_SERVER_MODE=1 && export CLOUDSENTINEL_DAEMON_MODE=1 && nohup ./dashboard > "$log_file" 2>&1 &)
         fi
+        start_exit_code=$?
+    fi
+
+    # 等待服务启动（守护进程模式需要更长时间，因为 start --daemon 会启动新进程后退出）
+    sleep 4
+
+    # 检查服务是否正在运行（使用更精确的匹配）
+    local service_running=false
+    local service_pid=""
+    
+    # 尝试多种方式检测进程
+    if pgrep -f "$(basename "$binary_path")" > /dev/null 2>&1; then
+        service_pid=$(pgrep -f "$(basename "$binary_path")" | head -n1)
+        service_running=true
+    elif pgrep -f "dashboard" > /dev/null 2>&1; then
+        # 检查是否是我们的 dashboard 进程（在安装目录下运行）
+        local candidate_pids=$(pgrep -f "dashboard")
+        for pid in $candidate_pids; do
+            if [ -n "$pid" ] && [ -d "/proc/$pid" ] 2>/dev/null; then
+                local proc_cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || echo "")
+                if [ "$proc_cwd" = "$install_dir" ] || [ -n "$(ps -p "$pid" -o cmd= | grep -F "$install_dir")" ]; then
+                    service_pid="$pid"
+                    service_running=true
+                    break
+                fi
+            fi
+        done
+    fi
+
+    # 再等待一下，让服务完全启动并监听端口
+    sleep 2
+    
+    # 检查端口是否被监听
+    if ! is_port_available "$port"; then
+        print_success "服务已启动"
+        print_info "日志文件: $install_dir/dashboard.log"
+        if [ -n "$service_pid" ]; then
+            print_info "进程 PID: $service_pid"
+        fi
+        cd "$original_dir" || true
+        return 0
+    elif [ "$service_running" = true ]; then
+        print_warning "服务进程存在但端口未监听，请检查日志"
+        print_info "日志文件: $install_dir/dashboard.log"
+        if [ -f "$install_dir/dashboard.log" ]; then
+            echo -e "  ${YELLOW}$(tail -n 5 "$install_dir/dashboard.log")${NC}"
+        fi
+        cd "$original_dir" || true
+        return 1
     else
-        print_error "服务启动失败"
+        print_error "服务启动失败，进程未运行"
         if [ -f "$install_dir/dashboard.log" ]; then
             print_info "错误日志: $install_dir/dashboard.log"
-            echo -e "  ${RED}$(tail -n 5 "$install_dir/dashboard.log")${NC}"
+            echo -e "  ${RED}$(tail -n 10 "$install_dir/dashboard.log")${NC}"
         fi
         cd "$original_dir" || true
         return 1
@@ -1132,7 +1211,11 @@ main() {
         echo ""
         print_info "手动启动命令："
         echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
-        echo -e "  ${CYAN}nohup ./dashboard start > dashboard.log 2>&1 &${NC}"
+        if id "cloudsentinel" &>/dev/null; then
+            echo -e "  ${CYAN}sudo -u cloudsentinel nohup ./dashboard start --daemon > dashboard.log 2>&1 &${NC}"
+        else
+            echo -e "  ${CYAN}nohup ./dashboard start --daemon > dashboard.log 2>&1 &${NC}"
+        fi
     fi
 
     # 完成
@@ -1153,14 +1236,35 @@ main() {
     # 管理员账号信息
     if [ -n "$ADMIN_USERNAME" ] && [ -n "$ADMIN_PASSWORD" ]; then
         echo -e "${BOLD}管理员账号：${NC} ${BOLD}${GREEN}$ADMIN_USERNAME${NC} / ${BOLD}${GREEN}$ADMIN_PASSWORD${NC}"
+    else
+        print_warning "未能自动提取管理员账号信息，请手动执行以下命令查看："
+        show_manual_command "generate:admin"
     fi
 
     # 访问地址
-    local all_ips=$(get_all_ips)
     echo -e "${BOLD}访问地址：${NC}"
+    
+    # 优先显示公网IP
+    local public_ip=$(get_public_ip)
+    if [ -n "$public_ip" ] && [ "$public_ip" != "127.0.0.1" ]; then
+        echo -e "  ${BOLD}${GREEN} http://$public_ip:$PORT${NC}"
+    fi
+    
+    # 显示内网IP
+    local all_ips=$(get_all_ips)
     while IFS= read -r ip; do
-        [ -n "$ip" ] && echo -e "  ${BOLD}http://$ip:$PORT${NC}"
+        if [ -n "$ip" ] && [ "$ip" != "127.0.0.1" ]; then
+            # 如果是公网IP，已经显示过了，跳过
+            if [ "$ip" != "$public_ip" ]; then
+                echo -e "  ${BOLD} http://$ip:$PORT${NC}"
+            fi
+        fi
     done <<< "$all_ips"
+    
+    # 如果没有找到任何IP，显示本地地址
+    if [ -z "$public_ip" ] && [ -z "$all_ips" ]; then
+        echo -e "  ${BOLD}http://127.0.0.1:$PORT${NC}"
+    fi
 
     # 服务状态和安装目录（一行显示）
     echo -e "${BOLD}服务状态：${NC} $service_status  |  ${BOLD}端口：${NC} $PORT  |  ${BOLD}目录：${NC} $INSTALL_DIR"
