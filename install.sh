@@ -911,59 +911,79 @@ start_service() {
     print_info "正在启动后台服务..."
 
     # 启动逻辑：使用 start --daemon 以守护进程模式启动
-    local start_cmd="cd '$install_dir' && export CLOUDSENTINEL_PID_FILE='$pid_file' && nohup ./dashboard start --daemon"
+    # 注意：必须在安装目录下执行，确保能找到 .env 文件
+    local start_cmd="cd '$install_dir' && export CLOUDSENTINEL_PID_FILE='$pid_file' && ./dashboard start --daemon"
     if is_root_with_cloudsentinel; then
         sudo -u cloudsentinel sh -c "$start_cmd > '$log_file' 2>&1 &"
     else
-        (cd "$install_dir" && export CLOUDSENTINEL_PID_FILE="$pid_file" && nohup ./dashboard start --daemon > "$log_file" 2>&1 &)
+        (cd "$install_dir" && export CLOUDSENTINEL_PID_FILE="$pid_file" && ./dashboard start --daemon > "$log_file" 2>&1 &)
     fi
     start_exit_code=$?
 
+    # 等待一下，检查命令是否执行成功
+    sleep 3
+    
+    # 检查是否有错误
+    local has_error=false
+    if [ -f "$log_file" ]; then
+        if grep -qE "not defined|does not exist|not found|unknown flag|invalid|Command.*not" "$log_file" 2>/dev/null; then
+            has_error=true
+        fi
+    fi
+    
     # 如果 start --daemon 失败，尝试使用 -d 短选项
-    sleep 2
-    if grep -qE "not defined|does not exist|not found|unknown flag|invalid" "$log_file" 2>/dev/null || [ $start_exit_code -ne 0 ]; then
+    if [ "$has_error" = true ] || [ $start_exit_code -ne 0 ]; then
         print_info "检测到 --daemon 选项可能不支持，尝试使用 -d 选项..."
         pgrep -f "dashboard" | xargs kill -9 2>/dev/null || true
         sleep 1
         : > "$log_file"
-        local start_cmd_short="cd '$install_dir' && export CLOUDSENTINEL_PID_FILE='$pid_file' && nohup ./dashboard start -d"
+        local start_cmd_short="cd '$install_dir' && export CLOUDSENTINEL_PID_FILE='$pid_file' && ./dashboard start -d"
         if is_root_with_cloudsentinel; then
             sudo -u cloudsentinel sh -c "$start_cmd_short > '$log_file' 2>&1 &"
         else
-            (cd "$install_dir" && export CLOUDSENTINEL_PID_FILE="$pid_file" && nohup ./dashboard start -d > "$log_file" 2>&1 &)
+            (cd "$install_dir" && export CLOUDSENTINEL_PID_FILE="$pid_file" && ./dashboard start -d > "$log_file" 2>&1 &)
         fi
         start_exit_code=$?
+        sleep 3
+        
+        # 再次检查错误
+        has_error=false
+        if [ -f "$log_file" ]; then
+            if grep -qE "not defined|does not exist|not found|unknown flag|invalid|Command.*not" "$log_file" 2>/dev/null; then
+                has_error=true
+            fi
+        fi
     fi
 
     # 如果仍然失败，尝试使用环境变量方式直接启动
-    sleep 2
-    if grep -qE "not defined|does not exist|not found|unknown flag|invalid|command.*not" "$log_file" 2>/dev/null || [ $start_exit_code -ne 0 ]; then
+    if [ "$has_error" = true ] || [ $start_exit_code -ne 0 ]; then
         print_info "检测到 start 命令可能不支持，尝试使用环境变量方式启动..."
         pgrep -f "dashboard" | xargs kill -9 2>/dev/null || true
         sleep 1
         : > "$log_file"
-        local start_cmd_env="cd '$install_dir' && export CLOUDSENTINEL_PID_FILE='$pid_file' && export CLOUDSENTINEL_SERVER_MODE=1 && export CLOUDSENTINEL_DAEMON_MODE=1 && nohup ./dashboard"
+        local start_cmd_env="cd '$install_dir' && export CLOUDSENTINEL_PID_FILE='$pid_file' && export CLOUDSENTINEL_SERVER_MODE=1 && export CLOUDSENTINEL_DAEMON_MODE=1 && ./dashboard"
         if is_root_with_cloudsentinel; then
             sudo -u cloudsentinel sh -c "$start_cmd_env > '$log_file' 2>&1 &"
         else
-            (cd "$install_dir" && export CLOUDSENTINEL_PID_FILE="$pid_file" && export CLOUDSENTINEL_SERVER_MODE=1 && export CLOUDSENTINEL_DAEMON_MODE=1 && nohup ./dashboard > "$log_file" 2>&1 &)
+            (cd "$install_dir" && export CLOUDSENTINEL_PID_FILE="$pid_file" && export CLOUDSENTINEL_SERVER_MODE=1 && export CLOUDSENTINEL_DAEMON_MODE=1 && ./dashboard > "$log_file" 2>&1 &)
         fi
         start_exit_code=$?
+        sleep 3
     fi
 
-    # 等待服务启动（守护进程模式需要更长时间，因为 start --daemon 会启动新进程后退出）
+    # 等待服务启动
     sleep 4
 
-    # 检查服务是否正在运行（使用更精确的匹配）
-    local service_running=false
+    # 检查服务是否正在运行
+        local service_running=false
     local service_pid=""
     
     # 尝试多种方式检测进程
     if pgrep -f "$(basename "$binary_path")" > /dev/null 2>&1; then
         service_pid=$(pgrep -f "$(basename "$binary_path")" | head -n1)
-        service_running=true
+            service_running=true
     elif pgrep -f "dashboard" > /dev/null 2>&1; then
-        # 检查是否是我们的 dashboard 进程（在安装目录下运行）
+        # 检查是否是我们的 dashboard 进程
         local candidate_pids=$(pgrep -f "dashboard")
         for pid in $candidate_pids; do
             if [ -n "$pid" ] && [ -d "/proc/$pid" ] 2>/dev/null; then
@@ -975,32 +995,32 @@ start_service() {
                 fi
             fi
         done
-    fi
+        fi
 
     # 再等待一下，让服务完全启动并监听端口
-    sleep 2
-    
-    # 检查端口是否被监听
-    if ! is_port_available "$port"; then
-        print_success "服务已启动"
-        print_info "日志文件: $install_dir/dashboard.log"
-        if [ -n "$service_pid" ]; then
-            print_info "进程 PID: $service_pid"
-        fi
-        cd "$original_dir" || true
-        return 0
-    elif [ "$service_running" = true ]; then
-        print_warning "服务进程存在但端口未监听，请检查日志"
-        print_info "日志文件: $install_dir/dashboard.log"
-        if [ -f "$install_dir/dashboard.log" ]; then
+                sleep 2
+        
+        # 检查端口是否被监听
+        if ! is_port_available "$port"; then
+            print_success "服务已启动"
+                    print_info "日志文件: $install_dir/dashboard.log"
+            if [ -n "$service_pid" ]; then
+                print_info "进程 PID: $service_pid"
+            fi
+                    cd "$original_dir" || true
+                    return 0
+        elif [ "$service_running" = true ]; then
+            print_warning "服务进程存在但端口未监听，请检查日志"
+            print_info "日志文件: $install_dir/dashboard.log"
+            if [ -f "$install_dir/dashboard.log" ]; then
             echo -e "  ${YELLOW}$(tail -n 5 "$install_dir/dashboard.log")${NC}"
-        fi
-        cd "$original_dir" || true
-        return 1
-    else
-        print_error "服务启动失败，进程未运行"
-        if [ -f "$install_dir/dashboard.log" ]; then
-            print_info "错误日志: $install_dir/dashboard.log"
+            fi
+            cd "$original_dir" || true
+            return 1
+        else
+            print_error "服务启动失败，进程未运行"
+            if [ -f "$install_dir/dashboard.log" ]; then
+                print_info "错误日志: $install_dir/dashboard.log"
             echo -e "  ${RED}$(tail -n 10 "$install_dir/dashboard.log")${NC}"
         fi
         cd "$original_dir" || true

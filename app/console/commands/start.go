@@ -69,14 +69,25 @@ func (c *StartCommand) Handle(ctx console.Context) error {
 
 	if daemonFlag {
 		// 守护进程模式
+		// 获取当前工作目录
+		currentDir, err := os.Getwd()
+		if err != nil {
+			currentDir = filepath.Dir(exePath)
+		}
+
 		// 设置环境变量标记
 		env := os.Environ()
 		env = append(env, "CLOUDSENTINEL_SERVER_MODE=1")
 		env = append(env, "CLOUDSENTINEL_DAEMON_MODE=1")
 
-		// 重新执行程序
+		// 传递 PID 文件路径
+		if pidFileEnv := os.Getenv("CLOUDSENTINEL_PID_FILE"); pidFileEnv != "" {
+			env = append(env, "CLOUDSENTINEL_PID_FILE="+pidFileEnv)
+		}
+
+		// 重新执行程序，工作目录设置为当前目录
 		cmd := exec.Command(exePath)
-		cmd.Dir = filepath.Dir(exePath)
+		cmd.Dir = currentDir
 		cmd.Env = env
 
 		// 启动进程
