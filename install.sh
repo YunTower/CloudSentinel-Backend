@@ -235,22 +235,47 @@ get_latest_version() {
     # 默认且仅使用 GitHub
     API_URL="https://api.github.com/repos/YunTower/CloudSentinel/releases/latest"
     RESPONSE=$(curl -s -H "Accept: application/vnd.github.v3+json" "$API_URL")
+    local curl_exit_code=$?
 
-    if [ $? -ne 0 ]; then
-        print_error "获取版本信息失败"
+    if [ $curl_exit_code -ne 0 ]; then
+        print_error "获取版本信息失败（网络错误）"
         exit 1
     fi
 
-    # 检查响应是否包含错误
+    # 检查响应是否为空
+    if [ -z "$RESPONSE" ]; then
+        print_error "API 返回空响应"
+        exit 1
+    fi
+
+    # 检查响应是否为有效的 JSON
+    if ! echo "$RESPONSE" | jq . > /dev/null 2>&1; then
+        print_error "API 返回无效的 JSON 响应"
+        print_info "响应内容（前200字符）："
+        echo "$RESPONSE" | head -c 200
+        echo ""
+        exit 1
+    fi
+
+    # 检查响应是否包含错误消息
     if echo "$RESPONSE" | jq -e '.message' > /dev/null 2>&1; then
-        ERROR_MSG=$(echo "$RESPONSE" | jq -r '.message')
+        ERROR_MSG=$(echo "$RESPONSE" | jq -r '.message // "未知错误"')
         print_error "API 返回错误: $ERROR_MSG"
         exit 1
     fi
 
-    TAG_NAME=$(echo "$RESPONSE" | jq -r '.tag_name // empty')
-    if [ -z "$TAG_NAME" ] || [ "$TAG_NAME" = "null" ]; then
+    # 提取版本标签
+    TAG_NAME=$(echo "$RESPONSE" | jq -r '.tag_name // empty' 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        print_error "解析版本标签失败"
+        exit 1
+    fi
+
+    if [ -z "$TAG_NAME" ] || [ "$TAG_NAME" = "null" ] || [ "$TAG_NAME" = "" ]; then
         print_error "无法获取版本标签"
+        print_info "API 响应（前500字符）："
+        echo "$RESPONSE" | head -c 500
+        echo ""
         exit 1
     fi
 
@@ -260,7 +285,11 @@ get_latest_version() {
     print_success "最新版本: ${BOLD}$TAG_NAME${NC}"
 
     # 保存 assets 信息
-    ASSETS=$(echo "$RESPONSE" | jq -c '.assets // []')
+    ASSETS=$(echo "$RESPONSE" | jq -c '.assets // []' 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        print_warning "解析 assets 信息失败，将使用空数组"
+        ASSETS="[]"
+    fi
 }
 
 # 查找匹配的二进制包
@@ -269,21 +298,47 @@ find_asset() {
     local asset_name=""
     local download_url=""
 
+    # 检查 ASSETS 是否为空或无效
+    if [ -z "$ASSETS" ] || [ "$ASSETS" = "null" ] || [ "$ASSETS" = "[]" ]; then
+        return 1
+    fi
+
+    # 验证 ASSETS 是否为有效的 JSON
+    if ! echo "$ASSETS" | jq . > /dev/null 2>&1; then
+        print_error "Assets 数据无效"
+        return 1
+    fi
+
     # 遍历 assets 查找匹配的文件
-    for asset in $(echo "$ASSETS" | jq -c '.[]'); do
-        name=$(echo "$asset" | jq -r '.name // empty')
+    local assets_array
+    assets_array=$(echo "$ASSETS" | jq -c '.[]' 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        print_error "解析 assets 数组失败"
+        return 1
+    fi
+
+    while IFS= read -r asset; do
+        if [ -z "$asset" ]; then
+            continue
+        fi
+
+        # 提取文件名
+        name=$(echo "$asset" | jq -r '.name // empty' 2>/dev/null)
+        if [ $? -ne 0 ] || [ -z "$name" ] || [ "$name" = "null" ]; then
+            continue
+        fi
 
         if [ "$name" = "$expected_name" ]; then
             asset_name="$name"
             # GitHub 使用 browser_download_url
-            download_url=$(echo "$asset" | jq -r '.browser_download_url // empty')
-
-            if [ -n "$download_url" ] && [ "$download_url" != "null" ]; then
+            download_url=$(echo "$asset" | jq -r '.browser_download_url // empty' 2>/dev/null)
+            
+            if [ $? -eq 0 ] && [ -n "$download_url" ] && [ "$download_url" != "null" ] && [ "$download_url" != "" ]; then
                 echo "$asset_name|$download_url"
                 return 0
             fi
         fi
-    done
+    done <<< "$assets_array"
 
     return 1
 }
@@ -926,8 +981,14 @@ start_service() {
     # 检查是否有错误
     local has_error=false
     if [ -f "$log_file" ]; then
-        if grep -qE "not defined|does not exist|not found|unknown flag|invalid|Command.*not" "$log_file" 2>/dev/null; then
+        # 检查是否有错误信息
+        if grep -qE "not defined|does not exist|not found|unknown flag|invalid|Command.*not|启动服务失败|启动失败" "$log_file" 2>/dev/null; then
             has_error=true
+        fi
+        # 检查是否显示前台模式的提示（说明没有进入守护进程模式）
+        if grep -qE "正在启动服务|按 Ctrl\+C 停止服务" "$log_file" 2>/dev/null; then
+            has_error=true
+            print_warning "检测到前台模式输出，守护进程模式可能未生效"
         fi
     fi
     
@@ -1247,13 +1308,33 @@ main() {
 
     # 检查服务状态
     local service_status
-    if pgrep -f "$INSTALLED_BINARY" > /dev/null 2>&1 && ! is_port_available "$PORT"; then
+    # 检查进程是否存在
+    local process_running=false
+    if pgrep -f "$(basename "$INSTALLED_BINARY")" > /dev/null 2>&1 || pgrep -f "dashboard" > /dev/null 2>&1; then
+        process_running=true
+    fi
+    
+    # 检查端口是否被监听
+    # is_port_available 返回 0 表示可用，返回 1 表示被占用
+    # 如果端口被占用（返回1），说明服务在运行
+    local port_in_use=false
+    is_port_available "$PORT"
+    if [ $? -eq 1 ]; then
+        port_in_use=true
+    fi
+    
+    # 如果进程存在且端口被占用，说明服务正在运行
+    if [ "$process_running" = true ] && [ "$port_in_use" = true ]; then
         service_status="${GREEN}✓ 运行中${NC}"
+    elif [ "$process_running" = true ]; then
+        # 进程存在但端口未监听，可能正在启动中
+        service_status="${YELLOW}⚠ 启动中${NC}"
     else
         service_status="${RED}✗ 未运行${NC}"
     fi
 
     # 管理员账号信息
+    echo ""
     if [ -n "$ADMIN_USERNAME" ] && [ -n "$ADMIN_PASSWORD" ]; then
         echo -e "${BOLD}管理员账号：${NC} ${BOLD}${GREEN}$ADMIN_USERNAME${NC} / ${BOLD}${GREEN}$ADMIN_PASSWORD${NC}"
     else
@@ -1262,32 +1343,47 @@ main() {
     fi
 
     # 访问地址
+    echo ""
     echo -e "${BOLD}访问地址：${NC}"
     
-    # 优先显示公网IP
-    local public_ip=$(get_public_ip)
-    if [ -n "$public_ip" ] && [ "$public_ip" != "127.0.0.1" ]; then
-        echo -e "  ${BOLD}${GREEN} http://$public_ip:$PORT${NC}"
+    # 优先显示公网IP（使用 set +e 避免因错误退出）
+    set +e
+    local public_ip=$(get_public_ip 2>/dev/null)
+    local public_ip_exit=$?
+    set -e
+    
+    if [ $public_ip_exit -eq 0 ] && [ -n "$public_ip" ] && [ "$public_ip" != "127.0.0.1" ]; then
+        echo -e "  ${BOLD}${GREEN}http://$public_ip:$PORT${NC}"
     fi
     
-    # 显示内网IP
+    # 显示内网IP（使用 set +e 避免因错误退出）
+    set +e
     local all_ips=$(get_all_ips)
-    while IFS= read -r ip; do
-        if [ -n "$ip" ] && [ "$ip" != "127.0.0.1" ]; then
-            # 如果是公网IP，已经显示过了，跳过
-            if [ "$ip" != "$public_ip" ]; then
-                echo -e "  ${BOLD} http://$ip:$PORT${NC}"
+    local all_ips_exit=$?
+    set -e
+    
+    local has_internal_ip=false
+    if [ $all_ips_exit -eq 0 ] && [ -n "$all_ips" ]; then
+        while IFS= read -r ip; do
+            if [ -n "$ip" ] && [ "$ip" != "127.0.0.1" ]; then
+                # 如果是公网IP，已经显示过了，跳过
+                if [ "$ip" != "$public_ip" ]; then
+                    echo -e "  ${BOLD}http://$ip:$PORT${NC}"
+                    has_internal_ip=true
+                fi
             fi
-        fi
-    done <<< "$all_ips"
+        done <<< "$all_ips"
+    fi
     
     # 如果没有找到任何IP，显示本地地址
-    if [ -z "$public_ip" ] && [ -z "$all_ips" ]; then
+    if [ "$has_internal_ip" = false ] && ([ $public_ip_exit -ne 0 ] || [ -z "$public_ip" ]); then
         echo -e "  ${BOLD}http://127.0.0.1:$PORT${NC}"
     fi
 
     # 服务状态和安装目录（一行显示）
+    echo ""
     echo -e "${BOLD}服务状态：${NC} $service_status  |  ${BOLD}端口：${NC} $PORT  |  ${BOLD}目录：${NC} $INSTALL_DIR"
+    echo ""
 }
 
 # 执行主函数
