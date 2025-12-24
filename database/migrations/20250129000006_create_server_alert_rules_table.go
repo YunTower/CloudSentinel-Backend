@@ -28,9 +28,9 @@ func (r *M20250129000006CreateServerAlertRulesTable) Up() error {
 
 		// 创建索引
 		facades.Schema().Table("server_alert_rules", func(table schema.Blueprint) {
-			table.Index("server_alert_rules_server_id_index", "server_id")
-			table.Index("server_alert_rules_rule_type_index", "rule_type")
-			table.Unique("server_alert_rules_server_id_rule_type_unique", "server_id", "rule_type")
+			table.Index("server_id")
+			table.Index("rule_type")
+			table.Unique("server_id", "rule_type")
 		})
 	}
 

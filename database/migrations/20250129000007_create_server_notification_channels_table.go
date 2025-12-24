@@ -28,9 +28,9 @@ func (r *M20250129000007CreateServerNotificationChannelsTable) Up() error {
 
 		// 创建索引
 		facades.Schema().Table("server_notification_channels", func(table schema.Blueprint) {
-			table.Index("server_notification_channels_server_id_index", "server_id")
-			table.Index("server_notification_channels_notification_type_index", "notification_type")
-			table.Unique("server_notification_channels_server_id_notification_type_unique", "server_id", "notification_type")
+			table.Index("server_id")
+			table.Index("notification_type")
+			table.Unique("server_id", "notification_type")
 		})
 	}
 
