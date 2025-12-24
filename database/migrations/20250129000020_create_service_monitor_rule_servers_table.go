@@ -31,7 +31,7 @@ func (r *M20250129000020CreateServiceMonitorRuleServersTable) Up() error {
 
 		// 创建唯一索引
 		facades.Schema().Table("service_monitor_rule_servers", func(table schema.Blueprint) {
-			table.Unique("service_monitor_rule_servers_rule_id_server_id_unique", "rule_id", "server_id")
+			table.Unique("rule_id", "server_id")
 		})
 	}
 

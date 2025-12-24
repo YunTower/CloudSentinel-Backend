@@ -33,8 +33,8 @@ func (r *M20250129000017CreateServerSwapTable) Up() error {
 
 		// 创建索引
 		facades.Schema().Table("server_swap", func(table schema.Blueprint) {
-			table.Index("idx_server_swap_server_id", "server_id")
-			table.Index("idx_server_swap_timestamp", "timestamp")
+			table.Index("server_id")
+			table.Index("timestamp")
 		})
 	}
 

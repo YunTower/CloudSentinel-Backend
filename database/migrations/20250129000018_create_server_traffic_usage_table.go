@@ -33,7 +33,7 @@ func (r *M20250129000018CreateServerTrafficUsageTable) Up() error {
 
 		// 创建唯一索引
 		facades.Schema().Table("server_traffic_usage", func(table schema.Blueprint) {
-			table.Unique("server_traffic_usage_server_id_year_month_unique", "server_id", "year", "month")
+			table.Unique("server_id", "year", "month")
 		})
 	}
 

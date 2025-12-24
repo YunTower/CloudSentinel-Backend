@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/goravel/framework/contracts/console"
@@ -65,18 +66,45 @@ func (c *StartCommand) Handle(ctx console.Context) error {
 		return err
 	}
 
-	daemonFlag := ctx.Option("daemon") == "true" || ctx.Option("daemon") == "1"
+	// 检查 daemon 选项
+	// 对于 BoolFlag，如果指定了选项，ctx.Option() 可能返回 "true" 或空字符串
+	// 为了更可靠，同时检查选项值和命令行参数
+	daemonOpt := ctx.Option("daemon")
+	daemonShortOpt := ctx.Option("d")
+
+	// 检查命令行参数中是否包含 --daemon 或 -d
+	hasDaemonArg := false
+	for _, arg := range os.Args {
+		if arg == "--daemon" || arg == "-d" || strings.HasPrefix(arg, "--daemon=") || strings.HasPrefix(arg, "-d=") {
+			hasDaemonArg = true
+			break
+		}
+	}
+
+	// 如果选项值为 "true" 或 "1"，或者命令行参数中包含 daemon 标志，则启用守护进程模式
+	daemonFlag := daemonOpt == "true" || daemonOpt == "1" || daemonShortOpt == "true" || daemonShortOpt == "1" || hasDaemonArg
 
 	if daemonFlag {
 		// 守护进程模式
+		// 获取当前工作目录
+		currentDir, err := os.Getwd()
+		if err != nil {
+			currentDir = filepath.Dir(exePath)
+		}
+
 		// 设置环境变量标记
 		env := os.Environ()
 		env = append(env, "CLOUDSENTINEL_SERVER_MODE=1")
 		env = append(env, "CLOUDSENTINEL_DAEMON_MODE=1")
 
-		// 重新执行程序
+		// 传递 PID 文件路径
+		if pidFileEnv := os.Getenv("CLOUDSENTINEL_PID_FILE"); pidFileEnv != "" {
+			env = append(env, "CLOUDSENTINEL_PID_FILE="+pidFileEnv)
+		}
+
+		// 重新执行程序，工作目录设置为当前目录
 		cmd := exec.Command(exePath)
-		cmd.Dir = filepath.Dir(exePath)
+		cmd.Dir = currentDir
 		cmd.Env = env
 
 		// 启动进程

@@ -76,7 +76,7 @@ func (c *GenerateAdminCommand) Handle(ctx console.Context) error {
 	fmt.Println()
 	fmt.Printf("  %s用户名: %s%s\n", ColorCyan, username, ColorReset)
 	fmt.Printf("  %s密码: %s%s\n", ColorCyan, password, ColorReset)
-	fmt.Printf("ADMIN_CREDENTIALS:%s:%s\n", username, password)
+	fmt.Printf("ADMIN_CREDENTIALS|%s|%s\n", username, password)
 	fmt.Println()
 	PrintWarning("请妥善保管用户名和密码，建议立即登录并修改密码")
 
