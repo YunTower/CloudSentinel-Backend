@@ -441,6 +441,82 @@ is_port_available() {
     return 0  # 默认认为可用
 }
 
+# 检查端口监听状态
+check_port_listening() {
+    local port=$1
+    local listen_info=""
+    
+    # 使用 netstat 检查
+    if command -v netstat &> /dev/null; then
+        listen_info=$(netstat -tlnp 2>/dev/null | grep ":$port " || netstat -tln 2>/dev/null | grep ":$port ")
+        if [ -n "$listen_info" ]; then
+            if echo "$listen_info" | grep -qE "0\.0\.0\.0:$port|:::$port"; then
+                return 0  # 绑定到0.0.0.0，外网可访问
+            elif echo "$listen_info" | grep -qE "127\.0\.0\.1:$port"; then
+                return 1  # 只绑定到127.0.0.1，外网不可访问
+            fi
+        fi
+    # 使用 ss 检查
+    elif command -v ss &> /dev/null; then
+        listen_info=$(ss -tlnp 2>/dev/null | grep ":$port " || ss -tln 2>/dev/null | grep ":$port ")
+        if [ -n "$listen_info" ]; then
+            if echo "$listen_info" | grep -qE "0\.0\.0\.0:$port|:::$port"; then
+                return 0  # 绑定到0.0.0.0，外网可访问
+            elif echo "$listen_info" | grep -qE "127\.0\.0\.1:$port"; then
+                return 1  # 只绑定到127.0.0.1，外网不可访问
+            fi
+        fi
+    # 使用 lsof 检查
+    elif command -v lsof &> /dev/null; then
+        listen_info=$(lsof -i ":$port" 2>/dev/null)
+        if [ -n "$listen_info" ]; then
+            if echo "$listen_info" | grep -qE "0\.0\.0\.0|:::"; then
+                return 0  # 绑定到0.0.0.0，外网可访问
+            elif echo "$listen_info" | grep -qE "127\.0\.0\.1"; then
+                return 1  # 只绑定到127.0.0.1，外网不可访问
+            fi
+        fi
+    fi
+    
+    return 2  # 无法确定或未监听
+}
+
+# 检查防火墙状态
+check_firewall_status() {
+    local port=$1
+    local firewall_info=""
+    
+    # 检查 UFW
+    if command -v ufw &> /dev/null; then
+        local ufw_status=$(ufw status 2>/dev/null | head -n1)
+        if echo "$ufw_status" | grep -q "active"; then
+            firewall_info="UFW"
+            if ufw status 2>/dev/null | grep -q "$port"; then
+                echo "ufw_ok"
+            else
+                echo "ufw_not_configured"
+            fi
+            return 0
+        fi
+    fi
+    
+    # 检查 firewalld
+    if command -v firewall-cmd &> /dev/null; then
+        if firewall-cmd --state 2>/dev/null | grep -q "running"; then
+            firewall_info="Firewalld"
+            if firewall-cmd --list-ports 2>/dev/null | grep -q "$port"; then
+                echo "firewalld_ok"
+            else
+                echo "firewalld_not_configured"
+            fi
+            return 0
+        fi
+    fi
+    
+    echo "none"
+    return 0
+}
+
 # 获取公网IP地址
 get_public_ip() {
     local public_ip=""
@@ -1089,6 +1165,234 @@ start_service() {
     fi
 }
 
+# 诊断功能
+diagnose() {
+    echo -e "${BOLD}${CYAN}CloudSentinel 服务诊断工具${NC}\n"
+    
+    # 检查 .env 文件
+    echo -e "${BOLD}1. 检查配置文件${NC}"
+    if [ -f ".env" ]; then
+        echo -e "${GREEN}✓ .env 文件存在${NC}"
+        echo ""
+        echo -e "${CYAN}关键配置：${NC}"
+        APP_HOST=$(grep "^APP_HOST=" .env | cut -d'=' -f2 | tr -d '[:space:]')
+        APP_PORT=$(grep "^APP_PORT=" .env | cut -d'=' -f2 | tr -d '[:space:]')
+        APP_URL=$(grep "^APP_URL=" .env | cut -d'=' -f2 | tr -d '[:space:]')
+        
+        echo -e "  APP_HOST: ${BOLD}$APP_HOST${NC}"
+        echo -e "  APP_PORT: ${BOLD}$APP_PORT${NC}"
+        echo -e "  APP_URL:  ${BOLD}$APP_URL${NC}"
+        echo ""
+        
+        if [ "$APP_HOST" != "0.0.0.0" ] && [ "$APP_HOST" != "" ]; then
+            echo -e "${YELLOW}⚠ 警告: APP_HOST 不是 0.0.0.0，外网可能无法访问${NC}"
+            echo -e "  当前值: $APP_HOST"
+            echo -e "  建议修改为: 0.0.0.0"
+            echo ""
+        fi
+    else
+        echo -e "${RED}✗ .env 文件不存在${NC}"
+        echo -e "  请确保在 CloudSentinel 安装目录下运行此命令"
+        exit 1
+    fi
+    
+    # 检查服务进程
+    echo -e "${BOLD}2. 检查服务进程${NC}"
+    if pgrep -f "dashboard" > /dev/null 2>&1; then
+        PID=$(pgrep -f "dashboard" | head -n1)
+        echo -e "${GREEN}✓ 服务正在运行 (PID: $PID)${NC}"
+        
+        # 检查进程的工作目录
+        PROC_CWD=$(pwdx $PID 2>/dev/null | awk '{print $2}' || readlink -f /proc/$PID/cwd 2>/dev/null || echo "未知")
+        echo -e "  工作目录: $PROC_CWD"
+        echo ""
+    else
+        echo -e "${RED}✗ 服务未运行${NC}"
+        echo ""
+    fi
+    
+    # 检查端口监听
+    echo -e "${BOLD}3. 检查端口监听状态${NC}"
+    if [ -n "$APP_PORT" ]; then
+        check_port_listening "$APP_PORT"
+        local listen_status=$?
+        
+        # 使用 netstat 检查
+        if command -v netstat &> /dev/null; then
+            LISTEN_INFO=$(netstat -tlnp 2>/dev/null | grep ":$APP_PORT " || netstat -tln 2>/dev/null | grep ":$APP_PORT ")
+            if [ -n "$LISTEN_INFO" ]; then
+                echo -e "${GREEN}✓ 端口 $APP_PORT 正在监听${NC}"
+                echo -e "  监听信息:"
+                echo "$LISTEN_INFO" | while read line; do
+                    echo -e "    ${CYAN}$line${NC}"
+                done
+                echo ""
+                
+                if [ $listen_status -eq 0 ]; then
+                    echo -e "${GREEN}✓ 端口绑定到 0.0.0.0，外网可以访问${NC}"
+                elif [ $listen_status -eq 1 ]; then
+                    echo -e "${RED}✗ 端口只绑定到 127.0.0.1，外网无法访问${NC}"
+                    echo -e "  解决方案: 修改 .env 文件中的 APP_HOST=0.0.0.0，然后重启服务"
+                fi
+                echo ""
+            else
+                echo -e "${RED}✗ 端口 $APP_PORT 未监听${NC}"
+                echo ""
+            fi
+        # 使用 ss 检查
+        elif command -v ss &> /dev/null; then
+            LISTEN_INFO=$(ss -tlnp 2>/dev/null | grep ":$APP_PORT " || ss -tln 2>/dev/null | grep ":$APP_PORT ")
+            if [ -n "$LISTEN_INFO" ]; then
+                echo -e "${GREEN}✓ 端口 $APP_PORT 正在监听${NC}"
+                echo -e "  监听信息:"
+                echo "$LISTEN_INFO" | while read line; do
+                    echo -e "    ${CYAN}$line${NC}"
+                done
+                echo ""
+                
+                if [ $listen_status -eq 0 ]; then
+                    echo -e "${GREEN}✓ 端口绑定到 0.0.0.0，外网可以访问${NC}"
+                elif [ $listen_status -eq 1 ]; then
+                    echo -e "${RED}✗ 端口只绑定到 127.0.0.1，外网无法访问${NC}"
+                    echo -e "  解决方案: 修改 .env 文件中的 APP_HOST=0.0.0.0，然后重启服务"
+                fi
+                echo ""
+            else
+                echo -e "${RED}✗ 端口 $APP_PORT 未监听${NC}"
+                echo ""
+            fi
+        # 使用 lsof 检查
+        elif command -v lsof &> /dev/null; then
+            LISTEN_INFO=$(lsof -i ":$APP_PORT" 2>/dev/null)
+            if [ -n "$LISTEN_INFO" ]; then
+                echo -e "${GREEN}✓ 端口 $APP_PORT 正在监听${NC}"
+                echo -e "  监听信息:"
+                echo "$LISTEN_INFO" | while read line; do
+                    echo -e "    ${CYAN}$line${NC}"
+                done
+                echo ""
+            else
+                echo -e "${RED}✗ 端口 $APP_PORT 未监听${NC}"
+                echo ""
+            fi
+        else
+            echo -e "${YELLOW}⚠ 无法检查端口状态（未找到 netstat/ss/lsof）${NC}"
+            echo ""
+        fi
+    fi
+    
+    # 检查防火墙
+    echo -e "${BOLD}4. 检查防火墙状态${NC}"
+    local firewall_result=$(check_firewall_status "$APP_PORT")
+    case "$firewall_result" in
+        ufw_ok)
+            echo -e "  UFW 状态: 运行中"
+            echo -e "${GREEN}✓ 端口 $APP_PORT 已在防火墙规则中${NC}"
+            ;;
+        ufw_not_configured)
+            echo -e "  UFW 状态: 运行中"
+            echo -e "${YELLOW}⚠ 端口 $APP_PORT 可能未在防火墙规则中${NC}"
+            echo -e "  建议执行: sudo ufw allow $APP_PORT/tcp"
+            ;;
+        firewalld_ok)
+            echo -e "  Firewalld 状态: 运行中"
+            echo -e "${GREEN}✓ 端口 $APP_PORT 已在防火墙规则中${NC}"
+            ;;
+        firewalld_not_configured)
+            echo -e "  Firewalld 状态: 运行中"
+            echo -e "${YELLOW}⚠ 端口 $APP_PORT 可能未在防火墙规则中${NC}"
+            echo -e "  建议执行: sudo firewall-cmd --permanent --add-port=$APP_PORT/tcp && sudo firewall-cmd --reload"
+            ;;
+        none)
+            echo -e "${YELLOW}⚠ 未检测到常见防火墙工具（UFW/Firewalld）${NC}"
+            echo -e "  请手动检查 iptables 或其他防火墙配置"
+            ;;
+    esac
+    echo ""
+    
+    # 检查本地连接
+    echo -e "${BOLD}5. 测试本地连接${NC}"
+    if [ -n "$APP_PORT" ]; then
+        if command -v curl &> /dev/null; then
+            echo -e "  测试 127.0.0.1:$APP_PORT ..."
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "http://127.0.0.1:$APP_PORT" 2>/dev/null || echo "000")
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ] || [ "$HTTP_CODE" = "301" ]; then
+                echo -e "${GREEN}✓ 本地连接正常 (HTTP $HTTP_CODE)${NC}"
+            elif [ "$HTTP_CODE" = "503" ]; then
+                echo -e "${RED}✗ 本地连接返回 503 (服务不可用)${NC}"
+            elif [ "$HTTP_CODE" = "000" ]; then
+                echo -e "${RED}✗ 本地连接失败 (无法连接)${NC}"
+            else
+                echo -e "${YELLOW}⚠ 本地连接返回 HTTP $HTTP_CODE${NC}"
+            fi
+            echo ""
+        else
+            echo -e "${YELLOW}⚠ curl 未安装，跳过连接测试${NC}"
+            echo ""
+        fi
+    fi
+    
+    # 检查日志
+    echo -e "${BOLD}6. 检查服务日志${NC}"
+    if [ -f "dashboard.log" ]; then
+        echo -e "${GREEN}✓ 日志文件存在${NC}"
+        echo -e "  最近 10 行日志:"
+        echo -e "${CYAN}$(tail -n 10 dashboard.log)${NC}"
+        echo ""
+        
+        # 检查错误
+        ERROR_COUNT=$(grep -i "error\|fatal\|panic" dashboard.log 2>/dev/null | wc -l)
+        if [ "$ERROR_COUNT" -gt 0 ]; then
+            echo -e "${YELLOW}⚠ 发现 $ERROR_COUNT 条错误日志${NC}"
+            echo -e "  最近的错误:"
+            grep -i "error\|fatal\|panic" dashboard.log 2>/dev/null | tail -n 3 | while read line; do
+                echo -e "    ${RED}$line${NC}"
+            done
+            echo ""
+        fi
+    else
+        echo -e "${YELLOW}⚠ 日志文件不存在${NC}"
+        echo ""
+    fi
+    
+    # 总结和建议
+    echo -e "${BOLD}${CYAN}诊断总结和建议：${NC}\n"
+    
+    # 初始化建议序号计数器
+    SUGGESTION_NUM=1
+    
+    if [ "$APP_HOST" != "0.0.0.0" ] && [ "$APP_HOST" != "" ]; then
+        echo -e "${YELLOW}${SUGGESTION_NUM}. 修改 APP_HOST 配置${NC}"
+        echo -e "   编辑 .env 文件，将 APP_HOST 改为 0.0.0.0"
+        echo -e "   然后重启服务"
+        echo ""
+        SUGGESTION_NUM=$((SUGGESTION_NUM + 1))
+    fi
+    
+    if ! pgrep -f "dashboard" > /dev/null 2>&1; then
+        echo -e "${YELLOW}${SUGGESTION_NUM}. 启动服务${NC}"
+        echo -e "   ./dashboard start --daemon"
+        echo ""
+        SUGGESTION_NUM=$((SUGGESTION_NUM + 1))
+    fi
+    
+    if [ -n "$APP_PORT" ]; then
+        echo -e "${CYAN}${SUGGESTION_NUM}. 检查防火墙规则${NC}"
+        echo -e "   确保端口 $APP_PORT 已开放"
+        echo ""
+        SUGGESTION_NUM=$((SUGGESTION_NUM + 1))
+        
+        echo -e "${CYAN}${SUGGESTION_NUM}. 检查云服务器安全组${NC}"
+        echo -e "   如果使用云服务器，请检查安全组规则是否允许端口 $APP_PORT"
+        echo ""
+        SUGGESTION_NUM=$((SUGGESTION_NUM + 1))
+    fi
+    
+    echo -e "${CYAN}${SUGGESTION_NUM}. 查看完整日志${NC}"
+    echo -e "   tail -f dashboard.log"
+    echo ""
+}
+
 # 主安装流程
 main() {
     # 初始化全局变量
@@ -1306,6 +1610,9 @@ main() {
     print_separator
     echo ""
 
+    # 临时禁用错误退出，确保信息能够显示
+    set +e
+
     # 检查服务状态
     local service_status
     # 检查进程是否存在
@@ -1335,6 +1642,7 @@ main() {
 
     # 管理员账号信息
     echo ""
+    # 调试：检查变量是否设置
     if [ -n "$ADMIN_USERNAME" ] && [ -n "$ADMIN_PASSWORD" ]; then
         echo -e "${BOLD}管理员账号：${NC} ${BOLD}${GREEN}$ADMIN_USERNAME${NC} / ${BOLD}${GREEN}$ADMIN_PASSWORD${NC}"
     else
@@ -1346,21 +1654,17 @@ main() {
     echo ""
     echo -e "${BOLD}访问地址：${NC}"
     
-    # 优先显示公网IP（使用 set +e 避免因错误退出）
-    set +e
+    # 优先显示公网IP
     local public_ip=$(get_public_ip 2>/dev/null)
     local public_ip_exit=$?
-    set -e
     
     if [ $public_ip_exit -eq 0 ] && [ -n "$public_ip" ] && [ "$public_ip" != "127.0.0.1" ]; then
         echo -e "  ${BOLD}${GREEN}http://$public_ip:$PORT${NC}"
     fi
     
-    # 显示内网IP（使用 set +e 避免因错误退出）
-    set +e
+    # 显示内网IP
     local all_ips=$(get_all_ips)
     local all_ips_exit=$?
-    set -e
     
     local has_internal_ip=false
     if [ $all_ips_exit -eq 0 ] && [ -n "$all_ips" ]; then
@@ -1380,12 +1684,72 @@ main() {
         echo -e "  ${BOLD}http://127.0.0.1:$PORT${NC}"
     fi
 
-    # 服务状态和安装目录（一行显示）
+    # 服务状态和安装目录
     echo ""
     echo -e "${BOLD}服务状态：${NC} $service_status  |  ${BOLD}端口：${NC} $PORT  |  ${BOLD}目录：${NC} $INSTALL_DIR"
     echo ""
+    
+    # 网络诊断信息
+    if [ "$port_in_use" = true ]; then
+        echo -e "${BOLD}${CYAN}网络诊断：${NC}"
+        echo ""
+        
+        # 检查端口监听状态
+        check_port_listening "$PORT"
+        local listen_status=$?
+        if [ $listen_status -eq 0 ]; then
+            echo -e "  ${GREEN}✓${NC} 端口绑定到 0.0.0.0，外网可以访问"
+        elif [ $listen_status -eq 1 ]; then
+            echo -e "  ${RED}✗${NC} 端口只绑定到 127.0.0.1，外网无法访问"
+            echo -e "     ${YELLOW}解决方案：${NC} 请检查 $INSTALL_DIR/.env 文件中的 APP_HOST 是否为 0.0.0.0"
+            echo -e "     如果不是，请修改为 APP_HOST=0.0.0.0 并重启服务"
+        else
+            echo -e "  ${YELLOW}⚠${NC} 无法确定端口监听状态"
+        fi
+        echo ""
+        
+        # 检查防火墙状态
+        local firewall_result=$(check_firewall_status "$PORT")
+        case "$firewall_result" in
+            ufw_ok)
+                echo -e "  ${GREEN}✓${NC} UFW 防火墙已配置，端口 $PORT 已开放"
+                ;;
+            ufw_not_configured)
+                echo -e "  ${YELLOW}⚠${NC} UFW 防火墙已启用，但端口 $PORT 可能未开放"
+                echo -e "     ${CYAN}建议执行：${NC} sudo ufw allow $PORT/tcp"
+                ;;
+            firewalld_ok)
+                echo -e "  ${GREEN}✓${NC} Firewalld 防火墙已配置，端口 $PORT 已开放"
+                ;;
+            firewalld_not_configured)
+                echo -e "  ${YELLOW}⚠${NC} Firewalld 防火墙已启用，但端口 $PORT 可能未开放"
+                echo -e "     ${CYAN}建议执行：${NC} sudo firewall-cmd --permanent --add-port=$PORT/tcp && sudo firewall-cmd --reload"
+                ;;
+            none)
+                echo -e "  ${CYAN}ℹ${NC} 未检测到常见防火墙（UFW/Firewalld）"
+                echo -e "     如果使用其他防火墙，请确保端口 $PORT 已开放"
+                ;;
+        esac
+        echo ""
+        
+        # 云服务器安全组提示
+        if [ $public_ip_exit -eq 0 ] && [ -n "$public_ip" ] && [ "$public_ip" != "127.0.0.1" ]; then
+            echo -e "  ${CYAN}ℹ${NC} 如果使用云服务器，请检查安全组规则："
+            echo -e "     - 确保端口 $PORT 在入站规则中已开放"
+            echo -e "     - 协议类型：TCP"
+            echo -e "     - 源地址：0.0.0.0/0（或根据需要限制）"
+            echo ""
+        fi
+    fi
+    
+    # 恢复错误退出
+    set -e
 }
 
-# 执行主函数
-main "$@"
+# 执行主函数或诊断
+if [ "$1" = "diagnose" ] || [ "$1" = "diagnosis" ] || [ "$1" = "--diagnose" ] || [ "$1" = "-d" ]; then
+    diagnose
+else
+    main "$@"
+fi
 
