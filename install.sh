@@ -704,6 +704,106 @@ show_manual_command() {
     fi
 }
 
+# 创建全局命令
+create_global_command() {
+    local install_dir=$1
+    local binary_path=$2
+    
+    # 确定全局命令路径
+    local global_cmd_path=""
+    local need_sudo=false
+    
+    if [ "$EUID" -eq 0 ]; then
+        # root 用户：使用 /usr/local/bin
+        global_cmd_path="/usr/local/bin/cloudsentinel"
+        need_sudo=false
+    else
+        # 非 root 用户：使用 ~/.local/bin
+        global_cmd_path="$HOME/.local/bin/cloudsentinel"
+        need_sudo=false
+        
+        # 确保 ~/.local/bin 目录存在
+        if [ ! -d "$HOME/.local/bin" ]; then
+            mkdir -p "$HOME/.local/bin"
+        fi
+        
+        # 检查 ~/.local/bin 是否在 PATH 中
+        if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
+            print_warning "~/.local/bin 不在 PATH 中，请将以下内容添加到 ~/.bashrc 或 ~/.zshrc："
+            echo -e "  ${CYAN}export PATH=\"\$HOME/.local/bin:\$PATH\"${NC}"
+            echo ""
+            print_info "添加后请执行: ${CYAN}source ~/.bashrc${NC} 或 ${CYAN}source ~/.zshrc${NC}"
+        fi
+    fi
+    
+    # 检查是否已存在
+    if [ -f "$global_cmd_path" ] || [ -L "$global_cmd_path" ]; then
+        print_warning "全局命令已存在: $global_cmd_path"
+        read -p "$(echo -e ${YELLOW}是否覆盖？${NC} [y/N]): " overwrite
+        if [ "$overwrite" != "y" ] && [ "$overwrite" != "Y" ]; then
+            print_info "跳过创建全局命令"
+            return 0
+        fi
+        # 删除旧文件
+        rm -f "$global_cmd_path"
+    fi
+    
+    # 创建包装脚本
+    print_info "正在创建全局命令: ${BOLD}$global_cmd_path${NC}"
+    
+    # 生成包装脚本内容
+    cat > "$global_cmd_path" << 'WRAPPER_EOF'
+#!/bin/bash
+# CloudSentinel 全局命令包装脚本
+# 此脚本由安装程序自动生成
+
+INSTALL_DIR="INSTALL_DIR_PLACEHOLDER"
+BINARY_PATH="$INSTALL_DIR/dashboard"
+
+# 检查安装目录是否存在
+if [ ! -d "$INSTALL_DIR" ]; then
+    echo "错误: CloudSentinel 安装目录不存在: $INSTALL_DIR" >&2
+    echo "请重新运行安装脚本或手动设置正确的安装目录" >&2
+    exit 1
+fi
+
+# 检查二进制文件是否存在
+if [ ! -f "$BINARY_PATH" ]; then
+    echo "错误: CloudSentinel 二进制文件不存在: $BINARY_PATH" >&2
+    exit 1
+fi
+
+# 切换到安装目录并执行命令
+cd "$INSTALL_DIR" || exit 1
+
+# 如果有 cloudsentinel 用户且当前是 root，使用该用户执行
+# 这样可以确保权限一致性
+if [ "$EUID" -eq 0 ] && id "cloudsentinel" &>/dev/null 2>&1; then
+    # root 用户且存在 cloudsentinel 用户：使用 sudo -u
+    exec sudo -u cloudsentinel "$BINARY_PATH" "$@"
+else
+    # 其他情况：直接执行（非 root 用户或不存在 cloudsentinel 用户）
+    exec "$BINARY_PATH" "$@"
+fi
+WRAPPER_EOF
+    
+    # 替换安装目录占位符
+    sed -i "s|INSTALL_DIR_PLACEHOLDER|$install_dir|g" "$global_cmd_path"
+    
+    # 设置执行权限
+    chmod +x "$global_cmd_path"
+    
+    # 如果是 root 用户，设置所有权
+    if [ "$EUID" -eq 0 ]; then
+        chown root:root "$global_cmd_path"
+    fi
+    
+    print_success "全局命令已创建: ${BOLD}$global_cmd_path${NC}"
+    print_info "现在可以在任意位置使用 ${BOLD}cloudsentinel${NC} 命令"
+    
+    return 0
+}
+
 # 以 cloudsentinel 用户执行命令
 run_as_cloudsentinel() {
     local command=$1
@@ -1588,6 +1688,14 @@ main() {
         print_success "文件所有权设置完成"
     fi
 
+    # 创建全局命令
+    echo ""
+    if create_global_command "$INSTALL_DIR" "$INSTALLED_BINARY"; then
+        print_success "全局命令创建成功"
+    else
+        print_warning "全局命令创建失败，您仍可以使用完整路径执行命令"
+    fi
+
     # 启动服务
     local service_start_ok=true
     if ! start_service "$INSTALLED_BINARY" "$INSTALL_DIR" "$PORT"; then
@@ -1688,6 +1796,14 @@ main() {
     echo ""
     echo -e "${BOLD}服务状态：${NC} $service_status  |  ${BOLD}端口：${NC} $PORT  |  ${BOLD}目录：${NC} $INSTALL_DIR"
     echo ""
+    
+    # 全局命令提示
+    if command -v cloudsentinel &>/dev/null; then
+        echo -e "${BOLD}${GREEN}全局命令：${NC}"
+        echo -e "  现在可以在任意位置使用 ${BOLD}cloudsentinel${NC} 命令"
+        echo -e "  例如: ${CYAN}cloudsentinel list${NC} 或 ${CYAN}cloudsentinel start${NC}"
+        echo ""
+    fi
     
     # 网络诊断信息
     if [ "$port_in_use" = true ]; then
