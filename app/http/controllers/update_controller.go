@@ -33,16 +33,10 @@ type UpdateStatus struct {
 }
 
 // releaseUrls 版本发布地址
-var releaseUrls = map[string]string{
-	"github": "https://api.github.com/repos/YunTower/CloudSentinel/releases/latest",
-	"gitee":  "https://gitee.com/api/v5/repos/YunTower/CloudSentinel/releases/latest",
-}
+var releaseUrls = "https://api.github.com/repos/YunTower/CloudSentinel/releases/latest"
 
 // agentReleaseUrls Agent 版本发布地址
-var agentReleaseUrls = map[string]string{
-	"github": "https://api.github.com/repos/YunTower/CloudSentinel-Agent/releases/latest",
-	"gitee":  "https://gitee.com/api/v5/repos/YunTower/CloudSentinel-Agent/releases/latest",
-}
+var agentReleaseUrls = "https://api.github.com/repos/YunTower/CloudSentinel-Agent/releases/latest"
 
 func NewUpdateController() *UpdateController {
 	return &UpdateController{}
@@ -161,7 +155,7 @@ func (r *UpdateController) getSystemInfo() (osType, arch string) {
 }
 
 // findAssetByArchitecture 在 assets 中查找匹配的二进制包
-func (r *UpdateController) findAssetByArchitecture(assets []interface{}, osType, arch string, isGitee bool) (string, string) {
+func (r *UpdateController) findAssetByArchitecture(assets []interface{}, osType, arch string) (string, string) {
 	expectedName := fmt.Sprintf("dashboard-%s-%s.tar.gz", osType, arch)
 
 	for _, asset := range assets {
@@ -177,16 +171,9 @@ func (r *UpdateController) findAssetByArchitecture(assets []interface{}, osType,
 
 		if name == expectedName {
 			var downloadUrl string
-			if isGitee {
-				if url, ok := assetMap["browser_download_url"].(string); ok && url != "" {
-					downloadUrl = url
-				} else if url, ok := assetMap["download_url"].(string); ok && url != "" {
-					downloadUrl = url
-				}
-			} else {
-				if url, ok := assetMap["browser_download_url"].(string); ok {
-					downloadUrl = url
-				}
+
+			if url, ok := assetMap["browser_download_url"].(string); ok {
+				downloadUrl = url
 			}
 
 			if downloadUrl != "" {
@@ -199,7 +186,7 @@ func (r *UpdateController) findAssetByArchitecture(assets []interface{}, osType,
 }
 
 // findSHA256Asset 在 assets 中查找匹配的 SHA256 文件
-func (r *UpdateController) findSHA256Asset(assets []interface{}, osType, arch string, isGitee bool) (string, string) {
+func (r *UpdateController) findSHA256Asset(assets []interface{}, osType, arch string) (string, string) {
 	expectedName := fmt.Sprintf("dashboard-%s-%s.sha256", osType, arch)
 
 	for _, asset := range assets {
@@ -215,16 +202,8 @@ func (r *UpdateController) findSHA256Asset(assets []interface{}, osType, arch st
 
 		if name == expectedName {
 			var downloadUrl string
-			if isGitee {
-				if url, ok := assetMap["browser_download_url"].(string); ok && url != "" {
-					downloadUrl = url
-				} else if url, ok := assetMap["download_url"].(string); ok && url != "" {
-					downloadUrl = url
-				}
-			} else {
-				if url, ok := assetMap["browser_download_url"].(string); ok {
-					downloadUrl = url
-				}
+			if url, ok := assetMap["browser_download_url"].(string); ok {
+				downloadUrl = url
 			}
 
 			if downloadUrl != "" {
@@ -469,18 +448,6 @@ func (r *UpdateController) cleanupTempFiles() {
 
 // Update 执行更新
 func (r *UpdateController) Update(ctx http.Context) http.Response {
-	// 验证请求参数
-	validator, err := ctx.Request().Validate(map[string]string{
-		"type": "required|in:gitee,github",
-	})
-	if err != nil || validator.Fails() {
-		var validationErr error = err
-		if validationErr == nil {
-			validationErr = fmt.Errorf("validation failed")
-		}
-		return utils.ErrorResponseWithError(ctx, 400, "验证失败", validationErr, "VALIDATION_ERROR")
-	}
-
 	// 检查是否已经在更新中
 	// 只有在进行中的状态（非 completed、error、pending）才阻止新的更新
 	if facades.Cache().Has("update_status") {
@@ -518,11 +485,6 @@ func (r *UpdateController) Update(ctx http.Context) http.Response {
 		}
 	}
 
-	updateType := ctx.Request().Input("type")
-	if updateType == "" {
-		return utils.ErrorResponse(ctx, 400, "更新源类型不能为空", "MISSING_TYPE")
-	}
-
 	// 设置初始状态
 	initialStatus := UpdateStatus{
 		Step:     "connecting",
@@ -558,8 +520,7 @@ func (r *UpdateController) Update(ctx http.Context) http.Response {
 		}()
 
 		// 查询最新发布版本
-		requestUrl := releaseUrls[updateType]
-		response, requestErr := facades.Http().Get(requestUrl)
+		response, requestErr := facades.Http().Get(releaseUrls)
 		if requestErr != nil {
 			setStatus("error", 0, fmt.Sprintf("连接更新服务器失败: %v", requestErr))
 			r.cleanupTempFiles()
@@ -619,8 +580,7 @@ func (r *UpdateController) Update(ctx http.Context) http.Response {
 			return
 		}
 
-		isGitee := updateType == "gitee"
-		fileName, downloadUrl := r.findAssetByArchitecture(assets, osType, arch, isGitee)
+		fileName, downloadUrl := r.findAssetByArchitecture(assets, osType, arch)
 		if fileName == "" {
 			setStatus("error", 0, fmt.Sprintf("未找到适用于 %s-%s 的软件包", osType, arch))
 			r.cleanupTempFiles()
@@ -642,7 +602,7 @@ func (r *UpdateController) Update(ctx http.Context) http.Response {
 		setStatus("downloading", 100, "软件包下载完成")
 
 		// 查找并下载 SHA256 文件
-		sha256FileName, sha256DownloadUrl := r.findSHA256Asset(assets, osType, arch, isGitee)
+		sha256FileName, sha256DownloadUrl := r.findSHA256Asset(assets, osType, arch)
 		if sha256FileName == "" {
 			setStatus("error", 0, "未找到 SHA256 校验文件")
 			r.cleanupTempFiles()
@@ -819,16 +779,8 @@ func (r *UpdateController) Update(ctx http.Context) http.Response {
 }
 
 // checkVersion 检查版本信息的公共方法
-func (r *UpdateController) checkVersion(ctx http.Context, releaseUrlMap map[string]string, includeCurrentVersion bool) http.Response {
-	validator, err := ctx.Request().Validate(map[string]string{
-		"type": "required|in:gitee,github",
-	})
-	if err != nil || validator.Fails() {
-		return utils.ErrorResponseWithError(ctx, 401, "验证失败", err, "VALIDATION_ERROR")
-	}
-
-	requestUrl := releaseUrlMap[ctx.Request().Input("type")]
-	response, requestErr := facades.Http().Get(requestUrl)
+func (r *UpdateController) checkVersion(ctx http.Context, releaseUrl string, includeCurrentVersion bool) http.Response {
+	response, requestErr := facades.Http().Get(releaseUrl)
 	if requestErr != nil {
 		return utils.ErrorResponseWithError(ctx, 500, "请求最新版本信息失败", requestErr, "REQUEST_LATEST_VERSION_FAILED")
 	}
@@ -843,9 +795,9 @@ func (r *UpdateController) checkVersion(ctx http.Context, releaseUrlMap map[stri
 
 	// 格式化响应体
 	var result map[string]any
-	err = json.Unmarshal([]byte(responseBody), &result)
-	if err != nil {
-		return utils.ErrorResponseWithError(ctx, 500, "解析最新版本信息失败", err, "PARSE_LATEST_VERSION_FAILED")
+	unmarshalErr := json.Unmarshal([]byte(responseBody), &result)
+	if unmarshalErr != nil {
+		return utils.ErrorResponseWithError(ctx, 500, "解析最新版本信息失败", unmarshalErr, "PARSE_LATEST_VERSION_FAILED")
 	}
 
 	// 获取tagName
