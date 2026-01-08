@@ -55,7 +55,7 @@ func (r *ServerGroupRepository) Delete(id uint) error {
 			return updateErr
 		}
 	}
-	_, err = facades.Orm().Query().Delete(&models.ServerGroup{}, id)
+	_, err = facades.Orm().Query().Where("id", id).Delete(&models.ServerGroup{})
 	return err
 }
 

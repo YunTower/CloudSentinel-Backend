@@ -48,22 +48,22 @@ func (r *SystemSettingRepository) GetByKeys(keys []string) (map[string]*models.S
 
 // SetValue 设置值
 func (r *SystemSettingRepository) SetValue(key, value string) error {
-	var setting models.SystemSetting
-	err := facades.Orm().Query().Where("setting_key", key).First(&setting)
+	var existing models.SystemSetting
+	err := facades.Orm().Query().Where("setting_key", key).First(&existing)
 
 	if err != nil {
-		// 不存在则创建
-		setting = models.SystemSetting{
-			SettingKey:   key,
-			SettingValue: value,
-			SettingType:  "string",
-		}
-		return facades.Orm().Query().Create(&setting)
+		return facades.Orm().Query().Model(&models.SystemSetting{}).Create(map[string]any{
+			"setting_key":   key,
+			"setting_value": value,
+			"setting_type":  "string",
+		})
 	}
 
-	// 存在则更新
-	setting.SettingValue = value
-	return facades.Orm().Query().Save(&setting)
+	// 存在则仅更新值，避免误写其他字段
+	_, updErr := facades.Orm().Query().Model(&models.SystemSetting{}).
+		Where("setting_key", key).
+		Update("setting_value", value)
+	return updErr
 }
 
 // GetValue 获取值

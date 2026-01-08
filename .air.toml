@@ -10,6 +10,7 @@ tmp_dir = "storage/temp"
   exclude_regex = []
   exclude_unchanged = false
   follow_symlink = false
+  args_bin = ["start"]
   full_bin = ""
   include_dir = []
   include_ext = ["go", "tpl", "tmpl", "html"]

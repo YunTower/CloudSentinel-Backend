@@ -2,8 +2,7 @@ package commands
 
 import (
 	"fmt"
-
-	"goravel/app/repositories"
+	"time"
 
 	"github.com/goravel/framework/contracts/console"
 	"github.com/goravel/framework/contracts/console/command"
@@ -57,16 +56,40 @@ func (c *GenerateAdminCommand) Handle(ctx console.Context) error {
 	}
 
 	// 更新数据库
-	settingRepo := repositories.GetSystemSettingRepository()
+	now := time.Now()
 
-	// 更新用户名
-	if err := settingRepo.SetValue("admin_username", username); err != nil {
+	// 更新或插入用户名
+	_, err = facades.DB().Table("system_settings").UpdateOrInsert(
+		map[string]any{
+			"setting_key": "admin_username",
+		},
+		map[string]any{
+			"setting_key":   "admin_username",
+			"setting_value": username,
+			"setting_type":  "string",
+			"created_at":    now,
+			"updated_at":    now,
+		},
+	)
+	if err != nil {
 		PrintError(fmt.Sprintf("更新用户名失败: %v", err))
 		return err
 	}
 
-	// 更新密码哈希
-	if err := settingRepo.SetValue("admin_password_hash", passwordHash); err != nil {
+	// 更新或插入密码哈希
+	_, err = facades.DB().Table("system_settings").UpdateOrInsert(
+		map[string]any{
+			"setting_key": "admin_password_hash",
+		},
+		map[string]any{
+			"setting_key":   "admin_password_hash",
+			"setting_value": passwordHash,
+			"setting_type":  "string",
+			"created_at":    now,
+			"updated_at":    now,
+		},
+	)
+	if err != nil {
 		PrintError(fmt.Sprintf("更新密码哈希失败: %v", err))
 		return err
 	}

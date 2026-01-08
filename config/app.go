@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+
 	"github.com/goravel/framework/auth"
 	"github.com/goravel/framework/cache"
 	"github.com/goravel/framework/console"
@@ -25,8 +27,54 @@ import (
 // Boot Start all init methods of the current folder to bootstrap all config.
 func Boot() {}
 
+// isProductionMode 检查是否在生产模式
+func isProductionMode() bool {
+	env := os.Getenv("APP_ENV")
+	return env == "production"
+}
+
 func init() {
 	config := facades.Config()
+
+	// 构建 providers 列表
+	serviceProviders := []foundation.ServiceProvider{
+		&log.ServiceProvider{},
+		//&postgres.ServiceProvider{},
+		&sqlite.ServiceProvider{},
+		&database.ServiceProvider{},
+		&cache.ServiceProvider{},
+		&http.ServiceProvider{},
+		&route.ServiceProvider{},
+		&schedule.ServiceProvider{},
+		//&event.ServiceProvider{},
+		&queue.ServiceProvider{},
+		//&grpc.ServiceProvider{},
+		//&mail.ServiceProvider{},
+		&auth.ServiceProvider{},
+		&hash.ServiceProvider{},
+		//&crypt.ServiceProvider{},
+		//&filesystem.ServiceProvider{},
+		&validation.ServiceProvider{},
+		//&session.ServiceProvider{},
+		//&translation.ServiceProvider{},
+		//&testing.ServiceProvider{},
+		// &providers.AppServiceProvider{},
+		// &providers.AuthServiceProvider{},
+		&providers.RouteServiceProvider{},
+		&providers.QueueServiceProvider{},
+		//&providers.EventServiceProvider{},
+		&providers.ValidationServiceProvider{},
+		&providers.DatabaseServiceProvider{},
+		&providers.CleanupServiceProvider{},
+		&gin.ServiceProvider{},
+	}
+
+	// 生产环境不加载 console provider，隐藏 artisan 命令
+	if !isProductionMode() {
+		serviceProviders = append([]foundation.ServiceProvider{&console.ServiceProvider{}}, serviceProviders...)
+		serviceProviders = append(serviceProviders, &providers.ConsoleServiceProvider{})
+	}
+
 	config.Add("app", map[string]any{
 		// Application Name
 		//
@@ -69,38 +117,6 @@ func init() {
 		// The service providers listed here will be automatically loaded on the
 		// request to your application. Feel free to add your own services to
 		// this array to grant expanded functionality to your applications.
-		"providers": []foundation.ServiceProvider{
-			&log.ServiceProvider{},
-			&console.ServiceProvider{},
-			//&postgres.ServiceProvider{},
-			&sqlite.ServiceProvider{},
-			&database.ServiceProvider{},
-			&cache.ServiceProvider{},
-			&http.ServiceProvider{},
-			&route.ServiceProvider{},
-			&schedule.ServiceProvider{},
-			//&event.ServiceProvider{},
-			&queue.ServiceProvider{},
-			//&grpc.ServiceProvider{},
-			//&mail.ServiceProvider{},
-			&auth.ServiceProvider{},
-			&hash.ServiceProvider{},
-			//&crypt.ServiceProvider{},
-			//&filesystem.ServiceProvider{},
-			&validation.ServiceProvider{},
-			//&session.ServiceProvider{},
-			//&translation.ServiceProvider{},
-			//&testing.ServiceProvider{},
-			// &providers.AppServiceProvider{},
-			// &providers.AuthServiceProvider{},
-			&providers.RouteServiceProvider{},
-			&providers.ConsoleServiceProvider{},
-			&providers.QueueServiceProvider{},
-			//&providers.EventServiceProvider{},
-			&providers.ValidationServiceProvider{},
-			&providers.DatabaseServiceProvider{},
-			&providers.CleanupServiceProvider{},
-			&gin.ServiceProvider{},
-		},
+		"providers": serviceProviders,
 	})
 }
