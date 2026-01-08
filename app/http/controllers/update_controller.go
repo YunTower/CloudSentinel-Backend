@@ -74,15 +74,13 @@ func (r *UpdateController) Status(ctx http.Context) http.Response {
 }
 
 // compareVersions 比较版本号，返回 true 表示需要更新
+// 支持格式：v0.0.1, v0.0.1-release, v0.0.1-beta.1, v0.0.1-rc.2 等
 func (r *UpdateController) compareVersions(currentVersion, latestVersion string) bool {
-	// 提取版本号部分
-	currentParts := strings.Split(currentVersion, "-")
-	latestParts := strings.Split(latestVersion, "-")
+	// 解析版本号
+	currentVer, currentType, currentPreReleaseNum := r.parseVersion(currentVersion)
+	latestVer, latestType, latestPreReleaseNum := r.parseVersion(latestVersion)
 
-	currentVer := currentParts[0]
-	latestVer := latestParts[0]
-
-	// 比较版本号
+	// 比较主版本号
 	currentNums := strings.Split(currentVer, ".")
 	latestNums := strings.Split(latestVer, ".")
 
@@ -110,7 +108,7 @@ func (r *UpdateController) compareVersions(currentVersion, latestVersion string)
 		}
 	}
 
-	// 版本号相同，比较类型优先级
+	// 版本号相同，比较预发布类型优先级
 	versionTypePriority := map[string]int{
 		"dev":     0,
 		"alpha":   1,
@@ -119,20 +117,63 @@ func (r *UpdateController) compareVersions(currentVersion, latestVersion string)
 		"release": 4,
 	}
 
-	currentType := "release"
-	latestType := "release"
-
-	if len(currentParts) > 1 {
-		currentType = currentParts[1]
-	}
-	if len(latestParts) > 1 {
-		latestType = latestParts[1]
-	}
-
 	currentPriority := versionTypePriority[currentType]
 	latestPriority := versionTypePriority[latestType]
 
-	return latestPriority > currentPriority
+	// 如果类型优先级不同，直接比较优先级
+	if latestPriority != currentPriority {
+		return latestPriority > currentPriority
+	}
+
+	// 类型优先级相同，比较预发布版本序号（仅对非 release 版本）
+	if currentType != "release" && latestType != "release" {
+		return latestPreReleaseNum > currentPreReleaseNum
+	}
+
+	// 如果一个是 release，另一个不是，release 优先级更高
+	if currentType == "release" && latestType != "release" {
+		return false
+	}
+	if currentType != "release" && latestType == "release" {
+		return true
+	}
+
+	// 都是 release 或类型相同且序号相同，不需要更新
+	return false
+}
+
+// parseVersion 解析版本号字符串
+// 返回：主版本号、版本类型、预发布版本序号
+// 示例：parseVersion("0.0.1-beta.1") -> ("0.0.1", "beta", 1)
+//
+//	parseVersion("0.0.1-release") -> ("0.0.1", "release", 0)
+func (r *UpdateController) parseVersion(version string) (string, string, int) {
+	// 移除开头的 'v' 前缀
+	if len(version) > 0 && version[0] == 'v' {
+		version = version[1:]
+	}
+
+	// 分割版本号和预发布标识
+	parts := strings.SplitN(version, "-", 2)
+	mainVersion := parts[0]
+	preRelease := "release"
+	preReleaseNum := 0
+
+	if len(parts) > 1 {
+		preRelease = parts[1]
+		// 尝试提取预发布版本序号（如 beta.1 中的 1）
+		preReleaseParts := strings.Split(preRelease, ".")
+		if len(preReleaseParts) > 1 {
+			// 提取类型（如 "beta"）
+			preRelease = preReleaseParts[0]
+			// 提取序号（如 "1"）
+			if num, err := strconv.Atoi(preReleaseParts[1]); err == nil {
+				preReleaseNum = num
+			}
+		}
+	}
+
+	return mainVersion, preRelease, preReleaseNum
 }
 
 // getSystemInfo 获取系统信息
@@ -806,17 +847,14 @@ func (r *UpdateController) checkVersion(ctx http.Context, releaseUrl string, inc
 		return utils.ErrorResponse(ctx, 500, "最新版本信息格式错误", "LATEST_VERSION_FORMAT_ERROR")
 	}
 
-	// 格式化版本号
+	// 格式化版本号（移除 'v' 前缀）
+	normalizedTagName := tagName
 	if len(tagName) > 0 && tagName[0] == 'v' {
-		tagName = tagName[1:]
+		normalizedTagName = tagName[1:]
 	}
 
-	// 提取最新版本类型
-	versionParts := strings.Split(tagName, "-")
-	versionType := "release"
-	if len(versionParts) > 1 {
-		versionType = versionParts[1]
-	}
+	// 使用 parseVersion 提取版本类型
+	_, latestVersionType, _ := r.parseVersion(normalizedTagName)
 
 	// 格式化发布时间
 	var publishTime string
@@ -830,8 +868,8 @@ func (r *UpdateController) checkVersion(ctx http.Context, releaseUrl string, inc
 	}
 
 	data := map[string]any{
-		"latest_version":      tagName,
-		"latest_version_type": versionType,
+		"latest_version":      normalizedTagName,
+		"latest_version_type": latestVersionType,
 		"publish_time":        publishTime,
 		"change_log":          result["body"],
 	}
@@ -839,11 +877,7 @@ func (r *UpdateController) checkVersion(ctx http.Context, releaseUrl string, inc
 	// 如果需要包含当前版本信息
 	if includeCurrentVersion {
 		currentVersion := facades.Config().GetString("app.version", "0.0.1-release")
-		currentVersionParts := strings.Split(currentVersion, "-")
-		currentVersionType := "release"
-		if len(currentVersionParts) > 1 {
-			currentVersionType = currentVersionParts[1]
-		}
+		_, currentVersionType, _ := r.parseVersion(currentVersion)
 		data["current_version"] = currentVersion
 		data["current_version_type"] = currentVersionType
 	}
