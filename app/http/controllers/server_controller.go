@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"goravel/app/models"
@@ -1249,114 +1248,6 @@ func (c *ServerController) RestartAgent(ctx http.Context) http.Response {
 	return ctx.Response().Json(http.StatusOK, http.Json{
 		"status":  true,
 		"message": "重启命令已发送",
-	})
-}
-
-// UpdateAgent 更新服务器 Agent
-func (c *ServerController) UpdateAgent(ctx http.Context) http.Response {
-	serverID := ctx.Request().Route("id")
-	if serverID == "" {
-		return ctx.Response().Status(http.StatusBadRequest).Json(http.Json{
-			"status":  false,
-			"message": "缺少服务器ID",
-		})
-	}
-
-	// 获取最新版本信息
-	updateType := ctx.Request().Input("type", "github")
-	if updateType != "github" && updateType != "gitee" {
-		updateType = "github"
-	}
-
-	// 直接获取最新版本信息
-	requestUrl := "https://api.github.com/repos/YunTower/CloudSentinel-Agent/releases/latest"
-	if updateType == "gitee" {
-		requestUrl = "https://gitee.com/api/v5/repos/YunTower/CloudSentinel-Agent/releases/latest"
-	}
-
-	response, requestErr := facades.Http().Get(requestUrl)
-	if requestErr != nil {
-		return ctx.Response().Status(http.StatusInternalServerError).Json(http.Json{
-			"status":  false,
-			"message": "请求最新版本信息失败",
-			"error":   requestErr.Error(),
-		})
-	}
-
-	responseBody, responseErr := response.Body()
-	if responseErr != nil {
-		return ctx.Response().Status(http.StatusInternalServerError).Json(http.Json{
-			"status":  false,
-			"message": "读取最新版本信息失败",
-			"error":   responseErr.Error(),
-		})
-	}
-
-	if response.Status() == 404 {
-		return ctx.Response().Status(http.StatusNotFound).Json(http.Json{
-			"status":  false,
-			"message": "未找到最新的版本信息",
-		})
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal([]byte(responseBody), &result); err != nil {
-		return ctx.Response().Status(http.StatusInternalServerError).Json(http.Json{
-			"status":  false,
-			"message": "解析版本信息失败",
-			"error":   err.Error(),
-		})
-	}
-
-	tagName, ok := result["tag_name"].(string)
-	if !ok {
-		return ctx.Response().Status(http.StatusInternalServerError).Json(http.Json{
-			"status":  false,
-			"message": "版本信息格式错误",
-		})
-	}
-
-	// 格式化版本号
-	if len(tagName) > 0 && tagName[0] == 'v' {
-		tagName = tagName[1:]
-	}
-
-	// 提取版本类型
-	versionParts := strings.Split(tagName, "-")
-	versionType := "release"
-	if len(versionParts) > 1 {
-		versionType = versionParts[1]
-	}
-
-	// 发送更新命令
-	wsService := services.GetWebSocketService()
-	message := map[string]interface{}{
-		"type":    "command",
-		"command": "update",
-		"data": map[string]interface{}{
-			"version":      tagName,
-			"version_type": versionType,
-		},
-	}
-
-	err := wsService.SendMessage(serverID, message)
-	if err != nil {
-		facades.Log().Errorf("发送更新命令失败: %v", err)
-		return ctx.Response().Status(http.StatusInternalServerError).Json(http.Json{
-			"status":  false,
-			"message": "发送更新命令失败: " + err.Error(),
-		})
-	}
-
-	facades.Log().Infof("成功发送更新命令到服务器: %s, 版本: %s", serverID, tagName)
-
-	return ctx.Response().Json(http.StatusOK, http.Json{
-		"status":  true,
-		"message": "更新命令已发送",
-		"data": map[string]interface{}{
-			"version":      tagName,
-			"version_type": versionType,
-		},
 	})
 }
 

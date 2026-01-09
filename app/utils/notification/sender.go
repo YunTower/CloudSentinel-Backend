@@ -27,6 +27,7 @@ type WebhookConfig struct {
 	Enabled   bool   `json:"enabled"`
 	Webhook   string `json:"webhook"`
 	Mentioned string `json:"mentioned"`
+	Platform  string `json:"platform"` // feishu, wechat, generic
 }
 
 func SendEmail(config EmailConfig, subject, content string) error {
@@ -134,7 +135,11 @@ func SendWebhook(config WebhookConfig, content string) error {
 
 	var message map[string]interface{}
 
-	if strings.Contains(config.Webhook, "open.feishu.cn") {
+	// 根据平台类型构建消息格式
+	platform := strings.ToLower(config.Platform)
+
+	switch platform {
+	case "feishu":
 		// 飞书
 		// 结构: {"msg_type": "text", "content": {"text": "..."}}
 		text := content
@@ -157,8 +162,8 @@ func SendWebhook(config WebhookConfig, content string) error {
 				"text": text,
 			},
 		}
-	} else {
-		// 企业微信 / 通用
+	case "wechat":
+		// 企业微信
 		// 结构: {"msgtype": "text", "text": {"content": "...", "mentioned_list": [...]}}
 		message = map[string]interface{}{
 			"msgtype": "text",
@@ -168,7 +173,6 @@ func SendWebhook(config WebhookConfig, content string) error {
 		}
 
 		if config.Mentioned == "@all" {
-			// 兼容处理
 			message["text"].(map[string]interface{})["mentioned_list"] = []string{"@all"}
 			message["text"].(map[string]interface{})["content"] = content + "\n@all"
 		} else if config.Mentioned != "" {
@@ -183,6 +187,22 @@ func SendWebhook(config WebhookConfig, content string) error {
 			if len(trimmedIDs) > 0 {
 				message["text"].(map[string]interface{})["mentioned_list"] = trimmedIDs
 			}
+		}
+	case "generic":
+		// 通用平台，不支持提及功能
+		message = map[string]interface{}{
+			"msgtype": "text",
+			"text": map[string]interface{}{
+				"content": content,
+			},
+		}
+	default:
+		// 未知平台，使用通用格式
+		message = map[string]interface{}{
+			"msgtype": "text",
+			"text": map[string]interface{}{
+				"content": content,
+			},
 		}
 	}
 

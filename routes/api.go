@@ -51,7 +51,7 @@ func Api() {
 			authRouter.Prefix("/update").Group(func(updateRoute route.Router) {
 				updateRoute.Get("/check", updateController.Check)
 				updateRoute.Get("/status", updateController.Status)
-				updateRoute.Post("", updateController.Update)
+				updateRoute.Post("", updateController.UpdatePanel)
 				updateRoute.Get("/agent/check", updateController.CheckAgent)
 			})
 
@@ -72,7 +72,7 @@ func Api() {
 
 				// 服务器操作
 				serversRoute.Post("/:id/agent/restart", serverController.RestartAgent)
-				serversRoute.Post("/:id/agent/update", serverController.UpdateAgent)
+				serversRoute.Post("/:id/agent/update", updateController.UpdateAgent)
 				serversRoute.Post("/:id/agent/reset-key", serverController.ResetAgentKey)
 
 				// 服务器告警规则

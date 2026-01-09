@@ -138,6 +138,7 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 		"enabled":   webhook.Enabled,
 		"webhook":   webhook.Config["webhook"],
 		"mentioned": webhook.Config["mentioned"],
+		"platform":  webhook.Config["platform"],
 	}
 
 	return ctx.Response().Success().Json(http.Json{
@@ -342,6 +343,7 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 	webhookCfg := map[string]any{
 		"webhook":   ctx.Request().Input("notifications.webhook.webhook"),
 		"mentioned": ctx.Request().Input("notifications.webhook.mentioned"),
+		"platform":  ctx.Request().Input("notifications.webhook.platform"),
 	}
 	writeNotify := func(nType string, enabled bool, cfg map[string]any) error {
 		// 如果是邮件配置，处理密码逻辑
