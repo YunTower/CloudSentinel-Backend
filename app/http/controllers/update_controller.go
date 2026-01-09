@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"goravel/app/services"
 	"goravel/app/utils"
 
 	"github.com/goravel/framework/contracts/http"
@@ -30,6 +31,14 @@ type UpdateStatus struct {
 	Step     string `json:"step"`     // connecting, downloading, verifying, unpacking, restarting, completed, error
 	Progress int    `json:"progress"` // 0-100
 	Message  string `json:"message"`
+}
+
+// ReleaseInfo 存储从 GitHub API 获取的版本信息
+type ReleaseInfo struct {
+	TagName           string                 // 原始 tag 名称（如 "v1.0.0"）
+	NormalizedTagName string                 // 标准化后的版本号（移除 'v' 前缀）
+	VersionType       string                 // 版本类型（如 "release", "beta"）
+	Result            map[string]interface{} // 完整的 release 数据
 }
 
 // releaseUrls 版本发布地址
@@ -174,6 +183,49 @@ func (r *UpdateController) parseVersion(version string) (string, string, int) {
 	}
 
 	return mainVersion, preRelease, preReleaseNum
+}
+
+// fetchLatestRelease 从 GitHub API 获取最新版本信息
+func (r *UpdateController) fetchLatestRelease(releaseUrl string) (*ReleaseInfo, error) {
+	response, requestErr := facades.Http().Get(releaseUrl)
+	if requestErr != nil {
+		return nil, fmt.Errorf("请求最新版本信息失败: %v", requestErr)
+	}
+
+	responseBody, responseErr := response.Body()
+	if responseErr != nil {
+		return nil, fmt.Errorf("读取最新版本信息失败: %v", responseErr)
+	}
+
+	if response.Status() == 404 {
+		return nil, fmt.Errorf("未找到最新的版本信息")
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(responseBody), &result); err != nil {
+		return nil, fmt.Errorf("解析版本信息失败: %v", err)
+	}
+
+	tagName, ok := result["tag_name"].(string)
+	if !ok {
+		return nil, fmt.Errorf("版本信息格式错误: tag_name 字段缺失或类型不正确")
+	}
+
+	// 格式化版本号（移除 'v' 前缀）
+	normalizedTagName := tagName
+	if len(tagName) > 0 && tagName[0] == 'v' {
+		normalizedTagName = tagName[1:]
+	}
+
+	// 使用 parseVersion 提取版本类型
+	_, versionType, _ := r.parseVersion(normalizedTagName)
+
+	return &ReleaseInfo{
+		TagName:           tagName,
+		NormalizedTagName: normalizedTagName,
+		VersionType:       versionType,
+		Result:            result,
+	}, nil
 }
 
 // getSystemInfo 获取系统信息
@@ -487,8 +539,8 @@ func (r *UpdateController) cleanupTempFiles() {
 	}
 }
 
-// Update 执行更新
-func (r *UpdateController) Update(ctx http.Context) http.Response {
+// UpdatePanel 执行面板更新
+func (r *UpdateController) UpdatePanel(ctx http.Context) http.Response {
 	// 检查是否已经在更新中
 	// 只有在进行中的状态（非 completed、error、pending）才阻止新的更新
 	if facades.Cache().Has("update_status") {
@@ -561,49 +613,16 @@ func (r *UpdateController) Update(ctx http.Context) http.Response {
 		}()
 
 		// 查询最新发布版本
-		response, requestErr := facades.Http().Get(releaseUrls)
-		if requestErr != nil {
-			setStatus("error", 0, fmt.Sprintf("连接更新服务器失败: %v", requestErr))
+		releaseInfo, err := r.fetchLatestRelease(releaseUrls)
+		if err != nil {
+			setStatus("error", 0, err.Error())
 			r.cleanupTempFiles()
 			return
-		}
-
-		responseBody, responseErr := response.Body()
-		if responseErr != nil {
-			setStatus("error", 0, fmt.Sprintf("读取版本信息失败: %v", responseErr))
-			r.cleanupTempFiles()
-			return
-		}
-
-		if response.Status() == 404 {
-			setStatus("error", 0, "未找到最新的版本信息")
-			r.cleanupTempFiles()
-			return
-		}
-
-		var result map[string]interface{}
-		if err := json.Unmarshal([]byte(responseBody), &result); err != nil {
-			setStatus("error", 0, fmt.Sprintf("解析版本信息失败: %v", err))
-			r.cleanupTempFiles()
-			return
-		}
-
-		// 获取 tagName
-		tagName, ok := result["tag_name"].(string)
-		if !ok {
-			setStatus("error", 0, "版本信息格式错误")
-			r.cleanupTempFiles()
-			return
-		}
-
-		// 格式化版本号
-		if len(tagName) > 0 && tagName[0] == 'v' {
-			tagName = tagName[1:]
 		}
 
 		// 检查是否需要更新
 		currentVersion := facades.Config().GetString("app.version", "0.0.1-release")
-		if !r.compareVersions(currentVersion, tagName) {
+		if !r.compareVersions(currentVersion, releaseInfo.NormalizedTagName) {
 			setStatus("error", 0, "当前已是最新版本，无需更新")
 			r.cleanupTempFiles()
 			return
@@ -614,7 +633,7 @@ func (r *UpdateController) Update(ctx http.Context) http.Response {
 		setStatus("connecting", 10, fmt.Sprintf("检测到系统: %s-%s", osType, arch))
 
 		// 查找匹配的二进制包
-		assets, ok := result["assets"].([]interface{})
+		assets, ok := releaseInfo.Result["assets"].([]interface{})
 		if !ok {
 			setStatus("error", 0, "未找到发布文件列表")
 			r.cleanupTempFiles()
@@ -821,44 +840,18 @@ func (r *UpdateController) Update(ctx http.Context) http.Response {
 
 // checkVersion 检查版本信息的公共方法
 func (r *UpdateController) checkVersion(ctx http.Context, releaseUrl string, includeCurrentVersion bool) http.Response {
-	response, requestErr := facades.Http().Get(releaseUrl)
-	if requestErr != nil {
-		return utils.ErrorResponseWithError(ctx, 500, "请求最新版本信息失败", requestErr, "REQUEST_LATEST_VERSION_FAILED")
+	releaseInfo, err := r.fetchLatestRelease(releaseUrl)
+	if err != nil {
+		// 根据错误类型返回相应的 HTTP 状态码
+		if strings.Contains(err.Error(), "未找到") {
+			return utils.ErrorResponse(ctx, 404, "未找到最新的版本信息，改天再试试吧", "LATEST_VERSION_NOT_FOUND")
+		}
+		return utils.ErrorResponseWithError(ctx, 500, err.Error(), err, "FETCH_RELEASE_FAILED")
 	}
-
-	responseBody, responseErr := response.Body()
-	if responseErr != nil {
-		return utils.ErrorResponseWithError(ctx, 500, "读取最新版本信息失败", responseErr, "READ_LATEST_VERSION_FAILED")
-	}
-	if response.Status() == 404 {
-		return utils.ErrorResponse(ctx, 404, "未找到最新的版本信息，改天再试试吧", "LATEST_VERSION_NOT_FOUND")
-	}
-
-	// 格式化响应体
-	var result map[string]any
-	unmarshalErr := json.Unmarshal([]byte(responseBody), &result)
-	if unmarshalErr != nil {
-		return utils.ErrorResponseWithError(ctx, 500, "解析最新版本信息失败", unmarshalErr, "PARSE_LATEST_VERSION_FAILED")
-	}
-
-	// 获取tagName
-	tagName, ok := result["tag_name"].(string)
-	if !ok {
-		return utils.ErrorResponse(ctx, 500, "最新版本信息格式错误", "LATEST_VERSION_FORMAT_ERROR")
-	}
-
-	// 格式化版本号（移除 'v' 前缀）
-	normalizedTagName := tagName
-	if len(tagName) > 0 && tagName[0] == 'v' {
-		normalizedTagName = tagName[1:]
-	}
-
-	// 使用 parseVersion 提取版本类型
-	_, latestVersionType, _ := r.parseVersion(normalizedTagName)
 
 	// 格式化发布时间
 	var publishTime string
-	if createdAt, ok := result["created_at"].(string); ok && createdAt != "" {
+	if createdAt, ok := releaseInfo.Result["created_at"].(string); ok && createdAt != "" {
 		parsedTime, parseErr := time.Parse(time.RFC3339, createdAt)
 		if parseErr == nil {
 			publishTime = parsedTime.Format("2006-01-02 15:04:05")
@@ -868,10 +861,10 @@ func (r *UpdateController) checkVersion(ctx http.Context, releaseUrl string, inc
 	}
 
 	data := map[string]any{
-		"latest_version":      normalizedTagName,
-		"latest_version_type": latestVersionType,
+		"latest_version":      releaseInfo.NormalizedTagName,
+		"latest_version_type": releaseInfo.VersionType,
 		"publish_time":        publishTime,
-		"change_log":          result["body"],
+		"change_log":          releaseInfo.Result["body"],
 	}
 
 	// 如果需要包含当前版本信息
@@ -892,6 +885,48 @@ func (r *UpdateController) Check(ctx http.Context) http.Response {
 // CheckAgent 检查 Agent 最新版本
 func (r *UpdateController) CheckAgent(ctx http.Context) http.Response {
 	return r.checkVersion(ctx, agentReleaseUrls, false)
+}
+
+// UpdateAgent 更新服务器 Agent
+func (r *UpdateController) UpdateAgent(ctx http.Context) http.Response {
+	serverID := ctx.Request().Route("id")
+	if serverID == "" {
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "缺少服务器ID", "MISSING_SERVER_ID")
+	}
+
+	// 获取最新版本信息
+	releaseInfo, err := r.fetchLatestRelease(agentReleaseUrls)
+	if err != nil {
+		// 根据错误类型返回相应的 HTTP 状态码
+		if strings.Contains(err.Error(), "未找到") {
+			return utils.ErrorResponse(ctx, http.StatusNotFound, err.Error(), "LATEST_VERSION_NOT_FOUND")
+		}
+		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, err.Error(), err, "FETCH_RELEASE_FAILED")
+	}
+
+	// 发送更新命令
+	wsService := services.GetWebSocketService()
+	message := map[string]interface{}{
+		"type":    "command",
+		"command": "update",
+		"data": map[string]interface{}{
+			"version":      releaseInfo.NormalizedTagName,
+			"version_type": releaseInfo.VersionType,
+		},
+	}
+
+	err = wsService.SendMessage(serverID, message)
+	if err != nil {
+		facades.Log().Errorf("发送更新命令失败: %v", err)
+		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "发送更新命令失败", err, "SEND_UPDATE_COMMAND_FAILED")
+	}
+
+	facades.Log().Infof("成功发送更新命令到服务器: %s, 版本: %s", serverID, releaseInfo.NormalizedTagName)
+
+	return utils.SuccessResponse(ctx, "更新命令已发送", map[string]interface{}{
+		"version":      releaseInfo.NormalizedTagName,
+		"version_type": releaseInfo.VersionType,
+	})
 }
 
 // runMigrations 执行数据库迁移
