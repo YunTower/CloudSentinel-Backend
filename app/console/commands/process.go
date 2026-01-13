@@ -5,20 +5,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
-	"runtime"
 )
 
 var (
 	// DefaultPIDFile 默认 PID 文件路径（根据操作系统自动设置）
 	DefaultPIDFile = getDefaultPIDFile()
-	// MinPort 最小端口号
-	MinPort = 8000
-	// MaxPort 最大端口号
-	MaxPort = 65535
 )
 
 // getDefaultPIDFile 根据操作系统获取默认 PID 文件路径
@@ -174,51 +169,50 @@ func StartDaemon(binaryPath string, args []string, pidFile string) error {
 	return nil
 }
 
-// IsPortAvailable 检查端口是否可用
-func IsPortAvailable(port int) bool {
-	// 尝试使用 netstat 或 ss 检查端口
-	// 在 Windows 上使用 netstat，在 Linux/macOS 上使用 lsof/netstat/ss
-	var cmd *exec.Cmd
-	if os.Getenv("OS") == "Windows_NT" || filepath.Separator == '\\' {
-		// Windows 系统：使用 netstat 查找监听端口
-		cmd = exec.Command("netstat", "-an")
-	} else {
-		// Linux/macOS 系统：使用 lsof/netstat/ss
-		cmd = exec.Command("sh", "-c", fmt.Sprintf("lsof -i :%d 2>/dev/null || netstat -an 2>/dev/null | grep ':%d ' || ss -an 2>/dev/null | grep ':%d '", port, port, port))
-	}
-
-	output, err := cmd.Output()
+// startDaemonService 启动守护进程服务（统一的守护进程启动逻辑）
+func startDaemonService(pidFile string) error {
+	// 获取可执行文件路径
+	exePath, err := os.Executable()
 	if err != nil {
-		// 命令失败说明端口可能可用
-		return true
+		PrintError("获取可执行文件路径失败")
+		return fmt.Errorf("获取可执行文件路径失败: %w", err)
 	}
 
-	// 检查输出中是否包含端口（Windows 格式为 :port，Linux 格式为 :port 或 :::port）
-	portStr := fmt.Sprintf(":%d", port)
-	outputStr := string(output)
-	
-	// Windows 上需要检查 LISTENING 状态
-	if os.Getenv("OS") == "Windows_NT" || filepath.Separator == '\\' {
-		// Windows: 查找 "LISTENING" 和端口号
-		return !(strings.Contains(outputStr, portStr) && strings.Contains(outputStr, "LISTENING"))
+	// 获取当前工作目录
+	currentDir, err := os.Getwd()
+	if err != nil {
+		currentDir = filepath.Dir(exePath)
 	}
-	
-	// Linux/macOS: 查找端口号
-	return !strings.Contains(outputStr, portStr)
+
+	// 设置环境变量标记
+	env := os.Environ()
+	env = append(env, "CLOUDSENTINEL_SERVER_MODE=1")
+	env = append(env, "CLOUDSENTINEL_DAEMON_MODE=1")
+
+	// 传递 PID 文件路径
+	if pidFileEnv := os.Getenv("CLOUDSENTINEL_PID_FILE"); pidFileEnv != "" {
+		env = append(env, "CLOUDSENTINEL_PID_FILE="+pidFileEnv)
+	}
+
+	// 重新执行程序，工作目录设置为当前目录
+	cmd := exec.Command(exePath)
+	cmd.Dir = currentDir
+	cmd.Env = env
+
+	// 启动进程
+	if err := cmd.Start(); err != nil {
+		PrintError(fmt.Sprintf("启动服务失败: %v", err))
+		return fmt.Errorf("启动服务失败: %w", err)
+	}
+
+	// 等待一下，检查进程是否还在运行
+	time.Sleep(500 * time.Millisecond)
+	if IsProcessRunning(cmd.Process.Pid) {
+		PrintSuccess(fmt.Sprintf("服务已启动 (PID: %d)", cmd.Process.Pid))
+		PrintInfo(fmt.Sprintf("PID文件: %s", pidFile))
+		return nil
+	}
+
+	PrintError("服务启动后立即退出，请检查日志")
+	return fmt.Errorf("服务启动失败")
 }
-
-// GenerateRandomPort 生成随机端口（8000-65535）
-func GenerateRandomPort() (int, error) {
-	maxAttempts := 100
-	for i := 0; i < maxAttempts; i++ {
-		// 使用时间戳和尝试次数生成端口
-		port := MinPort + (i*17)%(MaxPort-MinPort+1)
-		if IsPortAvailable(port) {
-			return port, nil
-		}
-	}
-
-	// 如果都不可用，返回默认端口
-	return MinPort, nil
-}
-

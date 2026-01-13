@@ -3,10 +3,7 @@ package commands
 import (
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/goravel/framework/contracts/console"
 	"github.com/goravel/framework/contracts/console/command"
@@ -59,16 +56,7 @@ func (c *StartCommand) Handle(ctx console.Context) error {
 		return nil
 	}
 
-	// 获取可执行文件路径
-	exePath, err := os.Executable()
-	if err != nil {
-		PrintError("获取可执行文件路径失败")
-		return err
-	}
-
 	// 检查 daemon 选项
-	// 对于 BoolFlag，如果指定了选项，ctx.Option() 可能返回 "true" 或空字符串
-	// 为了更可靠，同时检查选项值和命令行参数
 	daemonOpt := ctx.Option("daemon")
 	daemonShortOpt := ctx.Option("d")
 
@@ -85,42 +73,9 @@ func (c *StartCommand) Handle(ctx console.Context) error {
 	daemonFlag := daemonOpt == "true" || daemonOpt == "1" || daemonShortOpt == "true" || daemonShortOpt == "1" || hasDaemonArg
 
 	if daemonFlag {
-		// 守护进程模式
-		// 获取当前工作目录
-		currentDir, err := os.Getwd()
-		if err != nil {
-			currentDir = filepath.Dir(exePath)
-		}
-
-		// 设置环境变量标记
-		env := os.Environ()
-		env = append(env, "CLOUDSENTINEL_SERVER_MODE=1")
-		env = append(env, "CLOUDSENTINEL_DAEMON_MODE=1")
-
-		// 传递 PID 文件路径
-		if pidFileEnv := os.Getenv("CLOUDSENTINEL_PID_FILE"); pidFileEnv != "" {
-			env = append(env, "CLOUDSENTINEL_PID_FILE="+pidFileEnv)
-		}
-
-		// 重新执行程序，工作目录设置为当前目录
-		cmd := exec.Command(exePath)
-		cmd.Dir = currentDir
-		cmd.Env = env
-
-		// 启动进程
-		if err := cmd.Start(); err != nil {
-			PrintError(fmt.Sprintf("启动服务失败: %v", err))
+		// 守护进程模式：使用统一的启动函数
+		if err := startDaemonService(c.pidFile); err != nil {
 			return err
-		}
-
-		// 等待一下，检查进程是否还在运行
-		time.Sleep(500 * time.Millisecond)
-		if IsProcessRunning(cmd.Process.Pid) {
-			PrintSuccess(fmt.Sprintf("服务已启动 (PID: %d)", cmd.Process.Pid))
-			PrintInfo(fmt.Sprintf("PID文件: %s", c.pidFile))
-		} else {
-			PrintError("服务启动后立即退出，请检查日志")
-			return fmt.Errorf("服务启动失败")
 		}
 	} else {
 		// 前台模式
