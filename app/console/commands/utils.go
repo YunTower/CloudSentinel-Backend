@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+
+	"github.com/goravel/framework/facades"
 )
 
 // GenerateRandomString 生成随机字符串（公共函数）
@@ -34,5 +36,39 @@ func GenerateRandomString(length int, charset string) (string, error) {
 	}
 
 	return string(result), nil
+}
+
+// AdminCredentials 管理员凭证结构
+type AdminCredentials struct {
+	Username     string
+	Password     string
+	PasswordHash string
+}
+
+// generateAdminCredentials 生成管理员凭证（统一的管理员账号生成逻辑）
+func generateAdminCredentials() (*AdminCredentials, error) {
+	// 生成10位随机用户名（字母和数字）
+	username, err := GenerateRandomString(10, "alphanumeric")
+	if err != nil {
+		return nil, fmt.Errorf("生成用户名失败: %w", err)
+	}
+
+	// 生成20位随机密码（字母、数字和特殊字符）
+	password, err := GenerateRandomString(20, "alphanumeric_special")
+	if err != nil {
+		return nil, fmt.Errorf("生成密码失败: %w", err)
+	}
+
+	// 生成密码哈希
+	passwordHash, err := facades.Hash().Make(password)
+	if err != nil {
+		return nil, fmt.Errorf("生成密码哈希失败: %w", err)
+	}
+
+	return &AdminCredentials{
+		Username:     username,
+		Password:     password,
+		PasswordHash: passwordHash,
+	}, nil
 }
 
