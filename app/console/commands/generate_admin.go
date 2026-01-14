@@ -34,24 +34,10 @@ func (c *GenerateAdminCommand) Extend() command.Extend {
 func (c *GenerateAdminCommand) Handle(ctx console.Context) error {
 	PrintInfo("正在生成随机管理员账号...")
 
-	// 生成10位随机用户名（字母和数字）
-	username, err := GenerateRandomString(10, "alphanumeric")
+	// 使用统一的生成函数
+	creds, err := generateAdminCredentials()
 	if err != nil {
-		PrintError(fmt.Sprintf("生成用户名失败: %v", err))
-		return err
-	}
-
-	// 生成20位随机密码（字母、数字和特殊字符）
-	password, err := GenerateRandomString(20, "alphanumeric_special")
-	if err != nil {
-		PrintError(fmt.Sprintf("生成密码失败: %v", err))
-		return err
-	}
-
-	// 生成密码哈希
-	passwordHash, err := facades.Hash().Make(password)
-	if err != nil {
-		PrintError(fmt.Sprintf("生成密码哈希失败: %v", err))
+		PrintError(fmt.Sprintf("生成管理员凭证失败: %v", err))
 		return err
 	}
 
@@ -65,7 +51,7 @@ func (c *GenerateAdminCommand) Handle(ctx console.Context) error {
 		},
 		map[string]any{
 			"setting_key":   "admin_username",
-			"setting_value": username,
+			"setting_value": creds.Username,
 			"setting_type":  "string",
 			"created_at":    now,
 			"updated_at":    now,
@@ -83,7 +69,7 @@ func (c *GenerateAdminCommand) Handle(ctx console.Context) error {
 		},
 		map[string]any{
 			"setting_key":   "admin_password_hash",
-			"setting_value": passwordHash,
+			"setting_value": creds.PasswordHash,
 			"setting_type":  "string",
 			"created_at":    now,
 			"updated_at":    now,
@@ -97,9 +83,9 @@ func (c *GenerateAdminCommand) Handle(ctx console.Context) error {
 	// 输出结果
 	PrintSuccess("管理员账号已生成")
 	fmt.Println()
-	fmt.Printf("  %s用户名: %s%s\n", ColorCyan, username, ColorReset)
-	fmt.Printf("  %s密码: %s%s\n", ColorCyan, password, ColorReset)
-	fmt.Printf("ADMIN_CREDENTIALS|%s|%s\n", username, password)
+	fmt.Printf("  %s用户名: %s%s\n", ColorCyan, creds.Username, ColorReset)
+	fmt.Printf("  %s密码: %s%s\n", ColorCyan, creds.Password, ColorReset)
+	fmt.Printf("ADMIN_CREDENTIALS|%s|%s\n", creds.Username, creds.Password)
 	fmt.Println()
 	PrintWarning("请妥善保管用户名和密码，建议立即登录并修改密码")
 

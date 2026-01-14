@@ -59,24 +59,10 @@ func (c *PanelInfoCommand) Handle(ctx console.Context) error {
 	// 生成随机管理员账号
 	PrintInfo("正在生成随机管理员账号...")
 
-	// 生成10位随机用户名
-	username, err := GenerateRandomString(10, "alphanumeric")
+	// 使用统一的生成函数
+	creds, err := generateAdminCredentials()
 	if err != nil {
-		PrintError(fmt.Sprintf("生成用户名失败: %v", err))
-		return err
-	}
-
-	// 生成20位随机密码
-	password, err := GenerateRandomString(20, "alphanumeric_special")
-	if err != nil {
-		PrintError(fmt.Sprintf("生成密码失败: %v", err))
-		return err
-	}
-
-	// 生成密码哈希
-	passwordHash, err := facades.Hash().Make(password)
-	if err != nil {
-		PrintError(fmt.Sprintf("生成密码哈希失败: %v", err))
+		PrintError(fmt.Sprintf("生成管理员凭证失败: %v", err))
 		return err
 	}
 
@@ -84,13 +70,13 @@ func (c *PanelInfoCommand) Handle(ctx console.Context) error {
 	settingRepo := repositories.GetSystemSettingRepository()
 
 	// 更新用户名
-	if err := settingRepo.SetValue("admin_username", username); err != nil {
+	if err := settingRepo.SetValue("admin_username", creds.Username); err != nil {
 		PrintError(fmt.Sprintf("更新用户名失败: %v", err))
 		return err
 	}
 
 	// 更新密码哈希
-	if err := settingRepo.SetValue("admin_password_hash", passwordHash); err != nil {
+	if err := settingRepo.SetValue("admin_password_hash", creds.PasswordHash); err != nil {
 		PrintError(fmt.Sprintf("更新密码哈希失败: %v", err))
 		return err
 	}
@@ -107,8 +93,8 @@ func (c *PanelInfoCommand) Handle(ctx console.Context) error {
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println()
 	fmt.Printf("  %s管理员账号：%s\n", ColorCyan, ColorReset)
-	fmt.Printf("  %s用户名:%s     %s%s%s\n", ColorCyan, ColorReset, ColorGreen, username, ColorReset)
-	fmt.Printf("  %s密码:%s       %s%s%s\n", ColorCyan, ColorReset, ColorGreen, password, ColorReset)
+	fmt.Printf("  %s用户名:%s     %s%s%s\n", ColorCyan, ColorReset, ColorGreen, creds.Username, ColorReset)
+	fmt.Printf("  %s密码:%s       %s%s%s\n", ColorCyan, ColorReset, ColorGreen, creds.Password, ColorReset)
 	fmt.Println()
 	fmt.Printf("  %s访问地址：%s\n", ColorCyan, ColorReset)
 

@@ -32,5 +32,6 @@ func (kernel Kernel) Commands() []console.Command {
 		commands.NewResetPortCommand(),
 		commands.NewGenerateAdminCommand(),
 		commands.NewPanelInfoCommand(),
+		commands.NewUninstallCommand(),
 	}
 }

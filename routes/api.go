@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"os"
+
 	"goravel/app/http/middleware"
 
 	"github.com/goravel/framework/contracts/route"
@@ -91,5 +93,13 @@ func Api() {
 	})
 
 	// 静态文件服务
-	facades.Route().Fallback(staticController.ServeStatic)
+	if isProductionMode() {
+		facades.Route().Fallback(staticController.ServeStatic)
+	}
+}
+
+// isProductionMode 检查是否在生产模式
+func isProductionMode() bool {
+	env := os.Getenv("APP_ENV")
+	return env == "production"
 }

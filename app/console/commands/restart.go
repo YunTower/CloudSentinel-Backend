@@ -2,9 +2,6 @@ package commands
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -73,60 +70,19 @@ func (c *RestartCommand) Handle(ctx console.Context) error {
 	}
 
 	// 再启动服务
-	daemonFlag := ctx.Option("daemon") == "true" || ctx.Option("daemon") == "1"
-	
-	// 使用 start 命令的逻辑启动服务
+	daemonOpt := ctx.Option("daemon")
+	daemonFlag := daemonOpt == "true" || daemonOpt == "1"
+
 	if daemonFlag {
+		// 守护进程模式：使用统一的启动函数
 		PrintInfo("正在以守护进程模式启动服务...")
-		return c.startService(true)
-	}
-
-	PrintSuccess("服务已停止")
-	PrintInfo("请使用 'start' 或 'start --daemon' 命令启动服务")
-
-	return nil
-}
-
-// startService 启动服务的内部方法
-func (c *RestartCommand) startService(daemon bool) error {
-	// 获取可执行文件路径
-	exePath, err := os.Executable()
-	if err != nil {
-		PrintError("获取可执行文件路径失败")
-		return err
-	}
-
-	if daemon {
-		// 守护进程模式：后台启动
-		cmd := exec.Command(exePath)
-		cmd.Dir = filepath.Dir(exePath)
-		cmd.Env = os.Environ()
-
-		// 启动进程
-		if err := cmd.Start(); err != nil {
-			PrintError(fmt.Sprintf("启动服务失败: %v", err))
+		if err := startDaemonService(c.pidFile); err != nil {
 			return err
 		}
-
-		// 写入 PID 文件
-		if err := WritePID(c.pidFile); err != nil {
-			PrintError(fmt.Sprintf("写入PID文件失败: %v", err))
-			_ = cmd.Process.Kill()
-			return err
-		}
-
-		// 等待一下，检查进程是否还在运行
-		time.Sleep(500 * time.Millisecond)
-		if IsProcessRunning(cmd.Process.Pid) {
-			PrintSuccess(fmt.Sprintf("服务已启动 (PID: %d)", cmd.Process.Pid))
-			return nil
-		} else {
-			PrintError("服务启动后立即退出，请检查日志")
-			_ = RemovePID(c.pidFile)
-			return fmt.Errorf("服务启动失败")
-		}
+	} else {
+		PrintSuccess("服务已停止")
+		PrintInfo("请使用 'start' 或 'start --daemon' 命令启动服务")
 	}
 
 	return nil
 }
-
