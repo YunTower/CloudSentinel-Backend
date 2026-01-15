@@ -480,9 +480,56 @@ func copyFile(src, dst string) error {
 		}
 	}()
 
+	// 在 Linux 系统上，如果目标文件存在且可能正在运行，使用原子替换
+	if runtime.GOOS != "windows" {
+		// 检查目标文件是否存在
+		if _, err := os.Stat(dst); err == nil {
+			// 目标文件存在，使用原子替换方式
+			tempDst := dst + ".new"
+			destFile, err := os.Create(tempDst)
+			if err != nil {
+				return fmt.Errorf("创建临时文件失败: %v", err)
+			}
+
+			// 复制文件内容
+			if _, err := io.Copy(destFile, sourceFile); err != nil {
+				destFile.Close()
+				os.Remove(tempDst)
+				return fmt.Errorf("复制文件内容失败: %v", err)
+			}
+
+			// 确保数据写入磁盘
+			if err := destFile.Sync(); err != nil {
+				destFile.Close()
+				os.Remove(tempDst)
+				return fmt.Errorf("同步文件失败: %v", err)
+			}
+
+			// 关闭文件
+			if err := destFile.Close(); err != nil {
+				os.Remove(tempDst)
+				return fmt.Errorf("关闭临时文件失败: %v", err)
+			}
+
+			// 设置可执行权限（如果需要）
+			if err := os.Chmod(tempDst, 0755); err != nil {
+				facades.Log().Warningf("设置临时文件权限失败: %v", err)
+			}
+
+			// 使用原子替换
+			if err := os.Rename(tempDst, dst); err != nil {
+				os.Remove(tempDst)
+				return fmt.Errorf("原子替换文件失败: %v", err)
+			}
+
+			return nil
+		}
+	}
+
+	// Windows 系统或目标文件不存在，使用常规方式
 	destFile, err := os.Create(dst)
 	if err != nil {
-		return err
+		return fmt.Errorf("创建目标文件失败: %v", err)
 	}
 	defer func() {
 		if closeErr := destFile.Close(); closeErr != nil {
@@ -490,8 +537,17 @@ func copyFile(src, dst string) error {
 		}
 	}()
 
-	_, err = io.Copy(destFile, sourceFile)
-	return err
+	// 复制文件内容
+	if _, err := io.Copy(destFile, sourceFile); err != nil {
+		return fmt.Errorf("复制文件内容失败: %v", err)
+	}
+
+	// 确保数据写入磁盘
+	if err := destFile.Sync(); err != nil {
+		return fmt.Errorf("同步文件失败: %v", err)
+	}
+
+	return nil
 }
 
 // readSHA256File 读取 SHA256 文件内容
@@ -512,10 +568,24 @@ func (r *UpdateController) readSHA256File(filePath string) (string, error) {
 }
 
 // cleanupTempFiles 清理更新过程中的临时文件
-func (r *UpdateController) cleanupTempFiles() {
-	tempDir := os.TempDir()
+// 可以接受具体的文件路径参数，也可以不传参数使用模式匹配清理
+func (r *UpdateController) cleanupTempFiles(files ...string) {
+	// 如果提供了具体的文件路径，优先清理这些文件
+	if len(files) > 0 {
+		for _, file := range files {
+			if file == "" {
+				continue
+			}
+			if err := os.RemoveAll(file); err != nil {
+				facades.Log().Warningf("删除临时文件失败 (%s): %v", file, err)
+			} else {
+				facades.Log().Infof("已清理临时文件: %s", file)
+			}
+		}
+	}
 
-	// 清理可能的临时文件
+	// 保留原有的模式匹配清理逻辑作为后备
+	tempDir := os.TempDir()
 	patterns := []string{
 		"dashboard-*.tar.gz",
 		"dashboard-*.sha256",
@@ -530,6 +600,18 @@ func (r *UpdateController) cleanupTempFiles() {
 		}
 
 		for _, match := range matches {
+			// 跳过已经在上面清理过的文件
+			skip := false
+			for _, file := range files {
+				if match == file {
+					skip = true
+					break
+				}
+			}
+			if skip {
+				continue
+			}
+
 			if err := os.RemoveAll(match); err != nil {
 				facades.Log().Warningf("删除临时文件失败 (%s): %v", match, err)
 			} else {
@@ -807,6 +889,10 @@ func (r *UpdateController) UpdatePanel(ctx http.Context) http.Response {
 
 		setStatus("unpacking", 98, "文件替换完成")
 
+		// 清理解压目录和下载的压缩文件
+		facades.Log().Infof("开始清理临时文件: 解压目录=%s, 压缩文件=%s", extractDir, downloadPath)
+		r.cleanupTempFiles(extractDir, downloadPath)
+
 		// 执行数据库迁移
 		setStatus("migrating", 99, "正在执行数据库迁移...")
 		if err := r.runMigrations(); err != nil {
@@ -818,6 +904,10 @@ func (r *UpdateController) UpdatePanel(ctx http.Context) http.Response {
 
 		// 重启程序
 		setStatus("restarting", 99, "正在重启服务...")
+
+		// 清理备份文件
+		facades.Log().Infof("开始清理备份文件: %s", backupPath)
+		r.cleanupTempFiles(backupPath)
 
 		// 延迟一下，确保状态已保存
 		time.Sleep(1 * time.Second)
