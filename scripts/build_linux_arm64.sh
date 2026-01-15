@@ -54,8 +54,9 @@ export GOARCH=arm64
 export CGO_ENABLED=0
 
 # Build all .go files including embed.go with optimization flags to reduce binary size
+# -tags production: use production build tag to embed frontend files
 # -s: remove symbol table, -w: remove DWARF symbol table, -trimpath: remove file system paths
-go build -ldflags "-s -w" -trimpath -o dashboard .
+go build -tags production -ldflags "-s -w" -trimpath -o dashboard .
 
 if [ ! -f "dashboard" ]; then
     echo "Error: dashboard file not found, build failed"
