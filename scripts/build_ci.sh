@@ -155,18 +155,28 @@ echo "Archive created: $ARCHIVE_NAME"
 # 生成 SHA256
 echo ""
 echo "Generating SHA256 checksum..."
-SHA256_FILE="${ARCHIVE_NAME}.sha256"
+# SHA256 文件名应该与工作流中期望的一致（不包含 .tar.gz 或 .zip 后缀）
+SHA256_FILE="dashboard-${PLATFORM}-${ARCH}.sha256"
+
 if command -v sha256sum &> /dev/null; then
     sha256sum "$ARCHIVE_NAME" > "$SHA256_FILE"
+    echo "SHA256 file generated: $SHA256_FILE"
 elif command -v shasum &> /dev/null; then
     shasum -a 256 "$ARCHIVE_NAME" > "$SHA256_FILE"
+    echo "SHA256 file generated: $SHA256_FILE"
 else
-    echo "Warning: sha256sum or shasum not found, skipping checksum generation"
+    echo "Error: sha256sum or shasum not found, cannot generate checksum"
+    exit 1
 fi
 
-if [ -f "$SHA256_FILE" ]; then
-    echo "SHA256 file generated: $SHA256_FILE"
+if [ ! -f "$SHA256_FILE" ]; then
+    echo "Error: Failed to generate SHA256 file"
+    exit 1
 fi
+
+# 显示 SHA256 内容用于验证
+echo "SHA256 checksum:"
+cat "$SHA256_FILE"
 
 echo ""
 echo "=========================================="
