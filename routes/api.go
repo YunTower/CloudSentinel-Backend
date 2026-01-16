@@ -93,9 +93,19 @@ func Api() {
 	})
 
 	// 静态文件服务
-	if isProductionMode() {
+	if hasEmbeddedFiles() {
 		facades.Route().Fallback(staticController.ServeStatic)
 	}
+}
+
+// hasEmbeddedFiles 检查是否嵌入了前端文件
+func hasEmbeddedFiles() bool {
+	// 检查 PublicFiles 是否已初始化且有内容
+	entries, err := controllers.PublicFiles.ReadDir("public")
+	if err != nil {
+		return false
+	}
+	return len(entries) > 0
 }
 
 // isProductionMode 检查是否在生产模式
