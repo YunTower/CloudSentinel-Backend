@@ -69,6 +69,21 @@ if [ "$FILE_COUNT" -eq 0 ]; then
     exit 1
 fi
 
+# 详细列出 public 目录结构
+echo ""
+echo "Public directory structure:"
+find public -type f | head -20
+echo "..."
+
+# 验证关键文件
+REQUIRED_FILES=("public/index.html")
+for file in "${REQUIRED_FILES[@]}"; do
+    if [ ! -f "$file" ]; then
+        echo "Error: Required file not found: $file"
+        exit 1
+    fi
+done
+
 echo "Public directory verification passed"
 
 # 更新版本号
@@ -103,13 +118,124 @@ else
     ARCHIVE_CMD="tar -czf"
 fi
 
+# 构建前再次验证 public 目录
+echo ""
+echo "=========================================="
+echo "Final verification before build"
+echo "=========================================="
+echo "Current directory: $(pwd)"
+echo "Public directory exists: $([ -d "public" ] && echo "YES" || echo "NO")"
+
+if [ ! -d "public" ]; then
+    echo "ERROR: public directory does not exist!"
+    exit 1
+fi
+
+echo "Public directory absolute path: $(cd public && pwd)"
+echo "File count in public: $(find public -type f | wc -l)"
+echo "Directory count in public: $(find public -type d | wc -l)"
+
+if [ ! -f "public/index.html" ]; then
+    echo "ERROR: public/index.html not found!"
+    exit 1
+fi
+
+echo "Sample files in public:"
+find public -type f | head -5
+
+# 验证 embed.go 文件存在且包含正确的 build tag
+if [ ! -f "embed.go" ]; then
+    echo "ERROR: embed.go not found in current directory!"
+    exit 1
+fi
+
+if ! grep -q "//go:build production" embed.go; then
+    echo "ERROR: embed.go does not have production build tag!"
+    exit 1
+fi
+
+if ! grep -q "//go:embed public" embed.go; then
+    echo "ERROR: embed.go does not have //go:embed public directive!"
+    exit 1
+fi
+
+echo "✓ embed.go validation passed"
+
+# 验证 build tag 会被应用
+echo ""
+echo "Verifying build configuration..."
+echo "Checking which files will be included with production tag:"
+INCLUDED_FILES=$(go list -tags production -f '{{range .GoFiles}}{{.}} {{end}}' . 2>/dev/null)
+echo "$INCLUDED_FILES"
+
+if echo "$INCLUDED_FILES" | grep -q "embed.go"; then
+    echo "✓ embed.go will be included in build with production tag"
+else
+    echo "✗ ERROR: embed.go will NOT be included in build!"
+    echo "This means the build will use embed_dev.go instead (empty PublicFiles)"
+    echo "Checking without tags..."
+    WITHOUT_TAG=$(go list -f '{{range .GoFiles}}{{.}} {{end}}' . 2>/dev/null)
+    if echo "$WITHOUT_TAG" | grep -q "embed.go"; then
+        echo "✗ ERROR: embed.go is included WITHOUT production tag (this is wrong!)"
+        echo "Files without tag: $WITHOUT_TAG"
+    fi
+    echo ""
+    echo "This will cause 404 errors at runtime because PublicFiles will be empty!"
+    exit 1
+fi
+
+# 检查 embed_dev.go 是否会被排除
+if echo "$INCLUDED_FILES" | grep -q "embed_dev.go"; then
+    echo "✗ ERROR: embed_dev.go is included with production tag (this is wrong!)"
+    exit 1
+else
+    echo "✓ embed_dev.go correctly excluded with production tag"
+fi
+
 # 构建
 echo ""
-echo "Building backend with production tag..."
-echo "GOOS=$GOOS GOARCH=$GOARCH CGO_ENABLED=$CGO_ENABLED"
+echo "=========================================="
+echo "Building backend"
+echo "=========================================="
+echo "GOOS=$GOOS"
+echo "GOARCH=$GOARCH"
+echo "CGO_ENABLED=$CGO_ENABLED"
+echo "Build tags: production"
 echo "Command: go build -tags production -ldflags \"-s -w\" -trimpath -o $OUTPUT_NAME ."
+echo ""
 
-go build -tags production -ldflags "-s -w" -trimpath -o "$OUTPUT_NAME" .
+# 执行构建，捕获所有输出并显示
+echo "Starting build..."
+BUILD_OUTPUT=$(go build -tags production -ldflags "-s -w" -trimpath -o "$OUTPUT_NAME" . 2>&1)
+BUILD_EXIT_CODE=$?
+
+if [ $BUILD_EXIT_CODE -ne 0 ]; then
+    echo ""
+    echo "=========================================="
+    echo "ERROR: Build failed!"
+    echo "=========================================="
+    echo "$BUILD_OUTPUT"
+    echo ""
+    echo "This could mean:"
+    echo "  1. public directory is empty or missing files"
+    echo "  2. embed.go validation failed (check embed.go init() function)"
+    echo "  3. Go compilation error"
+    echo ""
+    echo "Checking public directory one more time..."
+    if [ -d "public" ]; then
+        echo "Public directory exists with $(find public -type f | wc -l) files"
+        ls -la public/ | head -10
+    else
+        echo "Public directory does NOT exist!"
+    fi
+    exit 1
+fi
+
+# 显示构建输出（如果有警告或信息）
+if [ -n "$BUILD_OUTPUT" ]; then
+    echo "Build output:"
+    echo "$BUILD_OUTPUT"
+fi
 
 if [ ! -f "$OUTPUT_NAME" ]; then
     echo "Error: Build failed - $OUTPUT_NAME not found"
@@ -117,6 +243,47 @@ if [ ! -f "$OUTPUT_NAME" ]; then
 fi
 
 echo "Build successful!"
+
+# 验证构建结果
+BINARY_SIZE=$(stat -f%z "$OUTPUT_NAME" 2>/dev/null || stat -c%s "$OUTPUT_NAME" 2>/dev/null || echo "0")
+echo ""
+echo "Binary size: $BINARY_SIZE bytes ($(numfmt --to=iec-i --suffix=B $BINARY_SIZE 2>/dev/null || echo "N/A"))"
+
+# 尝试使用 strings 命令检查二进制文件中是否包含前端文件的内容
+echo ""
+echo "Verifying embedded files in binary..."
+if command -v strings &> /dev/null; then
+    # 检查是否包含 index.html 的典型内容
+    if strings "$OUTPUT_NAME" | grep -q "<!DOCTYPE html" || strings "$OUTPUT_NAME" | grep -q "<html"; then
+        echo "✓ Found HTML content in binary (frontend likely embedded)"
+    else
+        echo "✗ WARNING: No HTML content found in binary"
+    fi
+    
+    # 检查是否包含前端资源路径
+    if strings "$OUTPUT_NAME" | grep -q "assets/" || strings "$OUTPUT_NAME" | grep -q "/assets/"; then
+        echo "✓ Found assets path in binary"
+    else
+        echo "✗ WARNING: No assets path found in binary"
+    fi
+else
+    echo "strings command not available, skipping content verification"
+fi
+
+# 检查文件大小是否合理
+if [ "$BINARY_SIZE" -lt 5000000 ]; then
+    echo ""
+    echo "⚠️  WARNING: Binary size is very small ($BINARY_SIZE bytes)"
+    echo "   This suggests frontend files may NOT be embedded"
+    echo "   Expected size should be > 5MB if frontend is embedded"
+    echo ""
+    echo "   Possible causes:"
+    echo "   1. embed.go was not included in build (wrong build tag?)"
+    echo "   2. public directory was empty during build"
+    echo "   3. Go embed failed silently"
+else
+    echo "✓ Binary size looks reasonable for embedded frontend"
+fi
 
 # 重命名二进制文件
 if [ -f "$BINARY_NAME" ]; then
