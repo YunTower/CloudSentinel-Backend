@@ -126,13 +126,21 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 
 	email := fetchNotify("email")
 	webhook := fetchNotify("webhook")
+	
+	// 检查密码是否已设置
+	hasPassword := false
+	if password, ok := email.Config["password"].(string); ok && password != "" {
+		hasPassword = true
+	}
+	
 	emailData := map[string]any{
-		"enabled":  email.Enabled,
-		"smtp":     email.Config["smtp"],
-		"port":     email.Config["port"],
-		"security": email.Config["security"],
-		"from":     email.Config["from"],
-		"to":       email.Config["to"],
+		"enabled":     email.Enabled,
+		"smtp":        email.Config["smtp"],
+		"port":        email.Config["port"],
+		"security":    email.Config["security"],
+		"from":        email.Config["from"],
+		"to":          email.Config["to"],
+		"hasPassword": hasPassword,
 	}
 	webhookData := map[string]any{
 		"enabled":   webhook.Enabled,
