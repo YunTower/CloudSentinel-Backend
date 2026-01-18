@@ -33,5 +33,6 @@ func (kernel Kernel) Commands() []console.Command {
 		commands.NewGenerateAdminCommand(),
 		commands.NewPanelInfoCommand(),
 		commands.NewUninstallCommand(),
+		commands.NewUpdateCommand(),
 	}
 }
