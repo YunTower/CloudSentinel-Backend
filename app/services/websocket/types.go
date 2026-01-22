@@ -44,6 +44,7 @@ const (
 	MessageTypeDiskIO      = "disk_io"
 	MessageTypeNetworkInfo = "network_info"
 	MessageTypeSwapInfo    = "swap_info"
+	MessageTypeAgentConfig = "agent_config"
 	MessageTypePing        = "ping"
 	MessageTypePong        = "pong"
 	MessageTypeError       = "error"

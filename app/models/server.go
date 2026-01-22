@@ -33,6 +33,17 @@ type Server struct {
 	TrafficLimitBytes      int64      `gorm:"column:traffic_limit_bytes;default:0" json:"traffic_limit_bytes"`
 	TrafficResetCycle      string     `gorm:"column:traffic_reset_cycle;size:20" json:"traffic_reset_cycle"`
 	TrafficCustomCycleDays *int       `gorm:"column:traffic_custom_cycle_days" json:"traffic_custom_cycle_days"`
+	// Agent配置字段
+	AgentTimezone          string     `gorm:"column:agent_timezone;size:50" json:"agent_timezone"`
+	AgentMetricsInterval   int        `gorm:"column:agent_metrics_interval;default:30" json:"agent_metrics_interval"`
+	AgentDetailInterval    int        `gorm:"column:agent_detail_interval;default:30" json:"agent_detail_interval"`
+	AgentSystemInterval    int        `gorm:"column:agent_system_interval;default:30" json:"agent_system_interval"`
+	AgentHeartbeatInterval int        `gorm:"column:agent_heartbeat_interval;default:20" json:"agent_heartbeat_interval"`
+	AgentLogPath           string     `gorm:"column:agent_log_path;size:255;default:logs" json:"agent_log_path"`
+	// 显示开关字段
+	ShowBillingCycle       bool       `gorm:"column:show_billing_cycle;default:0" json:"show_billing_cycle"`
+	ShowTrafficLimit       bool       `gorm:"column:show_traffic_limit;default:0" json:"show_traffic_limit"`
+	ShowTrafficResetCycle  bool       `gorm:"column:show_traffic_reset_cycle;default:0" json:"show_traffic_reset_cycle"`
 	CreatedAt              time.Time  `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt              time.Time  `gorm:"column:updated_at" json:"updated_at"`
 	// 关联关系

@@ -126,13 +126,13 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 
 	email := fetchNotify("email")
 	webhook := fetchNotify("webhook")
-	
+
 	// 检查密码是否已设置
 	hasPassword := false
 	if password, ok := email.Config["password"].(string); ok && password != "" {
 		hasPassword = true
 	}
-	
+
 	emailData := map[string]any{
 		"enabled":     email.Enabled,
 		"smtp":        email.Config["smtp"],
@@ -176,21 +176,40 @@ func (r *SettingsController) UpdatePanelSettings(ctx http.Context) http.Response
 }
 
 func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Response {
-	allowGuest := ctx.Request().Input("allowGuest") == "true"
-	enablePassword := ctx.Request().Input("enablePassword") == "true"
-	guestPassword := ctx.Request().Input("guestPassword")
-	hideSensitiveInfo := ctx.Request().Input("hideSensitiveInfo") == "true"
+	type UpdatePermissionsRequest struct {
+		AllowGuest        bool   `json:"allowGuest" form:"allowGuest"`
+		EnablePassword    bool   `json:"enablePassword" form:"enablePassword"`
+		GuestPassword     string `json:"guestPassword" form:"guestPassword"`
+		HideSensitiveInfo bool   `json:"hideSensitiveInfo" form:"hideSensitiveInfo"`
+		SessionTimeout    int    `json:"sessionTimeout" form:"sessionTimeout"`
+		MaxLoginAttempts  int    `json:"maxLoginAttempts" form:"maxLoginAttempts"`
+		LockoutDuration   int    `json:"lockoutDuration" form:"lockoutDuration"`
+		JwtSecret         string `json:"jwtSecret" form:"jwtSecret"`
+		JwtExpiration     int    `json:"jwtExpiration" form:"jwtExpiration"`
+		NewUsername       string `json:"newUsername" form:"newUsername"`
+		CurrentPassword   string `json:"currentPassword" form:"currentPassword"`
+		NewPassword       string `json:"newPassword" form:"newPassword"`
+		ConfirmPassword   string `json:"confirmPassword" form:"confirmPassword"`
+	}
 
-	sessionMinutes, _ := strconv.Atoi(ctx.Request().Input("sessionTimeout"))
-	maxLoginAttempts, _ := strconv.Atoi(ctx.Request().Input("maxLoginAttempts"))
-	lockoutMinutes, _ := strconv.Atoi(ctx.Request().Input("lockoutDuration"))
-	jwtSecret := ctx.Request().Input("jwtSecret")
-	jwtHours, _ := strconv.Atoi(ctx.Request().Input("jwtExpiration"))
+	var req UpdatePermissionsRequest
+	if err := ctx.Request().Bind(&req); err != nil {
+		return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
+	}
 
-	newUsername := ctx.Request().Input("newUsername")
-	currentPassword := ctx.Request().Input("currentPassword")
-	newPassword := ctx.Request().Input("newPassword")
-	confirmPassword := ctx.Request().Input("confirmPassword")
+	allowGuest := req.AllowGuest
+	enablePassword := req.EnablePassword
+	guestPassword := req.GuestPassword
+	hideSensitiveInfo := req.HideSensitiveInfo
+	sessionMinutes := req.SessionTimeout
+	maxLoginAttempts := req.MaxLoginAttempts
+	lockoutMinutes := req.LockoutDuration
+	jwtSecret := req.JwtSecret
+	jwtHours := req.JwtExpiration
+	newUsername := req.NewUsername
+	currentPassword := req.CurrentPassword
+	newPassword := req.NewPassword
+	confirmPassword := req.ConfirmPassword
 
 	sessionSeconds := sessionMinutes * 60
 	lockoutSeconds := lockoutMinutes * 60

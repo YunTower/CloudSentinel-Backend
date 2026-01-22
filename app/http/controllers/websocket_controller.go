@@ -157,6 +157,8 @@ func (c *WebSocketController) handleAgentMessage(msgType string, data map[string
 		return c.agentHandler.HandleNetworkInfo(data, conn)
 	case ws.MessageTypeSwapInfo:
 		return c.agentHandler.HandleSwapInfo(data, conn)
+	case ws.MessageTypeAgentConfig:
+		return c.agentHandler.HandleAgentConfig(data, conn)
 	default:
 		facades.Log().Channel("websocket").Warning("未知的消息类型: " + msgType)
 		return nil

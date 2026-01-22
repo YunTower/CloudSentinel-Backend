@@ -292,6 +292,10 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 			serverData["agent_version"] = server.AgentVersion
 		}
 
+		serverData["show_billing_cycle"] = server.ShowBillingCycle
+		serverData["show_traffic_limit"] = server.ShowTrafficLimit
+		serverData["show_traffic_reset_cycle"] = server.ShowTrafficResetCycle
+
 		servers = append(servers, serverData)
 	}
 
@@ -562,6 +566,23 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 	if err == nil {
 		serverData["notification_channels"] = notificationChannels
 	}
+
+	// 添加Agent配置字段
+	if server.AgentTimezone != "" {
+		serverData["agent_timezone"] = server.AgentTimezone
+	}
+	serverData["agent_metrics_interval"] = server.AgentMetricsInterval
+	serverData["agent_detail_interval"] = server.AgentDetailInterval
+	serverData["agent_system_interval"] = server.AgentSystemInterval
+	serverData["agent_heartbeat_interval"] = server.AgentHeartbeatInterval
+	if server.AgentLogPath != "" {
+		serverData["agent_log_path"] = server.AgentLogPath
+	}
+
+	// 添加显示开关字段
+	serverData["show_billing_cycle"] = server.ShowBillingCycle
+	serverData["show_traffic_limit"] = server.ShowTrafficLimit
+	serverData["show_traffic_reset_cycle"] = server.ShowTrafficResetCycle
 
 	return utils.SuccessResponse(ctx, "获取成功", serverData)
 }
@@ -979,6 +1000,17 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 		TrafficCustomCycleDays *int                    `json:"traffic_custom_cycle_days" form:"traffic_custom_cycle_days"`
 		AlertRules             *map[string]interface{} `json:"alert_rules" form:"alert_rules"`
 		NotificationChannels   *map[string]bool        `json:"notification_channels" form:"notification_channels"`
+		// Agent配置字段
+		AgentTimezone          *string `json:"agent_timezone" form:"agent_timezone"`
+		AgentMetricsInterval   *int    `json:"agent_metrics_interval" form:"agent_metrics_interval"`
+		AgentDetailInterval    *int    `json:"agent_detail_interval" form:"agent_detail_interval"`
+		AgentSystemInterval    *int    `json:"agent_system_interval" form:"agent_system_interval"`
+		AgentHeartbeatInterval *int    `json:"agent_heartbeat_interval" form:"agent_heartbeat_interval"`
+		AgentLogPath           *string `json:"agent_log_path" form:"agent_log_path"`
+		// 显示开关字段
+		ShowBillingCycle      *bool `json:"show_billing_cycle" form:"show_billing_cycle"`
+		ShowTrafficLimit      *bool `json:"show_traffic_limit" form:"show_traffic_limit"`
+		ShowTrafficResetCycle *bool `json:"show_traffic_reset_cycle" form:"show_traffic_reset_cycle"`
 	}
 
 	var req UpdateServerRequest
@@ -1041,6 +1073,46 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 	if req.TrafficCustomCycleDays != nil {
 		updateData["traffic_custom_cycle_days"] = *req.TrafficCustomCycleDays
 	}
+
+	// 处理Agent配置字段
+	if req.AgentTimezone != nil {
+		updateData["agent_timezone"] = *req.AgentTimezone
+	}
+	if req.AgentMetricsInterval != nil {
+		if *req.AgentMetricsInterval > 0 {
+			updateData["agent_metrics_interval"] = *req.AgentMetricsInterval
+		}
+	}
+	if req.AgentDetailInterval != nil {
+		if *req.AgentDetailInterval > 0 {
+			updateData["agent_detail_interval"] = *req.AgentDetailInterval
+		}
+	}
+	if req.AgentSystemInterval != nil {
+		if *req.AgentSystemInterval > 0 {
+			updateData["agent_system_interval"] = *req.AgentSystemInterval
+		}
+	}
+	if req.AgentHeartbeatInterval != nil {
+		if *req.AgentHeartbeatInterval > 0 {
+			updateData["agent_heartbeat_interval"] = *req.AgentHeartbeatInterval
+		}
+	}
+	if req.AgentLogPath != nil {
+		updateData["agent_log_path"] = *req.AgentLogPath
+	}
+
+	// 处理显示开关字段
+	if req.ShowBillingCycle != nil {
+		updateData["show_billing_cycle"] = *req.ShowBillingCycle
+	}
+	if req.ShowTrafficLimit != nil {
+		updateData["show_traffic_limit"] = *req.ShowTrafficLimit
+	}
+	if req.ShowTrafficResetCycle != nil {
+		updateData["show_traffic_reset_cycle"] = *req.ShowTrafficResetCycle
+	}
+
 	updateData["updated_at"] = time.Now()
 
 	// 更新数据库
@@ -1153,6 +1225,52 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 		}
 		if err := alertService.SaveServerNotificationChannels(serverID, channels); err != nil {
 			facades.Log().Warningf("保存服务器通知渠道配置失败: %v", err)
+		}
+	}
+
+	// 如果更新了Agent配置，通过WebSocket发送配置更新消息
+	agentConfigUpdated := req.AgentTimezone != nil || req.AgentMetricsInterval != nil ||
+		req.AgentDetailInterval != nil || req.AgentSystemInterval != nil ||
+		req.AgentHeartbeatInterval != nil || req.AgentLogPath != nil
+
+	if agentConfigUpdated {
+		wsService := services.GetWebSocketService()
+		configMessage := map[string]interface{}{
+			"type": "command",
+			"command": "update_config",
+			"data": make(map[string]interface{}),
+		}
+		configData := configMessage["data"].(map[string]interface{})
+
+		// 获取更新后的配置值
+		serverRepo := repositories.GetServerRepository()
+		updatedServer, err := serverRepo.GetByID(serverID)
+		if err == nil && updatedServer != nil {
+			if updatedServer.AgentTimezone != "" {
+				configData["timezone"] = updatedServer.AgentTimezone
+			}
+			if updatedServer.AgentMetricsInterval > 0 {
+				configData["metrics_interval"] = updatedServer.AgentMetricsInterval
+			}
+			if updatedServer.AgentDetailInterval > 0 {
+				configData["detail_interval"] = updatedServer.AgentDetailInterval
+			}
+			if updatedServer.AgentSystemInterval > 0 {
+				configData["system_interval"] = updatedServer.AgentSystemInterval
+			}
+			if updatedServer.AgentHeartbeatInterval > 0 {
+				configData["heartbeat_interval"] = updatedServer.AgentHeartbeatInterval
+			}
+			if updatedServer.AgentLogPath != "" {
+				configData["log_path"] = updatedServer.AgentLogPath
+			}
+
+			// 发送配置更新消息
+			if err := wsService.SendMessage(serverID, configMessage); err != nil {
+				facades.Log().Warningf("发送Agent配置更新消息失败: %v", err)
+			} else {
+				facades.Log().Infof("成功发送Agent配置更新消息到服务器: %s", serverID)
+			}
 		}
 	}
 

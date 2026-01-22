@@ -33,6 +33,7 @@ func (kernel Kernel) Migrations() []schema.Migration {
 		&migrations.M20250129000018CreateServerTrafficUsageTable{},
 		&migrations.M20250129000019CreateServiceMonitorAlertsTable{},
 		&migrations.M20250129000020CreateServiceMonitorRuleServersTable{},
+		&migrations.M20250121000001AddAgentConfigAndDisplayFlagsToServers{},
 	}
 }
 

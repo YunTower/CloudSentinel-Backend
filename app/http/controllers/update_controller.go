@@ -223,7 +223,16 @@ func (r *UpdateController) checkVersion(ctx http.Context, releaseUrl string, inc
 	if createdAt, ok := releaseInfo.Result["created_at"].(string); ok && createdAt != "" {
 		parsedTime, parseErr := time.Parse(time.RFC3339, createdAt)
 		if parseErr == nil {
-			publishTime = parsedTime.Format("2006-01-02 15:04:05")
+			// 加载上海时区
+			shanghaiLocation, err := time.LoadLocation("Asia/Shanghai")
+			if err == nil {
+				// 转换为上海时间
+				shanghaiTime := parsedTime.In(shanghaiLocation)
+				publishTime = shanghaiTime.Format("2006-01-02 15:04:05")
+			} else {
+				// 如果加载时区失败，使用 UTC 时间
+				publishTime = parsedTime.Format("2006-01-02 15:04:05")
+			}
 		} else {
 			publishTime = createdAt
 		}
