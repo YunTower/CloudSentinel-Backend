@@ -48,9 +48,9 @@ func (c *UpdateCommand) Extend() command.Extend {
 				Usage: "跳过数据库迁移",
 			},
 			&command.BoolFlag{
-				Name:  "yes",
+				Name:    "yes",
 				Aliases: []string{"y"},
-				Usage: "跳过确认提示",
+				Usage:   "跳过确认提示",
 			},
 		},
 	}
@@ -130,9 +130,12 @@ func (c *UpdateCommand) Handle(ctx console.Context) error {
 			PrintInfo(message)
 		case "restarting":
 			PrintInfo(message)
+			PrintSuccess("更新已完成！")
+			PrintInfo("服务正在重启，请稍候...")
 			PrintWarning("服务重启后，当前命令将退出")
 		case "completed":
 			PrintSuccess(message)
+			PrintInfo("更新成功完成！")
 		case "error":
 			PrintError(message)
 		default:
@@ -142,7 +145,7 @@ func (c *UpdateCommand) Handle(ctx console.Context) error {
 
 	options := services.UpdateOptions{
 		Force:          forceFlag,
-		SkipMigration: skipMigrationFlag,
+		SkipMigration:  skipMigrationFlag,
 		StatusCallback: statusCallback,
 		ReleaseURL:     "https://api.github.com/repos/YunTower/CloudSentinel/releases/latest",
 	}
@@ -153,4 +156,3 @@ func (c *UpdateCommand) Handle(ctx console.Context) error {
 
 	return nil
 }
-
