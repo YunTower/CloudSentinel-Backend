@@ -32,6 +32,8 @@ type AgentMessageHandler interface {
 	HandleNetworkInfo(data map[string]interface{}, conn *AgentConnection) error
 	// HandleSwapInfo 处理Swap内存消息
 	HandleSwapInfo(data map[string]interface{}, conn *AgentConnection) error
+	// HandleAgentConfig 处理Agent配置消息
+	HandleAgentConfig(data map[string]interface{}, conn *AgentConnection) error
 }
 
 // FrontendMessageHandler Frontend 消息处理器接口
@@ -445,6 +447,53 @@ func (h *agentMessageHandler) HandleSwapInfo(data map[string]interface{}, conn *
 	}
 
 	return h.saver.SaveSwapInfo(conn.GetServerID(), swapData)
+}
+
+// HandleAgentConfig 处理Agent配置消息
+func (h *agentMessageHandler) HandleAgentConfig(data map[string]interface{}, conn *AgentConnection) error {
+	if conn.GetState() != StateAuthenticated {
+		return errors.New("未认证")
+	}
+
+	configData, ok := data["data"].(map[string]interface{})
+	if !ok {
+		return errors.New("配置数据格式错误")
+	}
+
+	serverID := conn.GetServerID()
+	serverRepo := repositories.NewServerRepository()
+
+	// 构建更新数据
+	updateData := make(map[string]interface{})
+
+	if timezone, ok := configData["timezone"].(string); ok && timezone != "" {
+		updateData["agent_timezone"] = timezone
+	}
+	if metricsInterval, ok := configData["metrics_interval"].(float64); ok && metricsInterval > 0 {
+		updateData["agent_metrics_interval"] = int(metricsInterval)
+	}
+	if detailInterval, ok := configData["detail_interval"].(float64); ok && detailInterval > 0 {
+		updateData["agent_detail_interval"] = int(detailInterval)
+	}
+	if systemInterval, ok := configData["system_interval"].(float64); ok && systemInterval > 0 {
+		updateData["agent_system_interval"] = int(systemInterval)
+	}
+	if heartbeatInterval, ok := configData["heartbeat_interval"].(float64); ok && heartbeatInterval > 0 {
+		updateData["agent_heartbeat_interval"] = int(heartbeatInterval)
+	}
+	if logPath, ok := configData["log_path"].(string); ok && logPath != "" {
+		updateData["agent_log_path"] = logPath
+	}
+
+	if len(updateData) > 0 {
+		if err := serverRepo.Update(serverID, updateData); err != nil {
+			facades.Log().Channel("websocket").Errorf("更新Agent配置失败: %v", err)
+			return fmt.Errorf("更新Agent配置失败: %w", err)
+		}
+		facades.Log().Channel("websocket").Infof("成功更新Agent配置: server_id=%s", serverID)
+	}
+
+	return nil
 }
 
 // frontendMessageHandler Frontend 消息处理器实现
