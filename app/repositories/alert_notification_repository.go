@@ -2,8 +2,10 @@ package repositories
 
 import (
 	"encoding/json"
+	"strings"
 
 	"goravel/app/models"
+	"goravel/app/services"
 
 	"github.com/goravel/framework/facades"
 )
@@ -38,6 +40,24 @@ func (r *AlertNotificationRepository) GetAll() ([]*models.AlertNotification, err
 
 // UpdateConfig 更新通知配置
 func (r *AlertNotificationRepository) UpdateConfig(notificationType string, config map[string]interface{}) error {
+	if notificationType == "email" {
+		if v, ok := config["password"].(string); ok && v != "" {
+			if !strings.HasPrefix(v, "enc:") {
+				if enc, err := services.EncryptStringWithAppKey(v); err == nil {
+					config["password"] = enc
+				}
+			}
+		}
+	}
+	if notificationType == "webhook" {
+		if v, ok := config["webhook"].(string); ok && v != "" {
+			if !strings.HasPrefix(v, "enc:") {
+				if enc, err := services.EncryptStringWithAppKey(v); err == nil {
+					config["webhook"] = enc
+				}
+			}
+		}
+	}
 	configJson, err := json.Marshal(config)
 	if err != nil {
 		return err
