@@ -1411,7 +1411,7 @@ func (c *ServerController) ResetAgentKey(ctx http.Context) http.Response {
 	wsService := services.GetWebSocketService()
 	wsService.Unregister(serverID)
 
-	facades.Log().Infof("成功重置服务器通信密钥: %s, 新密钥: %s", serverID, newAgentKey)
+	facades.Log().Infof("成功重置服务器通信密钥: %s", serverID)
 
 	return ctx.Response().Json(http.StatusOK, http.Json{
 		"status":  true,
