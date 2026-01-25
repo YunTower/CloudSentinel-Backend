@@ -74,20 +74,12 @@ func (h *agentMessageHandler) HandleAuth(data map[string]interface{}, conn *Agen
 
 	// 验证 key 长度（UUID 格式应该是 36 个字符）
 	if len(agentKey) != 36 {
-		keyPreview := agentKey
-		if len(keyPreview) > 8 {
-			keyPreview = keyPreview[:8] + "..."
-		}
-		facades.Log().Channel("websocket").Warningf("警告: 接收到的 agent key 长度异常 (%d)，正常应该是 36 个字符，key: %s", len(agentKey), keyPreview)
+		facades.Log().Channel("websocket").Warningf("警告: 接收到的 agent key 长度异常 (%d)，正常应该是 36 个字符", len(agentKey))
 	}
 
 	authType, _ := authData["type"].(string)
 	if authType != "server" {
-		keyPreview := agentKey
-		if len(keyPreview) > 8 {
-			keyPreview = keyPreview[:8] + "..."
-		}
-		facades.Log().Channel("websocket").Warningf("认证失败: 不支持的认证类型 %s (IP: %s, key: %s)", authType, conn.GetRemoteAddr(), keyPreview)
+		facades.Log().Channel("websocket").Warningf("认证失败: 不支持的认证类型 %s (IP: %s)", authType, conn.GetRemoteAddr())
 		return errors.New("不支持的认证类型")
 	}
 
@@ -96,15 +88,11 @@ func (h *agentMessageHandler) HandleAuth(data map[string]interface{}, conn *Agen
 
 	// 验证agent key和IP并获取server_id
 	clientIP := conn.GetRemoteAddr()
-	keyPreview := agentKey
-	if len(keyPreview) > 8 {
-		keyPreview = keyPreview[:8] + "..."
-	}
-	facades.Log().Channel("websocket").Infof("尝试认证: IP=%s, key=%s (完整长度: %d)", clientIP, keyPreview, len(agentKey))
+	facades.Log().Channel("websocket").Infof("尝试认证: IP=%s", clientIP)
 
 	serverID, err := h.validator.ValidateAgentAuth(agentKey, clientIP)
 	if err != nil {
-		facades.Log().Channel("websocket").Warningf("认证失败: %v (IP: %s, key: %s)", err, clientIP, keyPreview)
+		facades.Log().Channel("websocket").Warningf("认证失败: %v (IP: %s)", err, clientIP)
 		return errors.New("认证失败: " + err.Error())
 	}
 

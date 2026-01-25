@@ -6,6 +6,8 @@ import (
 	"goravel/app/repositories"
 	"goravel/app/services"
 	ws "goravel/app/services/websocket"
+	nethttp "net/http"
+	neturl "net/url"
 
 	"github.com/google/uuid"
 	"github.com/goravel/framework/contracts/http"
@@ -24,6 +26,27 @@ type WebSocketController struct {
 func NewWebSocketController() *WebSocketController {
 	// 创建配置
 	config := ws.DefaultConfig()
+	allowedURL := facades.Config().GetString("http.url")
+	config.CheckOrigin = func(r interface{}) bool {
+		req, ok := r.(*nethttp.Request)
+		if !ok || req == nil {
+			return false
+		}
+		u, err := neturl.Parse(allowedURL)
+		if err != nil || u.Host == "" {
+			return false
+		}
+		allowedHost := u.Host
+		origin := req.Header.Get("Origin")
+		if origin == "" {
+			return req.Host == allowedHost
+		}
+		ou, err := neturl.Parse(origin)
+		if err != nil || ou.Host == "" {
+			return false
+		}
+		return ou.Host == allowedHost
+	}
 
 	// 创建升级器
 	upgrader := ws.NewUpgrader(config)
