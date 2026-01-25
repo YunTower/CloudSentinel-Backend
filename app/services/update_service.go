@@ -334,7 +334,27 @@ func (s *UpdateService) ExecuteUpdate(options UpdateOptions) error {
 		facades.Log().Warningf("设置可执行权限失败: %v", err)
 	}
 
-	setStatus("unpacking", 98, "文件替换完成")
+	// 验证文件替换是否成功
+	if _, err := os.Stat(currentExecPath); err != nil {
+		setStatus("error", 0, fmt.Sprintf("验证替换文件失败: %v", err))
+		needRestore = true
+		return fmt.Errorf("验证替换文件失败: %v", err)
+	}
+
+	// 验证文件大小是否匹配
+	extractedInfo, err := os.Stat(extractedBinaryPath)
+	if err == nil {
+		replacedInfo, err := os.Stat(currentExecPath)
+		if err == nil {
+			if extractedInfo.Size() != replacedInfo.Size() {
+				setStatus("error", 0, "文件替换后大小不匹配")
+				needRestore = true
+				return fmt.Errorf("文件替换后大小不匹配")
+			}
+		}
+	}
+
+	setStatus("unpacking", 98, "文件替换完成并已验证")
 
 	// 清理解压目录和下载的压缩文件
 	facades.Log().Infof("开始清理临时文件: 解压目录=%s, 压缩文件=%s", extractDir, downloadPath)
@@ -354,10 +374,14 @@ func (s *UpdateService) ExecuteUpdate(options UpdateOptions) error {
 	// 标记更新成功，defer 会清理备份文件
 	needRestore = false
 
+	setStatus("completed", 100, "更新完成！")
+
+	// 延迟一下，确保状态已保存到缓存
+	time.Sleep(2 * time.Second)
+
 	// 重启程序
 	setStatus("restarting", 99, "正在重启服务...")
 
-	// 延迟一下，确保状态已保存
 	time.Sleep(1 * time.Second)
 
 	// 执行重启
@@ -368,7 +392,6 @@ func (s *UpdateService) ExecuteUpdate(options UpdateOptions) error {
 		return err
 	}
 
-	setStatus("completed", 100, "更新完成！")
 	return nil
 }
 
@@ -1132,7 +1155,11 @@ func (s *UpdateService) RestartApplication() error {
 
 	facades.Log().Infof("新进程已启动，PID: %d，正在终止当前进程 PID: %d", cmd.Process.Pid, pid)
 
-	time.Sleep(500 * time.Millisecond)
+	if runtime.GOOS == "windows" {
+		time.Sleep(3 * time.Second)
+	} else {
+		time.Sleep(2 * time.Second)
+	}
 
 	// 终止当前进程
 	if runtime.GOOS == "windows" {

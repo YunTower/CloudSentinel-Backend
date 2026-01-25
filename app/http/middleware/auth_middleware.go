@@ -34,9 +34,8 @@ func setUserContext(ctx http.Context, payload interface{}) {
 	ctx.WithValue("user_id", key)
 	ctx.WithValue("guard", guard)
 
-	// 设置用户类型
 	userType := "guest"
-	if key == "1" {
+	if guard == "admin" {
 		userType = "admin"
 	}
 	ctx.WithValue("user_type", userType)
@@ -91,10 +90,9 @@ func authenticate(ctx http.Context, requireAdmin bool) bool {
 		return !handleAuthError(ctx, err)
 	}
 
-	key := getPayloadField(payload, "Key")
+	guard := getPayloadField(payload, "Guard")
 
-	// 检查管理员权限
-	if requireAdmin && key != "1" {
+	if requireAdmin && guard != "admin" {
 		utils.ErrorResponse(ctx, 403, "权限不足", "INSUFFICIENT_PERMISSIONS")
 		return false
 	}

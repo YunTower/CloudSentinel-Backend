@@ -261,8 +261,13 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 		user.ID = uint(time.Now().UnixNano()%1000000 + 100000) // 生成 100000-1099999 范围内的唯一 ID
 	}
 
-	// 使用 facades.Auth() 生成 JWT token
-	token, tokenErr := facades.Auth(ctx).Login(user)
+	var token string
+	var tokenErr error
+	if loginPost.Type == "admin" {
+		token, tokenErr = facades.Auth(ctx).Guard("admin").Login(user)
+	} else {
+		token, tokenErr = facades.Auth(ctx).Guard("user").Login(user)
+	}
 	if tokenErr != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  false,

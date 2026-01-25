@@ -169,7 +169,8 @@ func (r *UpdateController) UpdatePanel(ctx http.Context) http.Response {
 		Progress: 0,
 		Message:  "正在初始化更新任务...",
 	}
-	if err := facades.Cache().Put("update_status", initialStatus, 10*time.Minute); err != nil {
+	// 使用较长的缓存时间，确保更新过程中状态不会丢失
+	if err := facades.Cache().Put("update_status", initialStatus, 15*time.Minute); err != nil {
 		facades.Log().Errorf("设置更新状态失败: %v", err)
 		return utils.ErrorResponseWithError(ctx, 500, "设置更新状态失败", err, "CACHE_ERROR")
 	}
@@ -182,7 +183,13 @@ func (r *UpdateController) UpdatePanel(ctx http.Context) http.Response {
 				Progress: progress,
 				Message:  message,
 			}
-			if err := facades.Cache().Put("update_status", status, 10*time.Minute); err != nil {
+			// 对于 completed 状态，保存更长时间（5分钟），确保重启后可以读取
+			// 对于其他状态，使用默认的 10 分钟
+			cacheDuration := 10 * time.Minute
+			if step == "completed" {
+				cacheDuration = 5 * time.Minute
+			}
+			if err := facades.Cache().Put("update_status", status, cacheDuration); err != nil {
 				facades.Log().Errorf("更新状态失败: %v", err)
 			}
 		}
@@ -200,8 +207,26 @@ func (r *UpdateController) UpdatePanel(ctx http.Context) http.Response {
 		}
 
 		// 保持完成状态一段时间，以便前端读取
-		time.Sleep(1 * time.Minute)
-		facades.Cache().Forget("update_status")
+		// 如果状态是 completed，等待更长时间以确保前端可以读取
+		time.Sleep(2 * time.Minute)
+		// 只有在状态不是 completed 时才清除缓存
+		// completed 状态应该保留更长时间，让前端有机会读取
+		if facades.Cache().Has("update_status") {
+			cachedValue := facades.Cache().Get("update_status", nil)
+			if cachedValue != nil {
+				var status UpdateStatus
+				if cachedStatus, ok := cachedValue.(UpdateStatus); ok {
+					status = cachedStatus
+				} else {
+					if err := facades.Cache().Get("update_status", &status); err == nil {
+						// 如果状态不是 completed，清除缓存
+						if status.Step != "completed" {
+							facades.Cache().Forget("update_status")
+						}
+					}
+				}
+			}
+		}
 	}()
 
 	return utils.SuccessResponse(ctx, "更新任务已启动")

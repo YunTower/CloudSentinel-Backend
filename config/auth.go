@@ -32,6 +32,10 @@ func init() {
 				"driver":   "jwt",
 				"provider": "users",
 			},
+			"admin": map[string]any{
+				"driver":   "jwt",
+				"provider": "users",
+			},
 		},
 
 		// 使用 ORM provider
