@@ -63,7 +63,7 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 	settings := utils.GetSettings([]string{
 		"allow_guest_login", "guest_password_enabled", "guest_password_hash",
 		"admin_username", "hide_sensitive_info", "session_timeout",
-		"max_login_attempts", "lockout_duration", "jwt_secret", "jwt_expiration",
+		"max_login_attempts", "lockout_duration", "jwt_expiration",
 	})
 
 	allowGuestLogin := utils.GetSetting("allow_guest_login", "false")
@@ -74,7 +74,6 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 	sessionTimeoutSeconds := utils.GetSetting("session_timeout", "3600")
 	maxLoginAttempts := utils.GetSetting("max_login_attempts", "5")
 	lockoutDurationSeconds := utils.GetSetting("lockout_duration", "900")
-	jwtSecret := settings["jwt_secret"]
 	jwtExpirationSeconds := utils.GetSetting("jwt_expiration", "86400")
 
 	parseInt := func(s string, def int64) int64 {
@@ -97,7 +96,6 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 		"sessionTimeout":    sessionMinutes,
 		"maxLoginAttempts":  parseInt(maxLoginAttempts, 5),
 		"lockoutDuration":   lockoutMinutes,
-		"jwtSecret":         jwtSecret,
 		"jwtExpiration":     jwtHours,
 		"adminUsername":     adminUsername,
 	})
