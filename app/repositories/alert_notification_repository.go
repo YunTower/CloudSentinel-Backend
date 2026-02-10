@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"goravel/app/models"
-	"goravel/app/services"
+	"goravel/app/utils/secret"
 
 	"github.com/goravel/framework/facades"
 )
@@ -43,7 +43,7 @@ func (r *AlertNotificationRepository) UpdateConfig(notificationType string, conf
 	if notificationType == "email" {
 		if v, ok := config["password"].(string); ok && v != "" {
 			if !strings.HasPrefix(v, "enc:") {
-				if enc, err := services.EncryptStringWithAppKey(v); err == nil {
+				if enc, err := secret.EncryptStringWithAppKey(v); err == nil {
 					config["password"] = enc
 				}
 			}
@@ -52,7 +52,7 @@ func (r *AlertNotificationRepository) UpdateConfig(notificationType string, conf
 	if notificationType == "webhook" {
 		if v, ok := config["webhook"].(string); ok && v != "" {
 			if !strings.HasPrefix(v, "enc:") {
-				if enc, err := services.EncryptStringWithAppKey(v); err == nil {
+				if enc, err := secret.EncryptStringWithAppKey(v); err == nil {
 					config["webhook"] = enc
 				}
 			}
