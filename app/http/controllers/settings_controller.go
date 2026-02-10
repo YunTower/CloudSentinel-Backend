@@ -42,6 +42,7 @@ func (r *SettingsController) GetPublicSettings(ctx http.Context) http.Response {
 
 func (r *SettingsController) GetPanelSettings(ctx http.Context) http.Response {
 	panelTitle := utils.GetSetting("panel_title", "CloudSentinel 云哨")
+	logRetentionDays := utils.GetSetting("log_retention_days", "30")
 
 	// 提取当前版本类型
 	currentVersion := facades.Config().GetString("app.version", "0.0.1-release")
@@ -53,6 +54,7 @@ func (r *SettingsController) GetPanelSettings(ctx http.Context) http.Response {
 
 	return utils.SuccessResponse(ctx, "success", map[string]any{
 		"panel_title":          panelTitle,
+		"log_retention_days":   logRetentionDays,
 		"current_version":      currentVersion,
 		"current_version_type": currentVersionType,
 	})
@@ -161,6 +163,8 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 
 func (r *SettingsController) UpdatePanelSettings(ctx http.Context) http.Response {
 	title := ctx.Request().Input("title")
+	logRetentionDays := ctx.Request().Input("log_retention_days")
+
 	if title == "" {
 		return utils.ErrorResponse(ctx, 422, "缺少标题参数")
 	}
@@ -168,6 +172,15 @@ func (r *SettingsController) UpdatePanelSettings(ctx http.Context) http.Response
 	settingRepo := repositories.GetSystemSettingRepository()
 	if err := settingRepo.SetValue("panel_title", title); err != nil {
 		return utils.ErrorResponseWithError(ctx, 500, "更新失败", err)
+	}
+
+	if logRetentionDays != "" {
+		// 验证是否为数字
+		if _, err := strconv.Atoi(logRetentionDays); err == nil {
+			if err := settingRepo.SetValue("log_retention_days", logRetentionDays); err != nil {
+				return utils.ErrorResponseWithError(ctx, 500, "更新日志保留天数失败", err)
+			}
+		}
 	}
 
 	return utils.SuccessResponse(ctx, "success")
