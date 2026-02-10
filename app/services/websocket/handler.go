@@ -34,6 +34,12 @@ type AgentMessageHandler interface {
 	HandleSwapInfo(data map[string]interface{}, conn *AgentConnection) error
 	// HandleAgentConfig 处理Agent配置消息
 	HandleAgentConfig(data map[string]interface{}, conn *AgentConnection) error
+	// HandleProcessInfo 处理进程信息消息
+	HandleProcessInfo(data map[string]interface{}, conn *AgentConnection) error
+	// HandleGPUInfo 处理GPU信息消息
+	HandleGPUInfo(data map[string]interface{}, conn *AgentConnection) error
+	// HandleAgentLogs 处理Agent日志消息
+	HandleAgentLogs(data map[string]interface{}, conn *AgentConnection) error
 }
 
 // FrontendMessageHandler Frontend 消息处理器接口
@@ -260,6 +266,69 @@ func (h *agentMessageHandler) handleKeyExchange(serverID, agentPublicKey string,
 	}
 
 	facades.Log().Channel("websocket").Infof("密钥交换成功: server_id=%s, encryption_enabled=true", serverID)
+
+	return nil
+}
+
+// HandleProcessInfo 处理进程信息消息
+func (h *agentMessageHandler) HandleProcessInfo(data map[string]interface{}, conn *AgentConnection) error {
+	processData, ok := data["data"].(map[string]interface{})
+	if !ok {
+		return errors.New("进程数据格式错误")
+	}
+
+	serverID := conn.GetServerID()
+	if serverID == "" {
+		return errors.New("未认证的连接")
+	}
+
+	// 异步保存数据
+	if err := h.saver.SaveProcessInfo(serverID, processData); err != nil {
+		facades.Log().Channel("websocket").Errorf("保存进程信息失败: %v", err)
+		return err
+	}
+
+	return nil
+}
+
+// HandleGPUInfo 处理GPU信息消息
+func (h *agentMessageHandler) HandleGPUInfo(data map[string]interface{}, conn *AgentConnection) error {
+	gpuData, ok := data["data"].(map[string]interface{})
+	if !ok {
+		return errors.New("GPU数据格式错误")
+	}
+
+	serverID := conn.GetServerID()
+	if serverID == "" {
+		return errors.New("未认证的连接")
+	}
+
+	// 异步保存数据
+	if err := h.saver.SaveGPUInfo(serverID, gpuData); err != nil {
+		facades.Log().Channel("websocket").Errorf("保存GPU信息失败: %v", err)
+		return err
+	}
+
+	return nil
+}
+
+// HandleAgentLogs 处理Agent日志消息
+func (h *agentMessageHandler) HandleAgentLogs(data map[string]interface{}, conn *AgentConnection) error {
+	logsData, ok := data["data"].([]interface{})
+	if !ok {
+		return errors.New("日志数据格式错误")
+	}
+
+	serverID := conn.GetServerID()
+	if serverID == "" {
+		return errors.New("未认证的连接")
+	}
+
+	// 异步保存数据
+	if err := h.saver.SaveAgentLogs(serverID, logsData); err != nil {
+		facades.Log().Channel("websocket").Errorf("保存Agent日志失败: %v", err)
+		return err
+	}
 
 	return nil
 }
