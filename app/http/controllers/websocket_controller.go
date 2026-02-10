@@ -27,11 +27,19 @@ func NewWebSocketController() *WebSocketController {
 	// 创建配置
 	config := ws.DefaultConfig()
 	allowedURL := facades.Config().GetString("http.url")
+	appEnv := facades.Config().GetString("app.env", "production")
+
 	config.CheckOrigin = func(r interface{}) bool {
 		req, ok := r.(*nethttp.Request)
 		if !ok || req == nil {
 			return false
 		}
+
+		// 开发环境允许所有来源
+		if appEnv == "local" || appEnv == "development" {
+			return true
+		}
+
 		u, err := neturl.Parse(allowedURL)
 		if err != nil || u.Host == "" {
 			return false
@@ -39,13 +47,24 @@ func NewWebSocketController() *WebSocketController {
 		allowedHost := u.Host
 		origin := req.Header.Get("Origin")
 		if origin == "" {
-			return req.Host == allowedHost
+			// 如果没有Origin header，检查Host
+			// 对于localhost/127.0.0.1，两者应该都被接受
+			reqHost := req.Host
+			return reqHost == allowedHost ||
+				   (allowedHost == "localhost" && reqHost == "127.0.0.1") ||
+				   (allowedHost == "127.0.0.1" && reqHost == "localhost") ||
+				   reqHost == "localhost:3000" || reqHost == "127.0.0.1:3000"
 		}
 		ou, err := neturl.Parse(origin)
 		if err != nil || ou.Host == "" {
 			return false
 		}
-		return ou.Host == allowedHost
+		// 对于localhost/127.0.0.1，两者应该都被接受
+		originHost := ou.Host
+		return originHost == allowedHost ||
+			   (allowedHost == "localhost" && (originHost == "127.0.0.1" || originHost == "127.0.0.1:5173")) ||
+			   (allowedHost == "127.0.0.1" && (originHost == "localhost" || originHost == "localhost:5173")) ||
+			   originHost == "localhost:5173" || originHost == "127.0.0.1:5173"
 	}
 
 	// 创建升级器
@@ -182,6 +201,12 @@ func (c *WebSocketController) handleAgentMessage(msgType string, data map[string
 		return c.agentHandler.HandleSwapInfo(data, conn)
 	case ws.MessageTypeAgentConfig:
 		return c.agentHandler.HandleAgentConfig(data, conn)
+	case ws.MessageTypeProcessInfo:
+		return c.agentHandler.HandleProcessInfo(data, conn)
+	case ws.MessageTypeGPUInfo:
+		return c.agentHandler.HandleGPUInfo(data, conn)
+	case ws.MessageTypeAgentLog:
+		return c.agentHandler.HandleAgentLogs(data, conn)
 	default:
 		facades.Log().Channel("websocket").Warning("未知的消息类型: " + msgType)
 		return nil
