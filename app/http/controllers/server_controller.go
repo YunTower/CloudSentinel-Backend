@@ -344,6 +344,8 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 		"agent_key":        server.AgentKey,
 		"created_at":       server.CreatedAt,
 		"updated_at":       server.UpdatedAt,
+		"service_status":   server.ServiceStatus,
+		"gpu_info":         server.GPUInfo,
 	}
 
 	// 添加分组和付费信息
@@ -1001,12 +1003,13 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 		AlertRules             *map[string]interface{} `json:"alert_rules" form:"alert_rules"`
 		NotificationChannels   *map[string]bool        `json:"notification_channels" form:"notification_channels"`
 		// Agent配置字段
-		AgentTimezone          *string `json:"agent_timezone" form:"agent_timezone"`
-		AgentMetricsInterval   *int    `json:"agent_metrics_interval" form:"agent_metrics_interval"`
-		AgentDetailInterval    *int    `json:"agent_detail_interval" form:"agent_detail_interval"`
-		AgentSystemInterval    *int    `json:"agent_system_interval" form:"agent_system_interval"`
-		AgentHeartbeatInterval *int    `json:"agent_heartbeat_interval" form:"agent_heartbeat_interval"`
-		AgentLogPath           *string `json:"agent_log_path" form:"agent_log_path"`
+		AgentTimezone          *string   `json:"agent_timezone" form:"agent_timezone"`
+		AgentMetricsInterval   *int      `json:"agent_metrics_interval" form:"agent_metrics_interval"`
+		AgentDetailInterval    *int      `json:"agent_detail_interval" form:"agent_detail_interval"`
+		AgentSystemInterval    *int      `json:"agent_system_interval" form:"agent_system_interval"`
+		AgentHeartbeatInterval *int      `json:"agent_heartbeat_interval" form:"agent_heartbeat_interval"`
+		AgentLogPath           *string   `json:"agent_log_path" form:"agent_log_path"`
+		MonitoredServices      *[]string `json:"monitored_services" form:"monitored_services"`
 		// 显示开关字段
 		ShowBillingCycle      *bool `json:"show_billing_cycle" form:"show_billing_cycle"`
 		ShowTrafficLimit      *bool `json:"show_traffic_limit" form:"show_traffic_limit"`
@@ -1075,31 +1078,44 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 	}
 
 	// 处理Agent配置字段
+	// 用于发送给Agent的配置更新
+	configUpdate := make(map[string]interface{})
+
 	if req.AgentTimezone != nil {
 		updateData["agent_timezone"] = *req.AgentTimezone
+		configUpdate["agent_timezone"] = *req.AgentTimezone
 	}
 	if req.AgentMetricsInterval != nil {
 		if *req.AgentMetricsInterval > 0 {
 			updateData["agent_metrics_interval"] = *req.AgentMetricsInterval
+			configUpdate["agent_metrics_interval"] = *req.AgentMetricsInterval
 		}
 	}
 	if req.AgentDetailInterval != nil {
 		if *req.AgentDetailInterval > 0 {
 			updateData["agent_detail_interval"] = *req.AgentDetailInterval
+			configUpdate["agent_detail_interval"] = *req.AgentDetailInterval
 		}
 	}
 	if req.AgentSystemInterval != nil {
 		if *req.AgentSystemInterval > 0 {
 			updateData["agent_system_interval"] = *req.AgentSystemInterval
+			configUpdate["agent_system_interval"] = *req.AgentSystemInterval
 		}
 	}
 	if req.AgentHeartbeatInterval != nil {
 		if *req.AgentHeartbeatInterval > 0 {
 			updateData["agent_heartbeat_interval"] = *req.AgentHeartbeatInterval
+			configUpdate["agent_heartbeat_interval"] = *req.AgentHeartbeatInterval
 		}
 	}
 	if req.AgentLogPath != nil {
 		updateData["agent_log_path"] = *req.AgentLogPath
+		configUpdate["agent_log_path"] = *req.AgentLogPath
+	}
+	if req.MonitoredServices != nil {
+		updateData["monitored_services"] = *req.MonitoredServices
+		configUpdate["monitored_services"] = *req.MonitoredServices
 	}
 
 	// 处理显示开关字段
