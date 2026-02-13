@@ -3,8 +3,8 @@ package jobs
 import (
 	"encoding/json"
 	"fmt"
-	"goravel/app/services"
 	"goravel/app/utils/notification"
+	"goravel/app/utils/secret"
 
 	"github.com/goravel/framework/facades"
 )
@@ -33,7 +33,7 @@ func (receiver *SendAlertJob) Handle(args ...any) error {
 		}
 		// 解密敏感字段
 		if config.Password != "" {
-			if dec, err := services.DecryptStringWithAppKey(config.Password); err == nil {
+			if dec, err := secret.DecryptStringWithAppKey(config.Password); err == nil {
 				config.Password = dec
 			}
 		}
@@ -45,7 +45,7 @@ func (receiver *SendAlertJob) Handle(args ...any) error {
 		}
 		// 解密敏感字段
 		if config.Webhook != "" {
-			if dec, err := services.DecryptStringWithAppKey(config.Webhook); err == nil {
+			if dec, err := secret.DecryptStringWithAppKey(config.Webhook); err == nil {
 				config.Webhook = dec
 			}
 		}

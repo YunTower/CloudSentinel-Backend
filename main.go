@@ -87,6 +87,9 @@ func main() {
 	// 初始化日志写入队列
 	_ = services.GetLogWriter()
 
+	// 初始化性能指标批量写入缓冲区
+	_ = services.GetMetricBuffer()
+
 	// Create a channel to listen for OS signals
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -104,6 +107,11 @@ func main() {
 	// Listen for the OS signal
 	go func() {
 		<-quit
+		facades.Log().Info("接收到退出信号，开始优雅关闭...")
+
+		// 停止性能指标批量写入缓冲区
+		services.GetMetricBuffer().Stop()
+
 		if err := facades.Route().Shutdown(); err != nil {
 			facades.Log().Errorf("Route Shutdown error: %v", err)
 		}

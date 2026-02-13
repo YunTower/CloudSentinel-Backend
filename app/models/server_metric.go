@@ -18,6 +18,12 @@ type ServerMetric struct {
 	Uptime          string    `gorm:"column:uptime;size:100" json:"uptime"`
 	Timestamp       time.Time `gorm:"column:timestamp;index" json:"timestamp"`
 
+	// 非数据库字段，用于WebSocket传输
+	SwapUsage      float64 `gorm:"-" json:"swap_usage"`
+	DiskReadSpeed  float64 `gorm:"-" json:"disk_read_speed"`
+	DiskWriteSpeed float64 `gorm:"-" json:"disk_write_speed"`
+	Temperature    float64 `gorm:"-" json:"temperature"`
+
 	orm.Model
 }
 

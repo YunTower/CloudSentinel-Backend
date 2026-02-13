@@ -14,5 +14,7 @@ type AgentDataSaver interface {
 	SaveDiskIO(serverID string, data map[string]interface{}) error
 	SaveNetworkInfo(serverID string, data map[string]interface{}) error
 	SaveSwapInfo(serverID string, data map[string]interface{}) error
+	SaveProcessInfo(serverID string, data map[string]interface{}) error
+	SaveGPUInfo(serverID string, data map[string]interface{}) error
+	SaveAgentLogs(serverID string, logs []interface{}) error
 }
-

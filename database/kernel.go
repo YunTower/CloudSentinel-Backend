@@ -34,6 +34,11 @@ func (kernel Kernel) Migrations() []schema.Migration {
 		&migrations.M20250129000019CreateServiceMonitorAlertsTable{},
 		&migrations.M20250129000020CreateServiceMonitorRuleServersTable{},
 		&migrations.M20250121000001AddAgentConfigAndDisplayFlagsToServers{},
+		&migrations.M20260205000001AddMonitoredServicesToServersTable{},
+		&migrations.AddLogRetentionSetting{},
+		&migrations.CreateAgentLogsTable{},
+		&migrations.M20260206000001AddServiceStatusToServersTable{},
+		&migrations.M20260206000002AddGPUInfoToServersTable{},
 	}
 }
 
