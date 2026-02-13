@@ -45,8 +45,17 @@ var serviceOnce sync.Once
 func GetWebSocketService() *WebSocketService {
 	serviceOnce.Do(func() {
 		ctx, cancel := context.WithCancel(context.Background())
+		alertSvc := NewAlertService()
 		wsService = &WebSocketService{
-			manager: ws.NewConnectionManager(),
+			manager: ws.NewConnectionManager(
+				ws.WithServerStatusNotifier(func(serverID string, isOnline bool) {
+					if isOnline {
+						alertSvc.NotifyServerOnline(serverID)
+					} else {
+						alertSvc.NotifyServerOffline(serverID)
+					}
+				}),
+			),
 			ctx:     ctx,
 			cancel:  cancel,
 		}

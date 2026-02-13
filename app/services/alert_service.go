@@ -8,6 +8,7 @@ import (
 	"goravel/app/jobs"
 	"goravel/app/models"
 	"goravel/app/repositories"
+	"goravel/app/utils"
 	"goravel/app/utils/notification"
 	"html/template"
 	"time"
@@ -701,4 +702,98 @@ func (s *AlertService) CheckExpiration(serverID string) error {
 	}
 
 	return nil
+}
+
+// NotifyServerOffline 发送服务器离线告警
+func (s *AlertService) NotifyServerOffline(serverID string) {
+	if !utils.GetSettingBool("alert_server_offline_enabled", false) {
+		return
+	}
+	cacheKey := fmt.Sprintf("alert_cooldown:%s:server_offline", serverID)
+	if facades.Cache().Get(cacheKey) != nil {
+		return
+	}
+	_ = facades.Cache().Put(cacheKey, true, 5*time.Minute)
+
+	emailConfig, webhookConfig, err := s.getNotificationConfigs(serverID)
+	if err != nil || (!emailConfig.Enabled && !webhookConfig.Enabled) {
+		return
+	}
+
+	serverRepo := repositories.GetServerRepository()
+	server, _ := serverRepo.GetByID(serverID)
+	serverName, serverIP := serverID, "未知"
+	if server != nil {
+		serverName, serverIP = server.Name, server.IP
+	}
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	title := fmt.Sprintf("[告警] %s - 服务器离线", serverName)
+	content := fmt.Sprintf("🚨 服务器离线告警\n\n服务器: %s (%s)\n离线时间: %s\n\n请检查该服务器或 Agent 状态。",
+		serverName, serverIP, timestamp)
+
+	if emailConfig.Enabled {
+		configJson, _ := json.Marshal(emailConfig)
+		_ = facades.Queue().Job(&jobs.SendAlertJob{
+			Channel: "email",
+			Config:  string(configJson),
+			Subject: title,
+			Content: content,
+		}).Dispatch()
+	}
+	if webhookConfig.Enabled {
+		configJson, _ := json.Marshal(webhookConfig)
+		_ = facades.Queue().Job(&jobs.SendAlertJob{
+			Channel: "webhook",
+			Config:  string(configJson),
+			Subject: title,
+			Content: content,
+		}).Dispatch()
+	}
+}
+
+// NotifyServerOnline 发送服务器上线告警（由连接管理器在服务器从离线恢复上线时调用）
+func (s *AlertService) NotifyServerOnline(serverID string) {
+	if !utils.GetSettingBool("alert_server_online_enabled", false) {
+		return
+	}
+	cacheKey := fmt.Sprintf("alert_cooldown:%s:server_online", serverID)
+	if facades.Cache().Get(cacheKey) != nil {
+		return
+	}
+	_ = facades.Cache().Put(cacheKey, true, 2*time.Minute)
+
+	emailConfig, webhookConfig, err := s.getNotificationConfigs(serverID)
+	if err != nil || (!emailConfig.Enabled && !webhookConfig.Enabled) {
+		return
+	}
+
+	serverRepo := repositories.GetServerRepository()
+	server, _ := serverRepo.GetByID(serverID)
+	serverName, serverIP := serverID, "未知"
+	if server != nil {
+		serverName, serverIP = server.Name, server.IP
+	}
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	title := fmt.Sprintf("[恢复] %s - 服务器已上线", serverName)
+	content := fmt.Sprintf("✅ 服务器已上线\n\n服务器: %s (%s)\n上线时间: %s",
+		serverName, serverIP, timestamp)
+
+	if emailConfig.Enabled {
+		configJson, _ := json.Marshal(emailConfig)
+		_ = facades.Queue().Job(&jobs.SendAlertJob{
+			Channel: "email",
+			Config:  string(configJson),
+			Subject: title,
+			Content: content,
+		}).Dispatch()
+	}
+	if webhookConfig.Enabled {
+		configJson, _ := json.Marshal(webhookConfig)
+		_ = facades.Queue().Job(&jobs.SendAlertJob{
+			Channel: "webhook",
+			Config:  string(configJson),
+			Subject: title,
+			Content: content,
+		}).Dispatch()
+	}
 }

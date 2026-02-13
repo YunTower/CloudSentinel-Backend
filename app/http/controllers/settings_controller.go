@@ -124,6 +124,26 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 		return notifyConfig{Enabled: notification.Enabled, Config: cfg}
 	}
 
+	// isEmailChannelConfigured 邮件渠道已启用且具备最小有效配置
+	isEmailChannelConfigured := func(email notifyConfig) bool {
+		if !email.Enabled {
+			return false
+		}
+		smtp, _ := email.Config["smtp"].(string)
+		from, _ := email.Config["from"].(string)
+		to, _ := email.Config["to"].(string)
+		return strings.TrimSpace(smtp) != "" && strings.TrimSpace(from) != "" && strings.TrimSpace(to) != ""
+	}
+
+	// isWebhookChannelConfigured Webhook 渠道已启用且具备最小有效配置
+	isWebhookChannelConfigured := func(wh notifyConfig) bool {
+		if !wh.Enabled {
+			return false
+		}
+		url, _ := wh.Config["webhook"].(string)
+		return strings.TrimSpace(url) != "" && (strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://"))
+	}
+
 	email := fetchNotify("email")
 	webhook := fetchNotify("webhook")
 
@@ -149,6 +169,14 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 		"platform":  webhook.Config["platform"],
 	}
 
+	// 是否已配置任意一个通知渠道
+	hasNotificationChannel := isEmailChannelConfigured(email) || isWebhookChannelConfigured(webhook)
+
+	// 服务器离线/上线告警开关
+	settingRepo := repositories.GetSystemSettingRepository()
+	alertServerOfflineEnabled := settingRepo.GetBool("alert_server_offline_enabled", false)
+	alertServerOnlineEnabled := settingRepo.GetBool("alert_server_online_enabled", false)
+
 	return ctx.Response().Success().Json(http.Json{
 		"status":  true,
 		"message": "success",
@@ -157,6 +185,9 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 				"email":   emailData,
 				"webhook": webhookData,
 			},
+			"hasNotificationChannel":   hasNotificationChannel,
+			"alertServerOfflineEnabled": alertServerOfflineEnabled,
+			"alertServerOnlineEnabled":  alertServerOnlineEnabled,
 		},
 	})
 }
@@ -367,6 +398,7 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 
 func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Response {
 	notificationRepo := repositories.GetAlertNotificationRepository()
+	settingRepo := repositories.GetSystemSettingRepository()
 
 	emailEnabled := ctx.Request().Input("notifications.email.enabled") == "true"
 	emailCfg := map[string]any{
@@ -408,6 +440,27 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 	}
 	if err := writeNotify("webhook", webhookEnabled, webhookCfg); err != nil {
 		return utils.ErrorResponseWithError(ctx, 500, "更新Webhook通知失败", err)
+	}
+
+	// 服务器离线/上线告警开关
+	alertServerOfflineEnabled := ctx.Request().Input("alertServerOfflineEnabled") == "true"
+	alertServerOnlineEnabled := ctx.Request().Input("alertServerOnlineEnabled") == "true"
+
+	emailConfigured := emailEnabled && strings.TrimSpace(fmt.Sprint(emailCfg["smtp"])) != "" &&
+		strings.TrimSpace(fmt.Sprint(emailCfg["from"])) != "" && strings.TrimSpace(fmt.Sprint(emailCfg["to"])) != ""
+	webhookURL := strings.TrimSpace(fmt.Sprint(webhookCfg["webhook"]))
+	webhookConfigured := webhookEnabled && webhookURL != "" && (strings.HasPrefix(webhookURL, "http://") || strings.HasPrefix(webhookURL, "https://"))
+	hasChannel := emailConfigured || webhookConfigured
+
+	if (alertServerOfflineEnabled || alertServerOnlineEnabled) && !hasChannel {
+		return utils.ErrorResponse(ctx, 422, "请先配置并启用至少一个通知渠道（邮件或 Webhook）后再开启服务器离线/上线告警")
+	}
+
+	if err := settingRepo.SetValue("alert_server_offline_enabled", map[bool]string{true: "true", false: "false"}[alertServerOfflineEnabled]); err != nil {
+		return utils.ErrorResponseWithError(ctx, 500, "更新服务器离线告警设置失败", err)
+	}
+	if err := settingRepo.SetValue("alert_server_online_enabled", map[bool]string{true: "true", false: "false"}[alertServerOnlineEnabled]); err != nil {
+		return utils.ErrorResponseWithError(ctx, 500, "更新服务器上线告警设置失败", err)
 	}
 
 	return utils.SuccessResponse(ctx, "success")

@@ -15,6 +15,9 @@ func logToChannel(channel, level, message string, args ...interface{}) {
 	utils.LogToChannel(channel, level, message, args...)
 }
 
+// ServerStatusNotifier 服务器状态变化时回调（online=true 表示上线，false 表示离线）
+type ServerStatusNotifier func(serverID string, isOnline bool)
+
 // ConnectionManager 连接管理器接口
 type ConnectionManager interface {
 	// RegisterAgent 注册 agent 连接
@@ -58,15 +61,30 @@ type connectionManager struct {
 	agentMutex              sync.RWMutex
 	frontendMutex           sync.RWMutex
 	oldConnectionCloseDelay time.Duration
+	onServerStatusChange    ServerStatusNotifier // 服务器上线/离线时回调，可选
 }
 
-// NewConnectionManager 创建连接管理器
-func NewConnectionManager() ConnectionManager {
-	return &connectionManager{
+// ManagerOption 连接管理器可选配置
+type ManagerOption func(*connectionManager)
+
+// WithServerStatusNotifier 设置服务器状态变化回调
+func WithServerStatusNotifier(notifier ServerStatusNotifier) ManagerOption {
+	return func(m *connectionManager) {
+		m.onServerStatusChange = notifier
+	}
+}
+
+// NewConnectionManager 创建连接管理器，可传入可选配置
+func NewConnectionManager(opts ...ManagerOption) ConnectionManager {
+	m := &connectionManager{
 		agentConnections:        make(map[string]*AgentConnection),
 		frontendConnections:     make(map[string]*FrontendConnection),
 		oldConnectionCloseDelay: 2 * time.Second, // 旧连接关闭延迟
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // RegisterAgent 注册 agent 连接
@@ -122,7 +140,7 @@ func (m *connectionManager) RegisterAgent(serverID string, conn *AgentConnection
 			return
 		}
 
-		// 如果状态从offline变为online，向前端推送状态更新
+		// 如果状态从offline变为online，向前端推送状态更新并触发上线告警回调
 		if oldStatus != "online" {
 			m.BroadcastToFrontend(map[string]interface{}{
 				"type": "server_status_update",
@@ -131,6 +149,9 @@ func (m *connectionManager) RegisterAgent(serverID string, conn *AgentConnection
 					"status":    "online",
 				},
 			})
+			if m.onServerStatusChange != nil {
+				m.onServerStatusChange(serverID, true)
+			}
 		}
 	}()
 
@@ -175,7 +196,7 @@ func (m *connectionManager) UnregisterAgent(serverID string) {
 				return
 			}
 
-			// 如果状态从online变为offline，向前端推送状态更新
+			// 如果状态从online变为offline，向前端推送状态更新并触发离线告警回调
 			if oldStatus == "online" {
 				m.BroadcastToFrontend(map[string]interface{}{
 					"type": "server_status_update",
@@ -184,6 +205,9 @@ func (m *connectionManager) UnregisterAgent(serverID string) {
 						"status":    "offline",
 					},
 				})
+				if m.onServerStatusChange != nil {
+					m.onServerStatusChange(serverID, false)
+				}
 			}
 		}()
 	}
