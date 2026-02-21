@@ -43,6 +43,11 @@ func (r *SettingsController) GetPublicSettings(ctx http.Context) http.Response {
 func (r *SettingsController) GetPanelSettings(ctx http.Context) http.Response {
 	panelTitle := utils.GetSetting("panel_title", "CloudSentinel 云哨")
 	logRetentionDays := utils.GetSetting("log_retention_days", "30")
+	updateChannel := utils.GetSetting("update_channel", "release")
+	fmt.Println(updateChannel)
+	if updateChannel != "dev" && updateChannel != "beta" && updateChannel != "release" {
+		updateChannel = "release"
+	}
 
 	// 提取当前版本类型
 	currentVersion := facades.Config().GetString("app.version", "0.0.1-release")
@@ -55,6 +60,7 @@ func (r *SettingsController) GetPanelSettings(ctx http.Context) http.Response {
 	return utils.SuccessResponse(ctx, "success", map[string]any{
 		"panel_title":          panelTitle,
 		"log_retention_days":   logRetentionDays,
+		"update_channel":       updateChannel,
 		"current_version":      currentVersion,
 		"current_version_type": currentVersionType,
 	})
@@ -185,7 +191,7 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 				"email":   emailData,
 				"webhook": webhookData,
 			},
-			"hasNotificationChannel":   hasNotificationChannel,
+			"hasNotificationChannel":    hasNotificationChannel,
 			"alertServerOfflineEnabled": alertServerOfflineEnabled,
 			"alertServerOnlineEnabled":  alertServerOnlineEnabled,
 		},
@@ -193,25 +199,51 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 }
 
 func (r *SettingsController) UpdatePanelSettings(ctx http.Context) http.Response {
-	title := ctx.Request().Input("title")
-	logRetentionDays := ctx.Request().Input("log_retention_days")
+	var req struct {
+		Title            string `json:"title" form:"title"`
+		LogRetentionDays *int   `json:"log_retention_days" form:"log_retention_days"`
+		UpdateChannel    string `json:"update_channel" form:"update_channel"`
+	}
+	if err := ctx.Request().Bind(&req); err != nil {
+		return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
+	}
 
-	if title == "" {
+	// 从 All() 取 update_channel，避免 PATCH JSON 只被部分解析时拿不到（Goravel：All 为 json+form+query 合集）
+	allData := ctx.Request().All()
+	if u, ok := allData["update_channel"]; ok && req.UpdateChannel == "" {
+		if s, ok := u.(string); ok && s != "" {
+			req.UpdateChannel = s
+		}
+	}
+
+	if req.Title == "" {
 		return utils.ErrorResponse(ctx, 422, "缺少标题参数")
 	}
 
 	settingRepo := repositories.GetSystemSettingRepository()
-	if err := settingRepo.SetValue("panel_title", title); err != nil {
+	if err := settingRepo.SetValue("panel_title", req.Title); err != nil {
 		return utils.ErrorResponseWithError(ctx, 500, "更新失败", err)
 	}
 
-	if logRetentionDays != "" {
-		// 验证是否为数字
-		if _, err := strconv.Atoi(logRetentionDays); err == nil {
-			if err := settingRepo.SetValue("log_retention_days", logRetentionDays); err != nil {
+	if req.LogRetentionDays != nil {
+		if *req.LogRetentionDays >= 1 && *req.LogRetentionDays <= 365 {
+			if err := settingRepo.SetValue("log_retention_days", strconv.Itoa(*req.LogRetentionDays)); err != nil {
 				return utils.ErrorResponseWithError(ctx, 500, "更新日志保留天数失败", err)
 			}
 		}
+	}
+
+	// 更新渠道：请求有则校验并写入，无则用库中或默认 release；SetValue 内部会无则新建
+	updateChannel := req.UpdateChannel
+	if updateChannel != "" {
+		if updateChannel != "dev" && updateChannel != "beta" && updateChannel != "release" {
+			return utils.ErrorResponse(ctx, 422, "更新渠道只能是 dev、beta 或 release")
+		}
+	} else {
+		updateChannel = settingRepo.GetValue("update_channel", "release")
+	}
+	if err := settingRepo.SetValue("update_channel", updateChannel); err != nil {
+		return utils.ErrorResponseWithError(ctx, 500, "更新渠道保存失败", err)
 	}
 
 	return utils.SuccessResponse(ctx, "success")
