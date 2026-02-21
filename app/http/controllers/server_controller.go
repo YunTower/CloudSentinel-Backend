@@ -991,6 +991,7 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 		Location               string                  `json:"location" form:"location"`
 		OS                     string                  `json:"os" form:"os"`
 		GroupID                *uint                   `json:"group_id" form:"group_id"`
+		ClearGroup             bool                    `json:"clear_group" form:"clear_group"` // 为 true 时清除服务器分组
 		BillingCycle           string                  `json:"billing_cycle" form:"billing_cycle"`
 		CustomCycleDays        *int                    `json:"custom_cycle_days" form:"custom_cycle_days"`
 		Price                  *float64                `json:"price" form:"price"`
@@ -1040,7 +1041,9 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 		updateData["os"] = req.OS
 	}
 	// 付费和分组相关字段
-	if req.GroupID != nil {
+	if req.ClearGroup {
+		updateData["group_id"] = nil
+	} else if req.GroupID != nil {
 		updateData["group_id"] = *req.GroupID
 	}
 	if req.BillingCycle != "" {
