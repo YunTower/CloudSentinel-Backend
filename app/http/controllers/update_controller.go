@@ -21,11 +21,17 @@ type UpdateStatus struct {
 	Message  string `json:"message"`
 }
 
+// panelReleasesBaseURL 面板版本列表 API
+var panelReleasesBaseURL = "https://api.github.com/repos/YunTower/CloudSentinel/releases"
+
 // releaseUrls 版本发布地址
-var releaseUrls = "https://api.github.com/repos/YunTower/CloudSentinel/releases/latest"
+var releaseUrls = panelReleasesBaseURL + "/latest"
+
+// agentReleasesBaseURL Agent 版本列表 API
+var agentReleasesBaseURL = "https://api.github.com/repos/YunTower/CloudSentinel-Agent/releases"
 
 // agentReleaseUrls Agent 版本发布地址
-var agentReleaseUrls = "https://api.github.com/repos/YunTower/CloudSentinel-Agent/releases/latest"
+var agentReleaseUrls = agentReleasesBaseURL + "/latest"
 
 func NewUpdateController() *UpdateController {
 	return &UpdateController{
@@ -195,11 +201,16 @@ func (r *UpdateController) UpdatePanel(ctx http.Context) http.Response {
 		}
 
 		updateSvc := services.NewUpdateService()
+		channel := utils.GetSetting("update_channel", "release")
+		if channel != "dev" && channel != "beta" {
+			channel = "release"
+		}
 		options := services.UpdateOptions{
 			Force:          false,
 			SkipMigration:  false,
 			StatusCallback: setStatus,
 			ReleaseURL:     releaseUrls,
+			UpdateChannel:  channel,
 		}
 
 		if err := updateSvc.ExecuteUpdate(options); err != nil {
@@ -232,30 +243,16 @@ func (r *UpdateController) UpdatePanel(ctx http.Context) http.Response {
 	return utils.SuccessResponse(ctx, "更新任务已启动")
 }
 
-// checkVersion 检查版本信息的公共方法
-func (r *UpdateController) checkVersion(ctx http.Context, releaseUrl string, includeCurrentVersion bool) http.Response {
-	releaseInfo, err := r.FetchLatestRelease(releaseUrl)
-	if err != nil {
-		// 根据错误类型返回相应的 HTTP 状态码
-		if strings.Contains(err.Error(), "未找到") {
-			return utils.ErrorResponse(ctx, 404, "未找到最新的版本信息，改天再试试吧", "LATEST_VERSION_NOT_FOUND")
-		}
-		return utils.ErrorResponseWithError(ctx, 500, err.Error(), err, "FETCH_RELEASE_FAILED")
-	}
-
-	// 格式化发布时间
+// checkVersionWithInfo 根据已获取的 release 信息返回检查结果
+func (r *UpdateController) checkVersionWithInfo(ctx http.Context, releaseInfo *services.ReleaseInfo, includeCurrentVersion bool) http.Response {
 	var publishTime string
 	if createdAt, ok := releaseInfo.Result["created_at"].(string); ok && createdAt != "" {
 		parsedTime, parseErr := time.Parse(time.RFC3339, createdAt)
 		if parseErr == nil {
-			// 加载上海时区
 			shanghaiLocation, err := time.LoadLocation("Asia/Shanghai")
 			if err == nil {
-				// 转换为上海时间
-				shanghaiTime := parsedTime.In(shanghaiLocation)
-				publishTime = shanghaiTime.Format("2006-01-02 15:04:05")
+				publishTime = parsedTime.In(shanghaiLocation).Format("2006-01-02 15:04:05")
 			} else {
-				// 如果加载时区失败，使用 UTC 时间
 				publishTime = parsedTime.Format("2006-01-02 15:04:05")
 			}
 		} else {
@@ -270,7 +267,6 @@ func (r *UpdateController) checkVersion(ctx http.Context, releaseUrl string, inc
 		"change_log":          releaseInfo.Result["body"],
 	}
 
-	// 如果需要包含当前版本信息
 	if includeCurrentVersion {
 		currentVersion := facades.Config().GetString("app.version", "0.0.1-release")
 		_, currentVersionType, _ := r.ParseVersion(currentVersion)
@@ -281,13 +277,48 @@ func (r *UpdateController) checkVersion(ctx http.Context, releaseUrl string, inc
 	return utils.SuccessResponse(ctx, "success", data)
 }
 
+// checkVersion 检查版本信息的公共方法
+func (r *UpdateController) checkVersion(ctx http.Context, releaseUrl string, includeCurrentVersion bool) http.Response {
+	releaseInfo, err := r.FetchLatestRelease(releaseUrl)
+	if err != nil {
+		if strings.Contains(err.Error(), "未找到") {
+			return utils.ErrorResponse(ctx, 404, "未找到最新的版本信息，改天再试试吧", "LATEST_VERSION_NOT_FOUND")
+		}
+		return utils.ErrorResponseWithError(ctx, 500, err.Error(), err, "FETCH_RELEASE_FAILED")
+	}
+	return r.checkVersionWithInfo(ctx, releaseInfo, includeCurrentVersion)
+}
+
+// Check 检查面板更新
 func (r *UpdateController) Check(ctx http.Context) http.Response {
-	return r.checkVersion(ctx, releaseUrls, true)
+	channel := utils.GetSetting("update_channel", "release")
+	if channel != "dev" && channel != "beta" {
+		channel = "release"
+	}
+	releaseInfo, err := r.updateService.FetchLatestReleaseByChannel(panelReleasesBaseURL, channel)
+	if err != nil {
+		if strings.Contains(err.Error(), "未找到") {
+			return utils.ErrorResponse(ctx, 404, "未找到最新的版本信息，改天再试试吧", "LATEST_VERSION_NOT_FOUND")
+		}
+		return utils.ErrorResponseWithError(ctx, 500, err.Error(), err, "FETCH_RELEASE_FAILED")
+	}
+	return r.checkVersionWithInfo(ctx, releaseInfo, true)
 }
 
 // CheckAgent 检查 Agent 最新版本
 func (r *UpdateController) CheckAgent(ctx http.Context) http.Response {
-	return r.checkVersion(ctx, agentReleaseUrls, false)
+	channel := utils.GetSetting("update_channel", "release")
+	if channel != "dev" && channel != "beta" {
+		channel = "release"
+	}
+	releaseInfo, err := r.updateService.FetchLatestReleaseByChannel(agentReleasesBaseURL, channel)
+	if err != nil {
+		if strings.Contains(err.Error(), "未找到") {
+			return utils.ErrorResponse(ctx, 404, "未找到最新的 Agent 版本信息", "LATEST_VERSION_NOT_FOUND")
+		}
+		return utils.ErrorResponseWithError(ctx, 500, err.Error(), err, "FETCH_RELEASE_FAILED")
+	}
+	return r.checkVersionWithInfo(ctx, releaseInfo, false)
 }
 
 // UpdateAgent 更新服务器 Agent
@@ -297,10 +328,12 @@ func (r *UpdateController) UpdateAgent(ctx http.Context) http.Response {
 		return utils.ErrorResponse(ctx, http.StatusBadRequest, "缺少服务器ID", "MISSING_SERVER_ID")
 	}
 
-	// 获取最新版本信息
-	releaseInfo, err := r.updateService.FetchLatestRelease(agentReleaseUrls)
+	channel := utils.GetSetting("update_channel", "release")
+	if channel != "dev" && channel != "beta" {
+		channel = "release"
+	}
+	releaseInfo, err := r.updateService.FetchLatestReleaseByChannel(agentReleasesBaseURL, channel)
 	if err != nil {
-		// 根据错误类型返回相应的 HTTP 状态码
 		if strings.Contains(err.Error(), "未找到") {
 			return utils.ErrorResponse(ctx, http.StatusNotFound, err.Error(), "LATEST_VERSION_NOT_FOUND")
 		}

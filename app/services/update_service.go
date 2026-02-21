@@ -45,7 +45,8 @@ type UpdateOptions struct {
 	Force          bool                 // 强制更新
 	SkipMigration  bool                 // 跳过数据库迁移
 	StatusCallback UpdateStatusCallback // 状态更新回调
-	ReleaseURL     string               // 发布地址，默认为面板发布地址
+	ReleaseURL     string               // 发布地址
+	UpdateChannel  string               // 更新渠道：release / beta / dev，为空时使用 ReleaseURL 直接请求
 }
 
 // ExecuteUpdate 执行更新流程
@@ -134,7 +135,13 @@ func (s *UpdateService) ExecuteUpdate(options UpdateOptions) error {
 
 	// 查询最新发布版本
 	setStatus("connecting", 10, "正在连接更新服务器...")
-	releaseInfo, err := s.FetchLatestRelease(releaseURL)
+	var releaseInfo *ReleaseInfo
+	if options.UpdateChannel != "" {
+		baseURL := strings.TrimSuffix(releaseURL, "/latest")
+		releaseInfo, err = s.FetchLatestReleaseByChannel(baseURL, options.UpdateChannel)
+	} else {
+		releaseInfo, err = s.FetchLatestRelease(releaseURL)
+	}
 	if err != nil {
 		setStatus("error", 0, err.Error())
 		s.CleanupTempFiles()
@@ -685,6 +692,75 @@ func (s *UpdateService) FetchLatestRelease(releaseUrl string) (*ReleaseInfo, err
 		VersionType:       versionType,
 		Result:            result,
 	}, nil
+}
+
+// FetchLatestReleaseByChannel 按更新渠道获取最新版本（release=正式版，beta=测试版，dev=开发版）
+// 正式版：从列表取第一个 tag 不含 -beta、-dev 的 release，避免依赖 GitHub 的 prerelease 标记
+func (s *UpdateService) FetchLatestReleaseByChannel(releasesBaseURL string, channel string) (*ReleaseInfo, error) {
+	response, requestErr := facades.Http().Get(releasesBaseURL)
+	if requestErr != nil {
+		return nil, fmt.Errorf("请求版本列表失败: %v", requestErr)
+	}
+	body, bodyErr := response.Body()
+	if bodyErr != nil {
+		return nil, fmt.Errorf("读取版本列表失败: %v", bodyErr)
+	}
+	if response.Status() != 200 {
+		return nil, fmt.Errorf("未找到版本列表")
+	}
+	var list []map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		return nil, fmt.Errorf("解析版本列表失败: %v", err)
+	}
+
+	switch channel {
+	case "release":
+		for _, item := range list {
+			tagName, _ := item["tag_name"].(string)
+			if tagName == "" {
+				continue
+			}
+			n := tagName
+			if len(n) > 0 && n[0] == 'v' {
+				n = n[1:]
+			}
+			if !strings.Contains(n, "-beta") && !strings.Contains(n, "-dev") {
+				_, versionType, _ := s.ParseVersion(n)
+				return &ReleaseInfo{
+					TagName:           tagName,
+					NormalizedTagName: n,
+					VersionType:       versionType,
+					Result:            item,
+				}, nil
+			}
+		}
+		return nil, fmt.Errorf("未找到正式版渠道的最新版本")
+	case "beta", "dev":
+		suffix := "-" + channel
+		for _, item := range list {
+			tagName, _ := item["tag_name"].(string)
+			if tagName == "" {
+				continue
+			}
+			n := tagName
+			if len(n) > 0 && n[0] == 'v' {
+				n = n[1:]
+			}
+			if strings.Contains(n, suffix) {
+				_, versionType, _ := s.ParseVersion(n)
+				return &ReleaseInfo{
+					TagName:           tagName,
+					NormalizedTagName: n,
+					VersionType:       versionType,
+					Result:            item,
+				}, nil
+			}
+		}
+		return nil, fmt.Errorf("未找到%s渠道的最新版本", map[string]string{"beta": "测试", "dev": "开发"}[channel])
+	default:
+		latestURL := strings.TrimSuffix(releasesBaseURL, "/") + "/latest"
+		return s.FetchLatestRelease(latestURL)
+	}
 }
 
 // GetSystemInfo 获取系统信息
