@@ -23,9 +23,15 @@ func (s *SystemSettingsSeeder) Run() error {
 	adminSettings := []map[string]interface{}{
 		{
 			"setting_key":   "panel_title",
-			"setting_value": "云哨 CloudSentinel - 轻量的服务器运维探针",
+			"setting_value": "云哨 CloudSentinel",
 			"setting_type":  "string",
 			"description":   "面板标题",
+		},
+		{
+			"setting_key":   "update_channel",
+			"setting_value": "release",
+			"setting_type":  "string",
+			"description":   "更新渠道（release=正式版，beta=测试版，dev=开发版）",
 		},
 		{
 			"setting_key":   "admin_username",
