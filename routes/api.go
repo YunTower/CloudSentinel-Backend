@@ -20,6 +20,7 @@ func Api() {
 	serverController := controllers.NewServerController()
 	serverGroupController := controllers.NewServerGroupController()
 	serverAlertController := controllers.NewServerAlertController()
+	serviceMonitorController := controllers.NewServiceMonitorController()
 	staticController := controllers.NewStaticController()
 
 	facades.Route().Prefix("api").Group(func(router route.Router) {
@@ -80,6 +81,14 @@ func Api() {
 				// 服务器告警规则
 				serversRoute.Get("/:id/alert-rules", serverAlertController.GetServerAlertRules)
 				serversRoute.Post("/alert-rules/copy", serverAlertController.CopyAlertRules)
+			})
+
+			// 服务监测
+			authRouter.Prefix("/service-monitors").Group(func(smRoute route.Router) {
+				smRoute.Get("", serviceMonitorController.GetAll)
+				smRoute.Post("", serviceMonitorController.Create)
+				smRoute.Patch("/:id", serviceMonitorController.Update)
+				smRoute.Delete("/:id", serviceMonitorController.Delete)
 			})
 
 			// 服务器分组管理
