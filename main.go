@@ -90,6 +90,9 @@ func main() {
 	// 初始化性能指标批量写入缓冲区
 	_ = services.GetMetricBuffer()
 
+	// 启动服务监测
+	go services.GetServiceMonitorService().StartAll()
+
 	// Create a channel to listen for OS signals
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
