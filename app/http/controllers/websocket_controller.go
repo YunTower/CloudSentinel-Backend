@@ -207,6 +207,11 @@ func (c *WebSocketController) handleAgentMessage(msgType string, data map[string
 		return c.agentHandler.HandleGPUInfo(data, conn)
 	case ws.MessageTypeAgentLog:
 		return c.agentHandler.HandleAgentLogs(data, conn)
+	case ws.MessageTypeServiceCheckResult:
+		if resultData, ok := data["data"].(map[string]interface{}); ok {
+			services.GetServiceMonitorService().HandleAgentResult(resultData)
+		}
+		return nil
 	default:
 		facades.Log().Channel("websocket").Warning("未知的消息类型: " + msgType)
 		return nil
