@@ -21,6 +21,22 @@ func calculateUptime(bootTimeVal interface{}) string {
 	return services.CalculateUptime(bootTimeVal)
 }
 
+// parseExpireTime 解析到期时间字符串
+func parseExpireTime(s string) *time.Time {
+	layouts := []string{
+		time.RFC3339Nano, // 2026-02-28T15:41:17.000Z
+		time.RFC3339,     // 2026-02-28T15:41:17Z
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, s); err == nil {
+			return &parsed
+		}
+	}
+	return nil
+}
+
 type ServerController struct{}
 
 func NewServerController() *ServerController {
@@ -29,12 +45,7 @@ func NewServerController() *ServerController {
 
 // CreateServer 创建服务器
 func (c *ServerController) CreateServer(ctx http.Context) http.Response {
-	type CreateServerRequest struct {
-		Name                   string   `json:"name" form:"name"`
-		IP                     string   `json:"ip" form:"ip"`
-		Location               string   `json:"location" form:"location"`
-		OS                     string   `json:"os" form:"os"`
-		GroupID                *uint    `json:"group_id" form:"group_id"`
+	type BillingRequest struct {
 		BillingCycle           string   `json:"billing_cycle" form:"billing_cycle"`
 		CustomCycleDays        *int     `json:"custom_cycle_days" form:"custom_cycle_days"`
 		Price                  *float64 `json:"price" form:"price"`
@@ -44,6 +55,22 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 		TrafficLimitBytes      int64    `json:"traffic_limit_bytes" form:"traffic_limit_bytes"`
 		TrafficResetCycle      string   `json:"traffic_reset_cycle" form:"traffic_reset_cycle"`
 		TrafficCustomCycleDays *int     `json:"traffic_custom_cycle_days" form:"traffic_custom_cycle_days"`
+		ShowBillingCycle       *bool    `json:"show_billing_cycle" form:"show_billing_cycle"`
+	}
+
+	type NetworkRequest struct {
+		ShowTrafficLimit      *bool `json:"show_traffic_limit" form:"show_traffic_limit"`
+		ShowTrafficResetCycle *bool `json:"show_traffic_reset_cycle" form:"show_traffic_reset_cycle"`
+	}
+
+	type CreateServerRequest struct {
+		Name     string          `json:"name" form:"name"`
+		IP       string          `json:"ip" form:"ip"`
+		Location string          `json:"location" form:"location"`
+		OS       string          `json:"os" form:"os"`
+		GroupID  *uint           `json:"group_id" form:"group_id"`
+		Billing  *BillingRequest `json:"billing" form:"billing"`
+		Network  *NetworkRequest `json:"network" form:"network"`
 	}
 
 	var req CreateServerRequest
@@ -56,6 +83,16 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 		return utils.ErrorResponse(ctx, http.StatusBadRequest, "名称和IP地址为必填项")
 	}
 
+	// 初始化 billing
+	if req.Billing == nil {
+		req.Billing = &BillingRequest{}
+	}
+
+	// 初始化 network
+	if req.Network == nil {
+		req.Network = &NetworkRequest{}
+	}
+
 	// 生成UUID作为server_id
 	serverID := uuid.New().String()
 
@@ -64,14 +101,24 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 
 	// 解析到期时间
 	var expireTime *time.Time
-	if req.ExpireTime != nil && *req.ExpireTime != "" {
-		parsed, err := time.Parse("2006-01-02 15:04:05", *req.ExpireTime)
-		if err != nil {
-			parsed, err = time.Parse("2006-01-02", *req.ExpireTime)
-		}
-		if err == nil {
-			expireTime = &parsed
-		}
+	if req.Billing.ExpireTime != nil && *req.Billing.ExpireTime != "" {
+		expireTime = parseExpireTime(*req.Billing.ExpireTime)
+	}
+
+	// 处理显示开关字段
+	showBillingCycle := false
+	if req.Billing.ShowBillingCycle != nil {
+		showBillingCycle = *req.Billing.ShowBillingCycle
+	}
+
+	showTrafficLimit := false
+	if req.Network.ShowTrafficLimit != nil {
+		showTrafficLimit = *req.Network.ShowTrafficLimit
+	}
+
+	showTrafficResetCycle := false
+	if req.Network.ShowTrafficResetCycle != nil {
+		showTrafficResetCycle = *req.Network.ShowTrafficResetCycle
 	}
 
 	// 创建服务器模型
@@ -83,15 +130,18 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 		AgentKey:               agentKey,
 		Cores:                  1,
 		GroupID:                req.GroupID,
-		BillingCycle:           req.BillingCycle,
-		CustomCycleDays:        req.CustomCycleDays,
-		Price:                  req.Price,
+		BillingCycle:           req.Billing.BillingCycle,
+		CustomCycleDays:        req.Billing.CustomCycleDays,
+		Price:                  req.Billing.Price,
 		ExpireTime:             expireTime,
-		BandwidthMbps:          req.BandwidthMbps,
-		TrafficLimitType:       req.TrafficLimitType,
-		TrafficLimitBytes:      req.TrafficLimitBytes,
-		TrafficResetCycle:      req.TrafficResetCycle,
-		TrafficCustomCycleDays: req.TrafficCustomCycleDays,
+		BandwidthMbps:          req.Billing.BandwidthMbps,
+		TrafficLimitType:       req.Billing.TrafficLimitType,
+		TrafficLimitBytes:      req.Billing.TrafficLimitBytes,
+		TrafficResetCycle:      req.Billing.TrafficResetCycle,
+		TrafficCustomCycleDays: req.Billing.TrafficCustomCycleDays,
+		ShowBillingCycle:       showBillingCycle,
+		ShowTrafficLimit:       showTrafficLimit,
+		ShowTrafficResetCycle:  showTrafficResetCycle,
 		CreatedAt:              time.Now(),
 		UpdatedAt:              time.Now(),
 	}
@@ -126,7 +176,7 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 	facades.Log().Infof("成功创建服务器: %s (IP: %s)", req.Name, req.IP)
 
 	// 返回服务器信息和agent_key
-	return utils.SuccessResponseWithStatus(ctx, http.StatusCreated, "服务器创建成功", map[string]interface{}{
+	responseData := map[string]interface{}{
 		"id":         server.ID,
 		"name":       server.Name,
 		"ip":         server.IP,
@@ -134,7 +184,49 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 		"agent_key":  server.AgentKey,
 		"created_at": server.CreatedAt,
 		"updated_at": server.UpdatedAt,
-	})
+	}
+
+	// 添加付费信息
+	billingData := map[string]interface{}{
+		"show_billing_cycle": server.ShowBillingCycle,
+	}
+	if server.BillingCycle != "" {
+		billingData["billing_cycle"] = server.BillingCycle
+	}
+	if server.CustomCycleDays != nil {
+		billingData["custom_cycle_days"] = *server.CustomCycleDays
+	}
+	if server.Price != nil {
+		billingData["price"] = *server.Price
+	}
+	if server.ExpireTime != nil {
+		billingData["expire_time"] = server.ExpireTime.Format("2006-01-02 15:04:05")
+	}
+	if server.BandwidthMbps > 0 {
+		billingData["bandwidth_mbps"] = server.BandwidthMbps
+	}
+	if server.TrafficLimitType != "" {
+		billingData["traffic_limit_type"] = server.TrafficLimitType
+	}
+	if server.TrafficLimitBytes > 0 {
+		billingData["traffic_limit_bytes"] = server.TrafficLimitBytes
+	}
+	if server.TrafficResetCycle != "" {
+		billingData["traffic_reset_cycle"] = server.TrafficResetCycle
+	}
+	if server.TrafficCustomCycleDays != nil {
+		billingData["traffic_custom_cycle_days"] = *server.TrafficCustomCycleDays
+	}
+	responseData["billing"] = billingData
+
+	// 添加网络信息
+	networkData := map[string]interface{}{
+		"show_traffic_limit":       server.ShowTrafficLimit,
+		"show_traffic_reset_cycle": server.ShowTrafficResetCycle,
+	}
+	responseData["network"] = networkData
+
+	return utils.SuccessResponseWithStatus(ctx, http.StatusCreated, "服务器创建成功", responseData)
 }
 
 // GetServers 获取服务器列表
@@ -209,8 +301,8 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 			"architecture": server.Architecture,
 			"status":       server.Status,
 			"cores":        server.Cores,
-			"created_at":   server.CreatedAt,
-			"updated_at":   server.UpdatedAt,
+			"created_at":   server.CreatedAt.Format("2006-01-02 15:04:05"),
+			"updated_at":   server.UpdatedAt.Format("2006-01-02 15:04:05"),
 		}
 
 		// 添加分组和付费信息
@@ -225,33 +317,47 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 				}
 			}
 		}
+
+		billingData := map[string]interface{}{
+			"show_billing_cycle": server.ShowBillingCycle,
+		}
+
+		networkData := map[string]interface{}{
+			"show_traffic_limit":       server.ShowTrafficLimit,
+			"show_traffic_reset_cycle": server.ShowTrafficResetCycle,
+		}
+		serverData["network"] = networkData
+
 		if server.BillingCycle != "" {
-			serverData["billing_cycle"] = server.BillingCycle
+			billingData["billing_cycle"] = server.BillingCycle
 		}
 		if server.CustomCycleDays != nil {
-			serverData["custom_cycle_days"] = *server.CustomCycleDays
+			billingData["custom_cycle_days"] = *server.CustomCycleDays
 		}
 		if server.Price != nil {
-			serverData["price"] = *server.Price
+			billingData["price"] = *server.Price
 		}
 		if server.ExpireTime != nil {
-			serverData["expire_time"] = server.ExpireTime.Format("2006-01-02 15:04:05")
+			billingData["expire_time"] = server.ExpireTime.Format("2006-01-02 15:04:05")
+		} else {
+			billingData["expire_time"] = nil
 		}
 		if server.BandwidthMbps > 0 {
-			serverData["bandwidth_mbps"] = server.BandwidthMbps
+			billingData["bandwidth_mbps"] = server.BandwidthMbps
 		}
 		if server.TrafficLimitType != "" {
-			serverData["traffic_limit_type"] = server.TrafficLimitType
+			billingData["traffic_limit_type"] = server.TrafficLimitType
 		}
 		if server.TrafficLimitBytes > 0 {
-			serverData["traffic_limit_bytes"] = server.TrafficLimitBytes
+			billingData["traffic_limit_bytes"] = server.TrafficLimitBytes
 		}
 		if server.TrafficResetCycle != "" {
-			serverData["traffic_reset_cycle"] = server.TrafficResetCycle
+			billingData["traffic_reset_cycle"] = server.TrafficResetCycle
 		}
 		if server.TrafficCustomCycleDays != nil {
-			serverData["traffic_custom_cycle_days"] = *server.TrafficCustomCycleDays
+			billingData["traffic_custom_cycle_days"] = *server.TrafficCustomCycleDays
 		}
+		serverData["billing"] = billingData
 
 		// 计算运行时间
 		serverData["uptime"] = services.CalculateUptime(server.BootTime, nil)
@@ -291,10 +397,6 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 		if isAdmin {
 			serverData["agent_version"] = server.AgentVersion
 		}
-
-		serverData["show_billing_cycle"] = server.ShowBillingCycle
-		serverData["show_traffic_limit"] = server.ShowTrafficLimit
-		serverData["show_traffic_reset_cycle"] = server.ShowTrafficResetCycle
 
 		servers = append(servers, serverData)
 	}
@@ -342,8 +444,8 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 		"last_report_time": server.LastReportTime,
 		"uptime_days":      server.UptimeDays,
 		"agent_key":        server.AgentKey,
-		"created_at":       server.CreatedAt,
-		"updated_at":       server.UpdatedAt,
+		"created_at":       server.CreatedAt.Format("2006-01-02 15:04:05"),
+		"updated_at":       server.UpdatedAt.Format("2006-01-02 15:04:05"),
 		"service_status":   server.ServiceStatus,
 		"gpu_info":         server.GPUInfo,
 	}
@@ -360,33 +462,45 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 			}
 		}
 	}
+
+	billingData := map[string]interface{}{
+		"show_billing_cycle": server.ShowBillingCycle,
+	}
+
+	networkData := map[string]interface{}{
+		"show_traffic_limit":       server.ShowTrafficLimit,
+		"show_traffic_reset_cycle": server.ShowTrafficResetCycle,
+	}
+	serverData["network"] = networkData
+
 	if server.BillingCycle != "" {
-		serverData["billing_cycle"] = server.BillingCycle
+		billingData["billing_cycle"] = server.BillingCycle
 	}
 	if server.CustomCycleDays != nil {
-		serverData["custom_cycle_days"] = *server.CustomCycleDays
+		billingData["custom_cycle_days"] = *server.CustomCycleDays
 	}
 	if server.Price != nil {
-		serverData["price"] = *server.Price
+		billingData["price"] = *server.Price
 	}
 	if server.ExpireTime != nil {
-		serverData["expire_time"] = server.ExpireTime.Format("2006-01-02 15:04:05")
+		billingData["expire_time"] = server.ExpireTime.Format("2006-01-02 15:04:05")
 	}
 	if server.BandwidthMbps > 0 {
-		serverData["bandwidth_mbps"] = server.BandwidthMbps
+		billingData["bandwidth_mbps"] = server.BandwidthMbps
 	}
 	if server.TrafficLimitType != "" {
-		serverData["traffic_limit_type"] = server.TrafficLimitType
+		billingData["traffic_limit_type"] = server.TrafficLimitType
 	}
 	if server.TrafficLimitBytes > 0 {
-		serverData["traffic_limit_bytes"] = server.TrafficLimitBytes
+		billingData["traffic_limit_bytes"] = server.TrafficLimitBytes
 	}
 	if server.TrafficResetCycle != "" {
-		serverData["traffic_reset_cycle"] = server.TrafficResetCycle
+		billingData["traffic_reset_cycle"] = server.TrafficResetCycle
 	}
 	if server.TrafficCustomCycleDays != nil {
-		serverData["traffic_custom_cycle_days"] = *server.TrafficCustomCycleDays
+		billingData["traffic_custom_cycle_days"] = *server.TrafficCustomCycleDays
 	}
+	serverData["billing"] = billingData
 
 	// 计算运行时间
 	serverData["uptime"] = services.CalculateUptime(server.BootTime, nil)
@@ -582,9 +696,9 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 	}
 
 	// 添加显示开关字段
-	serverData["show_billing_cycle"] = server.ShowBillingCycle
-	serverData["show_traffic_limit"] = server.ShowTrafficLimit
-	serverData["show_traffic_reset_cycle"] = server.ShowTrafficResetCycle
+	// serverData["show_billing_cycle"] = server.ShowBillingCycle
+	// serverData["show_traffic_limit"] = server.ShowTrafficLimit
+	// serverData["show_traffic_reset_cycle"] = server.ShowTrafficResetCycle
 
 	return utils.SuccessResponse(ctx, "获取成功", serverData)
 }
@@ -985,24 +1099,36 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 		Critical float64 `json:"critical" form:"critical"`
 	}
 
+	type BillingUpdateRequest struct {
+		BillingCycle           string   `json:"billing_cycle" form:"billing_cycle"`
+		CustomCycleDays        *int     `json:"custom_cycle_days" form:"custom_cycle_days"`
+		Price                  *float64 `json:"price" form:"price"`
+		ExpireTime             *string  `json:"expire_time" form:"expire_time"`
+		BandwidthMbps          int      `json:"bandwidth_mbps" form:"bandwidth_mbps"`
+		TrafficLimitType       string   `json:"traffic_limit_type" form:"traffic_limit_type"`
+		TrafficLimitBytes      int64    `json:"traffic_limit_bytes" form:"traffic_limit_bytes"`
+		TrafficResetCycle      string   `json:"traffic_reset_cycle" form:"traffic_reset_cycle"`
+		TrafficCustomCycleDays *int     `json:"traffic_custom_cycle_days" form:"traffic_custom_cycle_days"`
+		// 显示开关字段
+		ShowBillingCycle *bool `json:"show_billing_cycle" form:"show_billing_cycle"`
+	}
+
+	type NetworkUpdateRequest struct {
+		ShowTrafficLimit      *bool `json:"show_traffic_limit" form:"show_traffic_limit"`
+		ShowTrafficResetCycle *bool `json:"show_traffic_reset_cycle" form:"show_traffic_reset_cycle"`
+	}
+
 	type UpdateServerRequest struct {
-		Name                   string                  `json:"name" form:"name"`
-		IP                     string                  `json:"ip" form:"ip"`
-		Location               string                  `json:"location" form:"location"`
-		OS                     string                  `json:"os" form:"os"`
-		GroupID                *uint                   `json:"group_id" form:"group_id"`
-		ClearGroup             bool                    `json:"clear_group" form:"clear_group"` // 为 true 时清除服务器分组
-		BillingCycle           string                  `json:"billing_cycle" form:"billing_cycle"`
-		CustomCycleDays        *int                    `json:"custom_cycle_days" form:"custom_cycle_days"`
-		Price                  *float64                `json:"price" form:"price"`
-		ExpireTime             *string                 `json:"expire_time" form:"expire_time"`
-		BandwidthMbps          int                     `json:"bandwidth_mbps" form:"bandwidth_mbps"`
-		TrafficLimitType       string                  `json:"traffic_limit_type" form:"traffic_limit_type"`
-		TrafficLimitBytes      int64                   `json:"traffic_limit_bytes" form:"traffic_limit_bytes"`
-		TrafficResetCycle      string                  `json:"traffic_reset_cycle" form:"traffic_reset_cycle"`
-		TrafficCustomCycleDays *int                    `json:"traffic_custom_cycle_days" form:"traffic_custom_cycle_days"`
-		AlertRules             *map[string]interface{} `json:"alert_rules" form:"alert_rules"`
-		NotificationChannels   *map[string]bool        `json:"notification_channels" form:"notification_channels"`
+		Name                 string                  `json:"name" form:"name"`
+		IP                   string                  `json:"ip" form:"ip"`
+		Location             string                  `json:"location" form:"location"`
+		OS                   string                  `json:"os" form:"os"`
+		GroupID              *uint                   `json:"group_id" form:"group_id"`
+		ClearGroup           bool                    `json:"clear_group" form:"clear_group"` // 为 true 时清除服务器分组
+		Billing              *BillingUpdateRequest   `json:"billing" form:"billing"`
+		Network              *NetworkUpdateRequest   `json:"network" form:"network"`
+		AlertRules           *map[string]interface{} `json:"alert_rules" form:"alert_rules"`
+		NotificationChannels *map[string]bool        `json:"notification_channels" form:"notification_channels"`
 		// Agent配置字段
 		AgentTimezone          *string   `json:"agent_timezone" form:"agent_timezone"`
 		AgentMetricsInterval   *int      `json:"agent_metrics_interval" form:"agent_metrics_interval"`
@@ -1011,10 +1137,6 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 		AgentHeartbeatInterval *int      `json:"agent_heartbeat_interval" form:"agent_heartbeat_interval"`
 		AgentLogPath           *string   `json:"agent_log_path" form:"agent_log_path"`
 		MonitoredServices      *[]string `json:"monitored_services" form:"monitored_services"`
-		// 显示开关字段
-		ShowBillingCycle      *bool `json:"show_billing_cycle" form:"show_billing_cycle"`
-		ShowTrafficLimit      *bool `json:"show_traffic_limit" form:"show_traffic_limit"`
-		ShowTrafficResetCycle *bool `json:"show_traffic_reset_cycle" form:"show_traffic_reset_cycle"`
 	}
 
 	var req UpdateServerRequest
@@ -1040,44 +1162,57 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 	if req.OS != "" {
 		updateData["os"] = req.OS
 	}
-	// 付费和分组相关字段
+	// 分组相关字段
 	if req.ClearGroup {
 		updateData["group_id"] = nil
 	} else if req.GroupID != nil {
 		updateData["group_id"] = *req.GroupID
 	}
-	if req.BillingCycle != "" {
-		updateData["billing_cycle"] = req.BillingCycle
-	}
-	if req.CustomCycleDays != nil {
-		updateData["custom_cycle_days"] = *req.CustomCycleDays
-	}
-	if req.Price != nil {
-		updateData["price"] = *req.Price
-	}
-	if req.ExpireTime != nil && *req.ExpireTime != "" {
-		parsed, err := time.Parse("2006-01-02 15:04:05", *req.ExpireTime)
-		if err != nil {
-			parsed, err = time.Parse("2006-01-02", *req.ExpireTime)
+
+	// 付费相关字段
+	if req.Billing != nil {
+		if req.Billing.BillingCycle != "" {
+			updateData["billing_cycle"] = req.Billing.BillingCycle
 		}
-		if err == nil {
-			updateData["expire_time"] = parsed
+		if req.Billing.CustomCycleDays != nil {
+			updateData["custom_cycle_days"] = *req.Billing.CustomCycleDays
+		}
+		if req.Billing.Price != nil {
+			updateData["price"] = *req.Billing.Price
+		}
+		if req.Billing.ExpireTime != nil && *req.Billing.ExpireTime != "" {
+			if parsed := parseExpireTime(*req.Billing.ExpireTime); parsed != nil {
+				updateData["expire_time"] = *parsed
+			}
+		}
+		if req.Billing.BandwidthMbps > 0 {
+			updateData["bandwidth_mbps"] = req.Billing.BandwidthMbps
+		}
+		if req.Billing.TrafficLimitType != "" {
+			updateData["traffic_limit_type"] = req.Billing.TrafficLimitType
+		}
+		if req.Billing.TrafficLimitBytes > 0 {
+			updateData["traffic_limit_bytes"] = req.Billing.TrafficLimitBytes
+		}
+		if req.Billing.TrafficResetCycle != "" {
+			updateData["traffic_reset_cycle"] = req.Billing.TrafficResetCycle
+		}
+		if req.Billing.TrafficCustomCycleDays != nil {
+			updateData["traffic_custom_cycle_days"] = *req.Billing.TrafficCustomCycleDays
+		}
+		// 处理显示开关字段
+		if req.Billing.ShowBillingCycle != nil {
+			updateData["show_billing_cycle"] = *req.Billing.ShowBillingCycle
 		}
 	}
-	if req.BandwidthMbps > 0 {
-		updateData["bandwidth_mbps"] = req.BandwidthMbps
-	}
-	if req.TrafficLimitType != "" {
-		updateData["traffic_limit_type"] = req.TrafficLimitType
-	}
-	if req.TrafficLimitBytes > 0 {
-		updateData["traffic_limit_bytes"] = req.TrafficLimitBytes
-	}
-	if req.TrafficResetCycle != "" {
-		updateData["traffic_reset_cycle"] = req.TrafficResetCycle
-	}
-	if req.TrafficCustomCycleDays != nil {
-		updateData["traffic_custom_cycle_days"] = *req.TrafficCustomCycleDays
+
+	if req.Network != nil {
+		if req.Network.ShowTrafficLimit != nil {
+			updateData["show_traffic_limit"] = *req.Network.ShowTrafficLimit
+		}
+		if req.Network.ShowTrafficResetCycle != nil {
+			updateData["show_traffic_reset_cycle"] = *req.Network.ShowTrafficResetCycle
+		}
 	}
 
 	// 处理Agent配置字段
@@ -1119,17 +1254,6 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 	if req.MonitoredServices != nil {
 		updateData["monitored_services"] = *req.MonitoredServices
 		configUpdate["monitored_services"] = *req.MonitoredServices
-	}
-
-	// 处理显示开关字段
-	if req.ShowBillingCycle != nil {
-		updateData["show_billing_cycle"] = *req.ShowBillingCycle
-	}
-	if req.ShowTrafficLimit != nil {
-		updateData["show_traffic_limit"] = *req.ShowTrafficLimit
-	}
-	if req.ShowTrafficResetCycle != nil {
-		updateData["show_traffic_reset_cycle"] = *req.ShowTrafficResetCycle
 	}
 
 	updateData["updated_at"] = time.Now()
@@ -1255,9 +1379,9 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 	if agentConfigUpdated {
 		wsService := services.GetWebSocketService()
 		configMessage := map[string]interface{}{
-			"type": "command",
+			"type":    "command",
 			"command": "update_config",
-			"data": make(map[string]interface{}),
+			"data":    make(map[string]interface{}),
 		}
 		configData := configMessage["data"].(map[string]interface{})
 
