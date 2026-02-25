@@ -192,7 +192,7 @@ func (s *CleanupService) CleanupServerStatusLogs(retentionDays int) error {
 	return s.CleanupTableData("server_status_logs", retentionDays)
 }
 
-// CleanupServiceMonitorAlerts 清理服务监控告警
+// CleanupServiceMonitorAlerts 清理服务监测告警
 func (s *CleanupService) CleanupServiceMonitorAlerts(retentionDays int) error {
 	return s.CleanupTableData("service_monitor_alerts", retentionDays)
 }

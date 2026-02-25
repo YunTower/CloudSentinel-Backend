@@ -48,9 +48,10 @@ const (
 	MessageTypeProcessInfo = "process_info"
 	MessageTypeGPUInfo     = "gpu_info"
 	MessageTypeAgentLog    = "agent_log"
-	MessageTypePing        = "ping"
-	MessageTypePong        = "pong"
-	MessageTypeError       = "error"
+	MessageTypePing               = "ping"
+	MessageTypePong               = "pong"
+	MessageTypeError              = "error"
+	MessageTypeServiceCheckResult = "service_check_result"
 )
 
 // Connection 连接接口
