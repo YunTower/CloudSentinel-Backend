@@ -1,0 +1,31 @@
+package models
+
+import "time"
+
+type ServiceMonitor struct {
+	ID           uint       `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	Name         string     `gorm:"column:name;not null" json:"name"`
+	Type         string     `gorm:"column:type;not null" json:"type"` // http, https, tcp, udp
+	Target       string     `gorm:"column:target;not null" json:"target"`
+	Port         int        `gorm:"column:port;default:0" json:"port"`
+	Interval     int        `gorm:"column:interval;default:60" json:"interval"` // seconds
+	Timeout      int        `gorm:"column:timeout;default:10" json:"timeout"`   // seconds
+	Enabled      bool       `gorm:"column:enabled;default:1" json:"enabled"`
+	Status       string     `gorm:"column:status;default:unknown" json:"status"` // up, down, unknown
+	LastCheckAt  *time.Time `gorm:"column:last_check_at" json:"last_check_at"`
+	ResponseTime int        `gorm:"column:response_time;default:0" json:"response_time"` // ms
+	CreatedAt    time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt    time.Time  `gorm:"column:updated_at" json:"updated_at"`
+
+	// Server IDs that perform the check (stored as JSON)
+	ServerIDs    []string `gorm:"column:server_ids;serializer:json" json:"server_ids"`
+	ExpectStatus int      `gorm:"column:expect_status;default:0" json:"expect_status"` // 0 = any 2xx
+	ExpectBody   string   `gorm:"column:expect_body" json:"expect_body"`               // substring match, empty = skip
+
+	// Virtual field – not stored in DB, populated by GetAll
+	History []*ServiceMonitorHistory `gorm:"-" json:"history"`
+}
+
+func (s *ServiceMonitor) TableName() string {
+	return "service_monitors"
+}
