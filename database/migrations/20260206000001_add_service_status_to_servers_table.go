@@ -15,7 +15,7 @@ func (r *M20260206000001AddServiceStatusToServersTable) Signature() string {
 // Up Run the migrations.
 func (r *M20260206000001AddServiceStatusToServersTable) Up() error {
 	return facades.Schema().Table("servers", func(table schema.Blueprint) {
-		table.Text("service_status").Nullable().Comment("服务监控状态(JSON)")
+		table.Text("service_status").Nullable().Comment("服务监测状态(JSON)")
 	})
 }
 

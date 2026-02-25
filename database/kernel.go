@@ -40,6 +40,8 @@ func (kernel Kernel) Migrations() []schema.Migration {
 		&migrations.M20260206000001AddServiceStatusToServersTable{},
 		&migrations.M20260206000002AddGPUInfoToServersTable{},
 		&migrations.AddUpdateChannelSetting{},
+		&migrations.M20260225000001CreateServiceMonitorsTable{},
+		&migrations.M20260225000002CreateServiceMonitorHistoryTable{},
 	}
 }
 
