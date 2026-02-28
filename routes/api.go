@@ -32,6 +32,7 @@ func Api() {
 		router.Get("/ws/agent", wsController.HandleAgentConnection)
 		router.Get("/ws/frontend", wsController.HandleFrontendConnection)
 
+		// 通用登录用户接口
 		router.Middleware(middleware.Auth()).Group(func(authRouter route.Router) {
 			// 认证相关
 			authRouter.Prefix("/auth").Group(func(authRoute route.Router) {
@@ -39,8 +40,22 @@ func Api() {
 				authRoute.Get("/check", authController.Check)
 			})
 
+			// 服务器相关
+			authRouter.Prefix("/servers").Group(func(serversRoute route.Router) {
+				// 访客可读的基础列表
+				serversRoute.Get("", serverController.GetServers)
+			})
+
+			// 分组列表对访客可读
+			authRouter.Prefix("/servers/groups").Group(func(groupsRoute route.Router) {
+				groupsRoute.Get("", serverGroupController.GetGroups)
+			})
+		})
+
+		// 仅管理员接口
+		router.Middleware(middleware.AdminAuth()).Group(func(adminRouter route.Router) {
 			// 设置相关
-			authRouter.Prefix("/settings").Group(func(settingsRoute route.Router) {
+			adminRouter.Prefix("/settings").Group(func(settingsRoute route.Router) {
 				settingsRoute.Get("/panel", settingsController.GetPanelSettings)
 				settingsRoute.Get("/permissions", settingsController.GetPermissionsSettings)
 				settingsRoute.Get("/alerts", settingsController.GetAlertsSettings)
@@ -51,7 +66,7 @@ func Api() {
 			})
 
 			// 更新相关
-			authRouter.Prefix("/update").Group(func(updateRoute route.Router) {
+			adminRouter.Prefix("/update").Group(func(updateRoute route.Router) {
 				updateRoute.Get("/check", updateController.Check)
 				updateRoute.Get("/status", updateController.Status)
 				updateRoute.Post("", updateController.UpdatePanel)
@@ -59,10 +74,8 @@ func Api() {
 			})
 
 			// 服务器相关
-			authRouter.Prefix("/servers").Group(func(serversRoute route.Router) {
-				// 服务器基础操作
+			adminRouter.Prefix("/servers").Group(func(serversRoute route.Router) {
 				serversRoute.Post("", serverController.CreateServer)
-				serversRoute.Get("", serverController.GetServers)
 				serversRoute.Get("/:id", serverController.GetServerDetail)
 				serversRoute.Patch("/:id", serverController.UpdateServer)
 				serversRoute.Delete("/:id", serverController.DeleteServer)
@@ -84,16 +97,15 @@ func Api() {
 			})
 
 			// 服务监测
-			authRouter.Prefix("/service-monitors").Group(func(smRoute route.Router) {
+			adminRouter.Prefix("/service-monitors").Group(func(smRoute route.Router) {
 				smRoute.Get("", serviceMonitorController.GetAll)
 				smRoute.Post("", serviceMonitorController.Create)
 				smRoute.Patch("/:id", serviceMonitorController.Update)
 				smRoute.Delete("/:id", serviceMonitorController.Delete)
 			})
 
-			// 服务器分组管理
-			authRouter.Prefix("/servers/groups").Group(func(groupsRoute route.Router) {
-				groupsRoute.Get("", serverGroupController.GetGroups)
+			// 分组写操作
+			adminRouter.Prefix("/servers/groups").Group(func(groupsRoute route.Router) {
 				groupsRoute.Post("", serverGroupController.CreateGroup)
 				groupsRoute.Patch("/:id", serverGroupController.UpdateGroup)
 				groupsRoute.Delete("/:id", serverGroupController.DeleteGroup)
