@@ -901,6 +901,51 @@ func (s *UpdateService) DownloadFile(url, filePath string, progressCallback func
 	return nil
 }
 
+// hasPathPrefix 检查路径是否具有前缀
+func hasPathPrefix(path, prefix string) bool {
+	normalizedPath := filepath.Clean(path)
+	normalizedPrefix := filepath.Clean(prefix)
+
+	if runtime.GOOS == "windows" {
+		normalizedPath = strings.ToLower(normalizedPath)
+		normalizedPrefix = strings.ToLower(normalizedPrefix)
+	}
+
+	if normalizedPath == normalizedPrefix {
+		return true
+	}
+	return strings.HasPrefix(normalizedPath, normalizedPrefix+string(os.PathSeparator))
+}
+
+// secureArchiveTargetPath 确保归档路径安全
+func secureArchiveTargetPath(destDir, archivePath string) (string, error) {
+	if archivePath == "" {
+		return "", fmt.Errorf("归档路径为空")
+	}
+
+	cleanName := filepath.Clean(archivePath)
+	if filepath.IsAbs(cleanName) || cleanName == "." || cleanName == "" {
+		return "", fmt.Errorf("非法归档路径")
+	}
+	if cleanName == ".." || strings.HasPrefix(cleanName, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("归档路径试图逃逸目标目录")
+	}
+
+	destAbs, err := filepath.Abs(destDir)
+	if err != nil {
+		return "", fmt.Errorf("解析目标目录失败: %w", err)
+	}
+	targetAbs, err := filepath.Abs(filepath.Join(destDir, cleanName))
+	if err != nil {
+		return "", fmt.Errorf("解析目标路径失败: %w", err)
+	}
+	if !hasPathPrefix(targetAbs, destAbs) {
+		return "", fmt.Errorf("归档路径试图逃逸目标目录")
+	}
+
+	return targetAbs, nil
+}
+
 // ExtractTarGz 解压 tar.gz 文件
 func (s *UpdateService) ExtractTarGz(tarGzPath, destDir string) error {
 	// 打开 tar.gz 文件
@@ -938,12 +983,14 @@ func (s *UpdateService) ExtractTarGz(tarGzPath, destDir string) error {
 			return fmt.Errorf("读取 tar 文件失败: %v", err)
 		}
 
-		// 构建目标文件路径
-		targetPath := filepath.Join(destDir, header.Name)
+		targetPath, err := secureArchiveTargetPath(destDir, header.Name)
+		if err != nil {
+			return fmt.Errorf("非法归档条目 %q: %w", header.Name, err)
+		}
 
 		// 处理目录
 		if header.Typeflag == tar.TypeDir {
-			if err := os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
+			if err := os.MkdirAll(targetPath, 0755); err != nil {
 				return fmt.Errorf("创建目录失败: %v", err)
 			}
 			continue
@@ -957,7 +1004,7 @@ func (s *UpdateService) ExtractTarGz(tarGzPath, destDir string) error {
 			}
 
 			// 创建文件
-			outFile, err := os.Create(targetPath)
+			outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
 			if err != nil {
 				return fmt.Errorf("创建文件失败: %v", err)
 			}
@@ -977,6 +1024,11 @@ func (s *UpdateService) ExtractTarGz(tarGzPath, destDir string) error {
 			if err := os.Chmod(targetPath, os.FileMode(header.Mode)); err != nil {
 				return fmt.Errorf("设置文件权限失败: %v", err)
 			}
+			continue
+		}
+
+		if header.Typeflag == tar.TypeSymlink || header.Typeflag == tar.TypeLink {
+			return fmt.Errorf("不支持的归档条目类型: %q", header.Name)
 		}
 	}
 
