@@ -1260,21 +1260,16 @@ func (s *UpdateService) RestartApplication() error {
 	// 获取当前进程的 PID
 	pid := os.Getpid()
 
-	// 构建重启命令
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		// Windows
-		cmd = exec.Command("cmd", "/C", "timeout", "/t", "2", "/nobreak", ">nul", "&", execPath)
-	} else {
-		// Linux/Unix
-		cmd = exec.Command("sh", "-c", fmt.Sprintf("sleep 2 && %s &", execPath))
-	}
+	restartDelay := 2 * time.Second
+
+	// 构建重启命令（避免 shell 拼接，避免路径包含特殊字符导致的命令解释风险）
+	cmd := exec.Command(execPath)
 
 	// 设置工作目录
 	cmd.Dir = filepath.Dir(execPath)
 
 	// 设置环境变量
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), fmt.Sprintf("CLOUDSENTINEL_START_DELAY_MS=%d", restartDelay.Milliseconds()))
 
 	// 启动新进程
 	if err := cmd.Start(); err != nil {
