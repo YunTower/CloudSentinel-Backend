@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"encoding/json"
+	"fmt"
 	"goravel/app/models"
 	"goravel/app/repositories"
 	"goravel/app/services"
@@ -51,9 +52,9 @@ func NewWebSocketController() *WebSocketController {
 			// 对于localhost/127.0.0.1，两者应该都被接受
 			reqHost := req.Host
 			return reqHost == allowedHost ||
-				   (allowedHost == "localhost" && reqHost == "127.0.0.1") ||
-				   (allowedHost == "127.0.0.1" && reqHost == "localhost") ||
-				   reqHost == "localhost:3000" || reqHost == "127.0.0.1:3000"
+				(allowedHost == "localhost" && reqHost == "127.0.0.1") ||
+				(allowedHost == "127.0.0.1" && reqHost == "localhost") ||
+				reqHost == "localhost:3000" || reqHost == "127.0.0.1:3000"
 		}
 		ou, err := neturl.Parse(origin)
 		if err != nil || ou.Host == "" {
@@ -62,9 +63,9 @@ func NewWebSocketController() *WebSocketController {
 		// 对于localhost/127.0.0.1，两者应该都被接受
 		originHost := ou.Host
 		return originHost == allowedHost ||
-			   (allowedHost == "localhost" && (originHost == "127.0.0.1" || originHost == "127.0.0.1:5173")) ||
-			   (allowedHost == "127.0.0.1" && (originHost == "localhost" || originHost == "localhost:5173")) ||
-			   originHost == "localhost:5173" || originHost == "127.0.0.1:5173"
+			(allowedHost == "localhost" && (originHost == "127.0.0.1" || originHost == "127.0.0.1:5173")) ||
+			(allowedHost == "127.0.0.1" && (originHost == "localhost" || originHost == "localhost:5173")) ||
+			originHost == "localhost:5173" || originHost == "127.0.0.1:5173"
 	}
 
 	// 创建升级器
@@ -231,51 +232,22 @@ func (c *WebSocketController) HandleFrontendConnection(ctx http.Context) http.Re
 	connID := uuid.New().String()
 	facades.Log().Channel("websocket").Infof("新的前端WebSocket连接来自: %s (连接ID: %s)", remoteAddr, connID)
 
-	// 从URL参数或Header获取token
-	var token string
-
-	// 尝试从URL查询参数获取token（通过原始HTTP请求）
-	req := ctx.Request().Origin()
-	if req != nil {
-		token = req.URL.Query().Get("token")
-	}
-
-	// 如果URL参数中没有，尝试从Header获取
-	if token == "" {
-		authHeader := ctx.Request().Header("Authorization")
-		if authHeader != "" && len(authHeader) > 7 && authHeader[:7] == "Bearer " {
-			token = authHeader[7:]
-		}
-	}
-
-	// 验证token（在升级后进行）
-	var userID string
-
-	if token != "" {
-		// 解析和验证token
-		payload, err := facades.Auth(ctx).Parse(token)
-		if err != nil {
-			facades.Log().Channel("websocket").Warningf("前端WebSocket token验证失败: %v", err)
-			// 发送错误消息并关闭连接
-			c.sendError(conn, "Token无效或已过期")
-			conn.Close()
-			return nil
-		}
-		userID = payload.Key
-		facades.Log().Channel("websocket").Infof("前端WebSocket认证成功: 用户ID=%s (连接ID: %s)", userID, connID)
-	} else {
-		facades.Log().Channel("websocket").Warning("前端WebSocket连接缺少token")
-		// 发送错误消息并关闭连接
-		c.sendError(conn, "缺少认证token")
-		conn.Close()
-		return nil
-	}
-
 	// 创建前端连接对象
 	frontendConn := ws.NewFrontendConnection(conn, c.config)
 	frontendConn.SetConnID(connID)
-	frontendConn.SetUserID(userID)
 	frontendConn.SetRemoteAddr(remoteAddr)
+
+	// 前端必须在握手后首帧发送 auth 消息携带 token，禁止 URL Query 传 token
+	userID, err := c.authenticateFrontendConnection(ctx, frontendConn)
+	if err != nil {
+		facades.Log().Channel("websocket").Warningf("前端WebSocket认证失败: %v (连接ID: %s)", err, connID)
+		c.sendError(conn, err.Error())
+		frontendConn.Close()
+		return nil
+	}
+	frontendConn.SetUserID(userID)
+	frontendConn.SetState(ws.StateAuthenticated)
+	facades.Log().Channel("websocket").Infof("前端WebSocket认证成功: 用户ID=%s (连接ID: %s)", userID, connID)
 
 	// 注册连接
 	if err := c.manager.RegisterFrontend(connID, frontendConn); err != nil {
@@ -365,6 +337,49 @@ func (c *WebSocketController) HandleFrontendConnection(ctx http.Context) http.Re
 	}
 
 	return nil
+}
+
+func (c *WebSocketController) authenticateFrontendConnection(ctx http.Context, frontendConn *ws.FrontendConnection) (string, error) {
+	_, message, err := frontendConn.ReadMessage()
+	if err != nil {
+		return "", err
+	}
+
+	var authMsg map[string]interface{}
+	if err := json.Unmarshal(message, &authMsg); err != nil {
+		return "", fmt.Errorf("认证消息格式错误")
+	}
+
+	msgType, _ := authMsg["type"].(string)
+	if msgType != ws.MessageTypeAuth {
+		return "", fmt.Errorf("缺少认证消息")
+	}
+
+	var token string
+	if authData, ok := authMsg["data"].(map[string]interface{}); ok {
+		if tokenVal, ok := authData["token"].(string); ok {
+			token = tokenVal
+		}
+	}
+	if token == "" {
+		if tokenVal, ok := authMsg["token"].(string); ok {
+			token = tokenVal
+		}
+	}
+	if token == "" {
+		return "", fmt.Errorf("缺少认证token")
+	}
+
+	payload, err := facades.Auth(ctx).Parse(token)
+	if err != nil {
+		return "", fmt.Errorf("Token无效或已过期")
+	}
+
+	if payload.Key == "" {
+		return "", fmt.Errorf("用户标识无效")
+	}
+
+	return payload.Key, nil
 }
 
 // sendError 发送错误消息
