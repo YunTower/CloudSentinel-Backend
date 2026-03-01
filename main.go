@@ -3,8 +3,10 @@ package main
 import (
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/goravel/framework/facades"
 
@@ -25,7 +27,26 @@ func hasDaemonFlag(args []string) bool {
 	return false
 }
 
+func applyStartDelay() {
+	msRaw := strings.TrimSpace(os.Getenv("CLOUDSENTINEL_START_DELAY_MS"))
+	if msRaw == "" {
+		return
+	}
+	// 仅对本进程生效，避免影响后续子进程（例如 artisan migrate）。
+	_ = os.Unsetenv("CLOUDSENTINEL_START_DELAY_MS")
+
+	ms, err := strconv.Atoi(msRaw)
+	if err != nil || ms <= 0 {
+		return
+	}
+	if ms > 60_000 {
+		ms = 60_000
+	}
+	time.Sleep(time.Duration(ms) * time.Millisecond)
+}
+
 func main() {
+	applyStartDelay()
 	bootstrap.Boot()
 
 	// 检查是否应该启动服务器（守护进程模式通过环境变量标记）
