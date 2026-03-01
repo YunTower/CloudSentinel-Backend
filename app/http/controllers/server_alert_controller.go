@@ -20,6 +20,10 @@ func NewServerAlertController() *ServerAlertController {
 
 // GetServerAlertRules 获取指定服务器的告警规则
 func (c *ServerAlertController) GetServerAlertRules(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	serverID := ctx.Request().Route("id")
 	if serverID == "" {
 		return utils.ErrorResponse(ctx, http.StatusBadRequest, "服务器ID不能为空")
@@ -53,7 +57,7 @@ func (c *ServerAlertController) GetServerAlertRules(ctx http.Context) http.Respo
 
 	// 获取其他类型的告警规则（bandwidth, traffic, expiration）
 	ruleRepo := repositories.GetServerAlertRuleRepository()
-	
+
 	// bandwidth: {enabled: bool, threshold: number}
 	bandwidthRule, err := ruleRepo.GetByServerIDAndType(serverIDPtr, "bandwidth")
 	if err == nil && bandwidthRule != nil {
@@ -84,14 +88,14 @@ func (c *ServerAlertController) GetServerAlertRules(ctx http.Context) http.Respo
 		} else {
 			// 解析失败，返回默认值
 			result["traffic"] = map[string]interface{}{
-				"enabled":         false,
+				"enabled":           false,
 				"threshold_percent": 80,
 			}
 		}
 	} else {
 		// 没有配置，返回默认禁用状态
 		result["traffic"] = map[string]interface{}{
-			"enabled":         false,
+			"enabled":           false,
 			"threshold_percent": 80,
 		}
 	}
@@ -126,6 +130,10 @@ func (c *ServerAlertController) GetServerAlertRules(ctx http.Context) http.Respo
 
 // UpdateServerAlertRules 更新指定服务器的告警规则
 func (c *ServerAlertController) UpdateServerAlertRules(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	serverID := ctx.Request().Route("id")
 	if serverID == "" {
 		return utils.ErrorResponse(ctx, http.StatusBadRequest, "服务器ID不能为空")
@@ -221,6 +229,10 @@ func (c *ServerAlertController) UpdateServerAlertRules(ctx http.Context) http.Re
 
 // CopyAlertRules 复制告警规则到多个服务器
 func (c *ServerAlertController) CopyAlertRules(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	type CopyAlertRulesRequest struct {
 		SourceServerID  string   `json:"source_server_id" form:"source_server_id"`
 		TargetServerIDs []string `json:"target_server_ids" form:"target_server_ids"`

@@ -17,6 +17,10 @@ func NewServiceMonitorController() *ServiceMonitorController {
 }
 
 func (c *ServiceMonitorController) GetAll(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	repo := repositories.GetServiceMonitorRepository()
 	monitors, err := repo.GetAll()
 	if err != nil {
@@ -48,6 +52,10 @@ func (c *ServiceMonitorController) GetAll(ctx http.Context) http.Response {
 }
 
 func (c *ServiceMonitorController) Create(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	var req struct {
 		Name         string   `json:"name"`
 		Type         string   `json:"type"`
@@ -108,6 +116,10 @@ func (c *ServiceMonitorController) Create(ctx http.Context) http.Response {
 }
 
 func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	idStr := ctx.Request().Route("id")
 	id, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil {
@@ -189,6 +201,10 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 }
 
 func (c *ServiceMonitorController) Delete(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	idStr := ctx.Request().Route("id")
 	id, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil {

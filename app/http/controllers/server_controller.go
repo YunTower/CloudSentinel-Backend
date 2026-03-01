@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"goravel/app/models"
@@ -37,6 +38,13 @@ func parseExpireTime(s string) *time.Time {
 	return nil
 }
 
+func maskAgentKey(agentKey string) string {
+	if len(agentKey) <= 8 {
+		return "********"
+	}
+	return agentKey[:4] + "********" + agentKey[len(agentKey)-4:]
+}
+
 type ServerController struct{}
 
 func NewServerController() *ServerController {
@@ -45,6 +53,10 @@ func NewServerController() *ServerController {
 
 // CreateServer 创建服务器
 func (c *ServerController) CreateServer(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	type BillingRequest struct {
 		BillingCycle           string   `json:"billing_cycle" form:"billing_cycle"`
 		CustomCycleDays        *int     `json:"custom_cycle_days" form:"custom_cycle_days"`
@@ -406,6 +418,10 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 
 // GetServerDetail 获取服务器详细信息
 func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	serverID := ctx.Request().Route("id")
 	if serverID == "" {
 		return utils.ErrorResponse(ctx, http.StatusBadRequest, "缺少服务器ID")
@@ -443,11 +459,18 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 		"boot_time":        server.BootTime,
 		"last_report_time": server.LastReportTime,
 		"uptime_days":      server.UptimeDays,
-		"agent_key":        server.AgentKey,
 		"created_at":       server.CreatedAt.Format("2006-01-02 15:04:05"),
 		"updated_at":       server.UpdatedAt.Format("2006-01-02 15:04:05"),
 		"service_status":   server.ServiceStatus,
 		"gpu_info":         server.GPUInfo,
+	}
+
+	revealAgentKey := strings.EqualFold(ctx.Request().Query("reveal_agent_key", ""), "true") ||
+		ctx.Request().Query("reveal_agent_key", "") == "1"
+	if isAdmin && revealAgentKey {
+		serverData["agent_key"] = server.AgentKey
+	} else {
+		serverData["agent_key_masked"] = maskAgentKey(server.AgentKey)
 	}
 
 	// 添加分组和付费信息
@@ -725,6 +748,10 @@ func (c *ServerController) GetServerMetricsNetwork(ctx http.Context) http.Respon
 
 // getServerMetricsByType 根据类型获取服务器历史性能指标
 func (c *ServerController) getServerMetricsByType(ctx http.Context, metricType string) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	serverID := ctx.Request().Route("id")
 	if serverID == "" {
 		return ctx.Response().Status(http.StatusBadRequest).Json(http.Json{
@@ -1085,6 +1112,10 @@ func (c *ServerController) getServerMetricsByType(ctx http.Context, metricType s
 
 // UpdateServer 更新服务器信息
 func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	serverID := ctx.Request().Route("id")
 	if serverID == "" {
 		return ctx.Response().Status(http.StatusBadRequest).Json(http.Json{
@@ -1424,6 +1455,10 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 
 // DeleteServer 删除服务器
 func (c *ServerController) DeleteServer(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	serverID := ctx.Request().Route("id")
 	if serverID == "" {
 		return ctx.Response().Status(http.StatusBadRequest).Json(http.Json{
@@ -1480,6 +1515,10 @@ func (c *ServerController) DeleteServer(ctx http.Context) http.Response {
 
 // RestartAgent 重启服务器agent
 func (c *ServerController) RestartAgent(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	serverID := ctx.Request().Route("id")
 	if serverID == "" {
 		return ctx.Response().Status(http.StatusBadRequest).Json(http.Json{
@@ -1514,6 +1553,10 @@ func (c *ServerController) RestartAgent(ctx http.Context) http.Response {
 
 // ResetAgentKey 重置服务器通信密钥
 func (c *ServerController) ResetAgentKey(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	serverID := ctx.Request().Route("id")
 	if serverID == "" {
 		return ctx.Response().Status(http.StatusBadRequest).Json(http.Json{

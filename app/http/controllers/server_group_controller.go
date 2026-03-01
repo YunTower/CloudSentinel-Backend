@@ -30,6 +30,10 @@ func (c *ServerGroupController) GetGroups(ctx http.Context) http.Response {
 
 // CreateGroup 创建分组
 func (c *ServerGroupController) CreateGroup(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	type CreateGroupRequest struct {
 		Name        string `json:"name" form:"name"`
 		Description string `json:"description" form:"description"`
@@ -64,6 +68,10 @@ func (c *ServerGroupController) CreateGroup(ctx http.Context) http.Response {
 
 // UpdateGroup 更新分组
 func (c *ServerGroupController) UpdateGroup(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	idStr := ctx.Request().Route("id")
 	id, err := strconv.ParseUint(idStr, 10, 32)
 	if err != nil {
@@ -101,6 +109,10 @@ func (c *ServerGroupController) UpdateGroup(ctx http.Context) http.Response {
 
 // DeleteGroup 删除分组
 func (c *ServerGroupController) DeleteGroup(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	idStr := ctx.Request().Route("id")
 	id, err := strconv.ParseUint(idStr, 10, 32)
 	if err != nil {

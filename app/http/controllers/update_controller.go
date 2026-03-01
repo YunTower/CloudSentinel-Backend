@@ -41,6 +41,10 @@ func NewUpdateController() *UpdateController {
 
 // Status 获取更新状态
 func (r *UpdateController) Status(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	status := UpdateStatus{
 		Step:     "pending",
 		Progress: 0,
@@ -132,6 +136,10 @@ func (r *UpdateController) CleanupTempFiles(files ...string) {
 
 // UpdatePanel 执行面板更新
 func (r *UpdateController) UpdatePanel(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	// 检查是否已经在更新中
 	// 只有在进行中的状态（非 completed、error、pending）才阻止新的更新
 	if facades.Cache().Has("update_status") {
@@ -291,6 +299,10 @@ func (r *UpdateController) checkVersion(ctx http.Context, releaseUrl string, inc
 
 // Check 检查面板更新
 func (r *UpdateController) Check(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	channel := utils.GetSetting("update_channel", "release")
 	if channel != "dev" && channel != "beta" {
 		channel = "release"
@@ -307,6 +319,10 @@ func (r *UpdateController) Check(ctx http.Context) http.Response {
 
 // CheckAgent 检查 Agent 最新版本
 func (r *UpdateController) CheckAgent(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	channel := utils.GetSetting("update_channel", "release")
 	if channel != "dev" && channel != "beta" {
 		channel = "release"
@@ -323,6 +339,10 @@ func (r *UpdateController) CheckAgent(ctx http.Context) http.Response {
 
 // UpdateAgent 更新服务器 Agent
 func (r *UpdateController) UpdateAgent(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	serverID := ctx.Request().Route("id")
 	if serverID == "" {
 		return utils.ErrorResponse(ctx, http.StatusBadRequest, "缺少服务器ID", "MISSING_SERVER_ID")

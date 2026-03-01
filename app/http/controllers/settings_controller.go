@@ -41,6 +41,10 @@ func (r *SettingsController) GetPublicSettings(ctx http.Context) http.Response {
 }
 
 func (r *SettingsController) GetPanelSettings(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	panelTitle := utils.GetSetting("panel_title", "CloudSentinel 云哨")
 	logRetentionDays := utils.GetSetting("log_retention_days", "30")
 	updateChannel := utils.GetSetting("update_channel", "release")
@@ -67,6 +71,10 @@ func (r *SettingsController) GetPanelSettings(ctx http.Context) http.Response {
 }
 
 func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	// 批量获取系统设置
 	settings := utils.GetSettings([]string{
 		"allow_guest_login", "guest_password_enabled", "guest_password_hash",
@@ -110,6 +118,10 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 }
 
 func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	notificationRepo := repositories.GetAlertNotificationRepository()
 
 	type notifyConfig struct {
@@ -199,6 +211,10 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 }
 
 func (r *SettingsController) UpdatePanelSettings(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	var req struct {
 		Title            string `json:"title" form:"title"`
 		LogRetentionDays *int   `json:"log_retention_days" form:"log_retention_days"`
@@ -250,6 +266,10 @@ func (r *SettingsController) UpdatePanelSettings(ctx http.Context) http.Response
 }
 
 func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	type UpdatePermissionsRequest struct {
 		AllowGuest        bool   `json:"allowGuest" form:"allowGuest"`
 		EnablePassword    bool   `json:"enablePassword" form:"enablePassword"`
@@ -429,6 +449,10 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 }
 
 func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	notificationRepo := repositories.GetAlertNotificationRepository()
 	settingRepo := repositories.GetSystemSettingRepository()
 
@@ -499,6 +523,10 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 }
 
 func (r *SettingsController) TestAlertSettings(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
 	channel := ctx.Request().Input("type")
 	if channel == "" {
 		return utils.ErrorResponse(ctx, 422, "测试类型不能为空")
