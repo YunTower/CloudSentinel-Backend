@@ -6,6 +6,7 @@ import (
 	"goravel/app/repositories"
 	"goravel/app/utils"
 	"goravel/app/utils/notification"
+	"goravel/app/utils/security"
 	"strconv"
 	"strings"
 	"time"
@@ -471,6 +472,19 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 		"mentioned": ctx.Request().Input("notifications.webhook.mentioned"),
 		"platform":  ctx.Request().Input("notifications.webhook.platform"),
 	}
+
+	webhookURL := strings.TrimSpace(fmt.Sprint(webhookCfg["webhook"]))
+	if webhookURL != "" {
+		u, err := security.ParseAndValidateWebhookURLForConfig(webhookURL)
+		if err != nil {
+			return utils.ErrorResponse(ctx, 422, "Webhook URL 不合法")
+		}
+		webhookURL = u.String()
+		webhookCfg["webhook"] = webhookURL
+	}
+	if webhookEnabled && webhookURL == "" {
+		return utils.ErrorResponse(ctx, 422, "启用 Webhook 通知时必须填写有效的 Webhook URL")
+	}
 	writeNotify := func(nType string, enabled bool, cfg map[string]any) error {
 		// 如果是邮件配置，处理密码逻辑
 		if nType == "email" {
@@ -504,8 +518,7 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 
 	emailConfigured := emailEnabled && strings.TrimSpace(fmt.Sprint(emailCfg["smtp"])) != "" &&
 		strings.TrimSpace(fmt.Sprint(emailCfg["from"])) != "" && strings.TrimSpace(fmt.Sprint(emailCfg["to"])) != ""
-	webhookURL := strings.TrimSpace(fmt.Sprint(webhookCfg["webhook"]))
-	webhookConfigured := webhookEnabled && webhookURL != "" && (strings.HasPrefix(webhookURL, "http://") || strings.HasPrefix(webhookURL, "https://"))
+	webhookConfigured := webhookEnabled && webhookURL != ""
 	hasChannel := emailConfigured || webhookConfigured
 
 	if (alertServerOfflineEnabled || alertServerOnlineEnabled) && !hasChannel {
@@ -531,6 +544,9 @@ func (r *SettingsController) TestAlertSettings(ctx http.Context) http.Response {
 	if channel == "" {
 		return utils.ErrorResponse(ctx, 422, "测试类型不能为空")
 	}
+
+	userID, _ := ctx.Value("user_id").(string)
+	facades.Log().Infof("alert test requested: user_id=%s type=%s", userID, channel)
 
 	notificationRepo := repositories.GetAlertNotificationRepository()
 
@@ -583,6 +599,9 @@ func (r *SettingsController) TestAlertSettings(ctx http.Context) http.Response {
 		var webhookCfg notification.WebhookConfig
 		if err := json.Unmarshal(configBytes, &webhookCfg); err != nil {
 			return utils.ErrorResponseWithError(ctx, 422, "无效的Webhook配置", err)
+		}
+		if u, err := security.ParseAndValidateWebhookURLForConfig(webhookCfg.Webhook); err == nil {
+			facades.Log().Infof("alert test webhook target: user_id=%s host=%s", userID, u.Hostname())
 		}
 
 		// 发送测试消息
