@@ -2,13 +2,18 @@ package notification
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"net/smtp"
 	"strings"
+	"time"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/utils/security"
 )
 
 // EmailConfig 邮件配置
@@ -133,6 +138,11 @@ func SendWebhook(config WebhookConfig, content string) error {
 		return fmt.Errorf("webhook配置不完整")
 	}
 
+	u, ips, err := security.ResolveAndValidateWebhookURLForRequest(config.Webhook, 2*time.Second)
+	if err != nil {
+		return fmt.Errorf("webhook URL 不合法: %w", err)
+	}
+
 	var message map[string]interface{}
 
 	// 根据平台类型构建消息格式
@@ -211,16 +221,61 @@ func SendWebhook(config WebhookConfig, content string) error {
 		return err
 	}
 
-	resp, err := facades.Http().
-		WithHeaders(map[string]string{"Content-Type": "application/json"}).
-		Post(config.Webhook, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(jsonData))
 	if err != nil {
-		return err
+		return fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	targetHost := strings.ToLower(u.Hostname())
+	transport := &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
+		TLSHandshakeTimeout: 5 * time.Second,
+		ForceAttemptHTTP2:   true,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, splitErr := net.SplitHostPort(addr)
+			if splitErr != nil {
+				// 回退到默认行为
+				return dialer.DialContext(ctx, network, addr)
+			}
+			if strings.ToLower(host) != targetHost {
+				return dialer.DialContext(ctx, network, addr)
+			}
+
+			var lastErr error
+			for _, ip := range ips {
+				conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+				if dialErr == nil {
+					return conn, nil
+				}
+				lastErr = dialErr
+			}
+			if lastErr == nil {
+				lastErr = fmt.Errorf("dial failed")
+			}
+			return nil, lastErr
+		},
 	}
 
-	if resp.Failed() {
-		body, _ := resp.Body()
-		return fmt.Errorf("webhook接口返回错误状态码: %d, Body: %s", resp.Status(), body)
+	client := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// 禁止重定向，避免绕过 SSRF 校验
+			return http.ErrUseLastResponse
+		},
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("请求 webhook 失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+		return fmt.Errorf("webhook接口返回错误状态码: %d, Body: %s", resp.StatusCode, string(body))
 	}
 
 	return nil
