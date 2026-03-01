@@ -849,9 +849,10 @@ prepare_exec_env() {
     cd "$install_dir" || return 1
     [ ! -f ".env" ] && cd "$original_dir" && return 1
 
-    # 确保 .env 文件对 cloudsentinel 用户可读
+    # 确保 .env 文件仅对 cloudsentinel 用户可读
     if is_root_with_cloudsentinel; then
-        chmod 644 .env
+        chown cloudsentinel:root .env || true
+        chmod 600 .env
     fi
 
     # 临时修改 APP_ENV 为 local
@@ -1661,6 +1662,7 @@ main() {
     # 生成 .env 文件
     generate_env_file "$INSTALL_DIR" "$PORT"
     is_root_with_cloudsentinel && chown cloudsentinel:root "$INSTALL_DIR/.env"
+    is_root_with_cloudsentinel && chmod 600 "$INSTALL_DIR/.env"
 
     # 验证 .env 文件是否创建成功
     if [ ! -f "$INSTALL_DIR/.env" ]; then
@@ -1842,4 +1844,3 @@ if [ "$1" = "diagnose" ] || [ "$1" = "diagnosis" ] || [ "$1" = "--diagnose" ] ||
 else
     main "$@"
 fi
-
