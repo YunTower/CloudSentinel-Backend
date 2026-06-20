@@ -135,6 +135,8 @@ func main() {
 
 		// 停止性能指标批量写入缓冲区
 		services.GetMetricBuffer().Stop()
+		// 停止 Agent 数据 Worker 池，等待队列中的任务处理完毕
+		services.GetGlobalDataWorker().Stop()
 
 		if err := facades.Route().Shutdown(); err != nil {
 			facades.Log().Errorf("Route Shutdown error: %v", err)
