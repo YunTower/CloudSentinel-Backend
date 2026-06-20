@@ -43,7 +43,8 @@ func (w *AgentDataWorker) Start() {
 // Stop 停止worker池
 func (w *AgentDataWorker) Stop() {
 	w.cancel()
-	close(w.jobQueue)
+	// 不关闭 jobQueue：cancel() 已通知所有 worker 退出；
+	// 关闭 channel 会与并发中的 Enqueue 产生 send-on-closed-channel panic
 	w.wg.Wait()
 }
 

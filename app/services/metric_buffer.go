@@ -31,8 +31,8 @@ func GetMetricBuffer() *MetricBuffer {
 	metricBufferOnce.Do(func() {
 		globalMetricBuffer = &MetricBuffer{
 			buffer:    make([]*models.ServerMetric, 0, 100),
-			batchSize: 50,                // 批量写入大小：50条
-			interval:  1 * time.Second,   // 批量写入间隔：1秒
+			batchSize: 50,              // 批量写入大小：50条
+			interval:  1 * time.Second, // 批量写入间隔：1秒
 			stopChan:  make(chan struct{}),
 			repo:      repositories.NewServerMetricRepository(),
 		}
@@ -60,12 +60,12 @@ func (b *MetricBuffer) Stop() {
 // Enqueue 将性能指标加入缓冲区
 func (b *MetricBuffer) Enqueue(metric *models.ServerMetric) {
 	b.bufferMu.Lock()
-	defer b.bufferMu.Unlock()
-
 	b.buffer = append(b.buffer, metric)
+	shouldFlush := len(b.buffer) >= b.batchSize
+	b.bufferMu.Unlock()
 
-	// 如果缓冲区达到批量大小，立即刷新
-	if len(b.buffer) >= b.batchSize {
+	// 在锁外触发刷新，避免 flush() 尝试获取同一把锁时积累大量阻塞 goroutine
+	if shouldFlush {
 		go b.flush()
 	}
 }

@@ -160,7 +160,7 @@ func (h *agentMessageHandler) HandleAuth(data map[string]interface{}, conn *Agen
 
 // handleKeyExchange 处理密钥交换流程
 func (h *agentMessageHandler) handleKeyExchange(serverID, agentPublicKey string, conn *AgentConnection) error {
-	serverRepo := repositories.NewServerRepository()
+	serverRepo := repositories.GetServerRepository()
 
 	// 计算 Agent 公钥指纹
 	agentFingerprint, err := h.getPublicKeyFingerprint(agentPublicKey)
@@ -518,7 +518,7 @@ func (h *agentMessageHandler) HandleAgentConfig(data map[string]interface{}, con
 	}
 
 	serverID := conn.GetServerID()
-	serverRepo := repositories.NewServerRepository()
+	serverRepo := repositories.GetServerRepository()
 
 	// 构建更新数据
 	updateData := make(map[string]interface{})

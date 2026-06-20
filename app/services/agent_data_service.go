@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"goravel/app/models"
+	"goravel/app/repositories"
 
 	"github.com/goravel/framework/facades"
 )
@@ -32,8 +33,12 @@ func (j *saveSystemInfoJob) Execute() error {
 		"updated_at": time.Now(),
 	}
 
-	if hostname, ok := j.data["hostname"].(string); ok {
-		updates["name"] = hostname
+	if hostname, ok := j.data["hostname"].(string); ok && hostname != "" {
+		// 仅在 name 尚未设置时用 hostname 初始化，避免覆盖用户自定义名称
+		_, _ = facades.Orm().Query().Exec(
+			"UPDATE servers SET name = ? WHERE id = ? AND (name IS NULL OR name = '')",
+			hostname, j.serverID,
+		)
 	}
 	if osInfo, ok := j.data["os"].(string); ok {
 		updates["os_type"] = osInfo
@@ -72,11 +77,20 @@ type saveMetricsJob struct {
 func (j *saveMetricsJob) Execute() error {
 	cpuUsage, _ := j.data["cpu_usage"].(float64)
 	memoryUsage, _ := j.data["memory_usage"].(float64)
+	if memoryUsage == 0 {
+		memoryUsage, _ = j.data["memory_usage_percent"].(float64)
+	}
 	diskUsage, _ := j.data["disk_usage"].(float64)
 
 	// 网络速率
-	netUp, _ := j.data["net_bytes_sent_rate"].(float64)
-	netDown, _ := j.data["net_bytes_recv_rate"].(float64)
+	netUp, _ := j.data["network_upload"].(float64)
+	if netUp == 0 {
+		netUp, _ = j.data["net_bytes_sent_rate"].(float64)
+	}
+	netDown, _ := j.data["network_download"].(float64)
+	if netDown == 0 {
+		netDown, _ = j.data["net_bytes_recv_rate"].(float64)
+	}
 
 	metric := &models.ServerMetric{
 		ServerID:        j.serverID,
@@ -90,6 +104,21 @@ func (j *saveMetricsJob) Execute() error {
 
 	// 使用批量写入缓冲区代替直接写入数据库
 	GetMetricBuffer().Enqueue(metric)
+
+	alertMetrics := map[string]interface{}{
+		"cpu_usage":    cpuUsage,
+		"memory_usage": memoryUsage,
+		"disk_usage":   diskUsage,
+	}
+	if err := NewAlertService().CheckAndAlert(j.serverID, alertMetrics); err != nil {
+		facades.Log().Warningf("检查服务器负载告警失败: server_id=%s, error=%v", j.serverID, err)
+	}
+	peakMbps := (netUp + netDown) * 8 / 1000 / 1000
+	if peakMbps > 0 {
+		if err := NewAlertService().CheckBandwidth(j.serverID, peakMbps); err != nil {
+			facades.Log().Warningf("检查服务器带宽告警失败: server_id=%s, error=%v", j.serverID, err)
+		}
+	}
 	return nil
 }
 
@@ -154,32 +183,205 @@ func (j *saveAgentLogsJob) Execute() error {
 
 // SaveMemoryInfo 保存内存信息
 func SaveMemoryInfo(serverID string, data map[string]interface{}) error {
-	// TODO: 实现保存逻辑
+	worker := GetGlobalDataWorker()
+	worker.Enqueue(&saveMemoryInfoJob{
+		serverID: serverID,
+		data:     data,
+	})
 	return nil
+}
+
+type saveMemoryInfoJob struct {
+	serverID string
+	data     map[string]interface{}
+}
+
+func (j *saveMemoryInfoJob) Execute() error {
+	memoryTotal := toInt64(j.data["memory_total"])
+	memoryUsed := toInt64(j.data["memory_used"])
+	memoryUsagePercent := toFloat64(j.data["memory_usage_percent"])
+
+	return facades.Orm().Query().Create(&models.ServerMemoryHistory{
+		ServerID:           j.serverID,
+		MemoryTotal:        memoryTotal,
+		MemoryUsed:         memoryUsed,
+		MemoryUsagePercent: memoryUsagePercent,
+		Timestamp:          time.Now(),
+	})
 }
 
 // SaveDiskInfo 保存磁盘信息
 func SaveDiskInfo(serverID string, data []interface{}) error {
-	// TODO: 实现保存逻辑
+	worker := GetGlobalDataWorker()
+	worker.Enqueue(&saveDiskInfoJob{
+		serverID: serverID,
+		data:     data,
+	})
+	return nil
+}
+
+type saveDiskInfoJob struct {
+	serverID string
+	data     []interface{}
+}
+
+func (j *saveDiskInfoJob) Execute() error {
+	now := time.Now()
+
+	_, err := facades.Orm().Query().Where("server_id", j.serverID).Delete(&models.ServerDisk{})
+	if err != nil {
+		return err
+	}
+
+	for _, item := range j.data {
+		diskData, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		diskName := toString(diskData["device"])
+		if diskName == "" {
+			diskName = toString(diskData["disk_name"])
+		}
+		if diskName == "" {
+			diskName = toString(diskData["mount_point"])
+		}
+		if diskName == "" {
+			continue
+		}
+
+		diskModel := &models.ServerDisk{
+			ServerID:   j.serverID,
+			DiskName:   diskName,
+			MountPoint: toString(diskData["mount_point"]),
+			Filesystem: toString(diskData["filesystem"]),
+			TotalSize:  toInt64(diskData["total"]),
+			UsedSize:   toInt64(diskData["used"]),
+			FreeSize:   toInt64(diskData["free"]),
+			DiskType:   toString(diskData["disk_type"]),
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		if diskModel.DiskType == "" {
+			diskModel.DiskType = "unknown"
+		}
+
+		if err := facades.Orm().Query().Create(diskModel); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
 // SaveDiskIO 保存磁盘IO信息
 func SaveDiskIO(serverID string, data map[string]interface{}) error {
-	// TODO: 实现保存逻辑
+	worker := GetGlobalDataWorker()
+	worker.Enqueue(&saveDiskIOJob{
+		serverID: serverID,
+		data:     data,
+	})
 	return nil
+}
+
+type saveDiskIOJob struct {
+	serverID string
+	data     map[string]interface{}
+}
+
+func (j *saveDiskIOJob) Execute() error {
+	_, err := facades.Orm().Query().Exec(
+		"INSERT INTO server_disk_io (server_id, read_speed, write_speed, timestamp) VALUES (?, ?, ?, ?)",
+		j.serverID,
+		toFloat64(j.data["read_speed"]),
+		toFloat64(j.data["write_speed"]),
+		time.Now(),
+	)
+	return err
 }
 
 // SaveNetworkInfo 保存网络信息
 func SaveNetworkInfo(serverID string, data map[string]interface{}) error {
-	// TODO: 实现保存逻辑
+	worker := GetGlobalDataWorker()
+	worker.Enqueue(&saveNetworkInfoJob{
+		serverID: serverID,
+		data:     data,
+	})
+	return nil
+}
+
+type saveNetworkInfoJob struct {
+	serverID string
+	data     map[string]interface{}
+}
+
+func (j *saveNetworkInfoJob) Execute() error {
+	now := time.Now()
+	uploadSpeed := toFloat64(j.data["upload_speed"])
+	downloadSpeed := toFloat64(j.data["download_speed"])
+
+	if err := facades.Orm().Query().Create(&models.ServerNetworkSpeed{
+		ServerID:      j.serverID,
+		UploadSpeed:   uploadSpeed,
+		DownloadSpeed: downloadSpeed,
+		Timestamp:     now,
+	}); err != nil {
+		return err
+	}
+
+	if _, err := facades.Orm().Query().Exec(
+		"INSERT INTO server_network_connections (server_id, tcp_connections, udp_connections, timestamp) VALUES (?, ?, ?, ?)",
+		j.serverID,
+		toInt(j.data["tcp_connections"]),
+		toInt(j.data["udp_connections"]),
+		now,
+	); err != nil {
+		return err
+	}
+
+	if err := upsertTrafficUsage(j.serverID, toInt64(j.data["upload_bytes"]), toInt64(j.data["download_bytes"]), now); err != nil {
+		return err
+	}
+
+	limitBytes := getServerTrafficLimitBytes(j.serverID)
+	if limitBytes > 0 {
+		usedBytes := toInt64(j.data["upload_bytes"]) + toInt64(j.data["download_bytes"])
+		if err := NewAlertService().CheckTraffic(j.serverID, usedBytes, limitBytes); err != nil {
+			facades.Log().Warningf("检查服务器流量告警失败: server_id=%s, error=%v", j.serverID, err)
+		}
+	}
+
 	return nil
 }
 
 // SaveSwapInfo 保存Swap信息
 func SaveSwapInfo(serverID string, data map[string]interface{}) error {
-	// TODO: 实现保存逻辑
+	worker := GetGlobalDataWorker()
+	worker.Enqueue(&saveSwapInfoJob{
+		serverID: serverID,
+		data:     data,
+	})
 	return nil
+}
+
+type saveSwapInfoJob struct {
+	serverID string
+	data     map[string]interface{}
+}
+
+func (j *saveSwapInfoJob) Execute() error {
+	_, err := facades.Orm().Query().Where("server_id", j.serverID).Delete(&models.ServerSwap{})
+	if err != nil {
+		return err
+	}
+
+	return facades.Orm().Query().Create(&models.ServerSwap{
+		ServerID:  j.serverID,
+		SwapTotal: toInt64(j.data["swap_total"]),
+		SwapUsed:  toInt64(j.data["swap_used"]),
+		SwapFree:  toInt64(j.data["swap_free"]),
+		Timestamp: time.Now(),
+	})
 }
 
 // SaveProcessInfo 保存进程信息
@@ -249,6 +451,10 @@ func CalculateUptime(input interface{}, _ ...interface{}) string {
 		return "0分"
 	}
 
+	if uptime < 0 {
+		return "0分"
+	}
+
 	days := uptime / 86400
 	hours := (uptime % 86400) / 3600
 	minutes := (uptime % 3600) / 60
@@ -276,4 +482,100 @@ func FormatMetricValue(input interface{}) float64 {
 		return 0.0
 	}
 	return math.Round(value*100) / 100
+}
+
+func toString(value interface{}) string {
+	if value == nil {
+		return ""
+	}
+	if s, ok := value.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", value)
+}
+
+func toFloat64(value interface{}) float64 {
+	switch v := value.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case int32:
+		return float64(v)
+	case uint:
+		return float64(v)
+	case uint64:
+		return float64(v)
+	case uint32:
+		return float64(v)
+	case json.Number:
+		f, _ := v.Float64()
+		return f
+	default:
+		return 0
+	}
+}
+
+func toInt64(value interface{}) int64 {
+	switch v := value.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case int32:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case float32:
+		return int64(v)
+	case uint64:
+		if v > uint64(^uint64(0)>>1) {
+			return int64(^uint64(0) >> 1)
+		}
+		return int64(v)
+	case uint:
+		return int64(v)
+	case uint32:
+		return int64(v)
+	case json.Number:
+		i, _ := v.Int64()
+		return i
+	default:
+		return 0
+	}
+}
+
+func toInt(value interface{}) int {
+	return int(toInt64(value))
+}
+
+func upsertTrafficUsage(serverID string, uploadBytes, downloadBytes int64, now time.Time) error {
+	_, err := facades.Orm().Query().Exec(
+		`INSERT INTO server_traffic_usage (server_id, year, month, upload_bytes, download_bytes, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(server_id, year, month) DO UPDATE SET
+			upload_bytes = excluded.upload_bytes,
+			download_bytes = excluded.download_bytes,
+			updated_at = excluded.updated_at`,
+		serverID,
+		now.Year(),
+		int(now.Month()),
+		uploadBytes,
+		downloadBytes,
+		now,
+		now,
+	)
+	return err
+}
+
+func getServerTrafficLimitBytes(serverID string) int64 {
+	server, err := repositories.GetServerRepository().GetByID(serverID)
+	if err != nil || server == nil {
+		return 0
+	}
+	return server.TrafficLimitBytes
 }

@@ -35,22 +35,23 @@ func (s ConnectionState) String() string {
 
 // MessageType 消息类型常量
 const (
-	MessageTypeAuth        = "auth"
-	MessageTypeHello       = "hello"
-	MessageTypeSystemInfo  = "system_info"
-	MessageTypeMetrics     = "metrics"
-	MessageTypeMemoryInfo  = "memory_info"
-	MessageTypeDiskInfo    = "disk_info"
-	MessageTypeDiskIO      = "disk_io"
-	MessageTypeNetworkInfo = "network_info"
-	MessageTypeSwapInfo    = "swap_info"
-	MessageTypeAgentConfig = "agent_config"
-	MessageTypeProcessInfo = "process_info"
-	MessageTypeGPUInfo     = "gpu_info"
-	MessageTypeAgentLog    = "agent_log"
+	MessageTypeAuth               = "auth"
+	MessageTypeHello              = "hello"
+	MessageTypeSystemInfo         = "system_info"
+	MessageTypeMetrics            = "metrics"
+	MessageTypeMemoryInfo         = "memory_info"
+	MessageTypeDiskInfo           = "disk_info"
+	MessageTypeDiskIO             = "disk_io"
+	MessageTypeNetworkInfo        = "network_info"
+	MessageTypeSwapInfo           = "swap_info"
+	MessageTypeAgentConfig        = "agent_config"
+	MessageTypeProcessInfo        = "process_info"
+	MessageTypeGPUInfo            = "gpu_info"
+	MessageTypeAgentLog           = "agent_log"
 	MessageTypePing               = "ping"
 	MessageTypePong               = "pong"
 	MessageTypeError              = "error"
+	MessageTypeCommandAck         = "command_ack"
 	MessageTypeServiceCheckResult = "service_check_result"
 )
 
@@ -86,6 +87,7 @@ type AgentConnectionInfo struct {
 type FrontendConnectionInfo struct {
 	ConnID     string
 	UserID     string
+	UserType   string
 	RemoteAddr string
 	LastPing   time.Time
 }
