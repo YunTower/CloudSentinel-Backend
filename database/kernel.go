@@ -42,6 +42,14 @@ func (kernel Kernel) Migrations() []schema.Migration {
 		&migrations.AddUpdateChannelSetting{},
 		&migrations.M20260225000001CreateServiceMonitorsTable{},
 		&migrations.M20260225000002CreateServiceMonitorHistoryTable{},
+		&migrations.M20260618000001CreateIncidentsTable{},
+		&migrations.M20260618000002CreateIncidentEventsTable{},
+		&migrations.M20260618000003CreateServiceMonitorResultsTable{},
+		&migrations.M20260619000001AddHttpOptionsToServiceMonitorsTable{},
+		&migrations.M20260619000002AddGroupNameToServiceMonitorsTable{},
+		&migrations.M20260619000003AddProbeMetadataToServiceMonitorResultsTable{},
+		&migrations.M20260619000004CreateAgentTasksTable{},
+		&migrations.M20260619000005AddStabilityFieldsToServiceMonitorsTable{},
 	}
 }
 
