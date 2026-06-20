@@ -80,6 +80,7 @@ func (r *ServerRepository) GetWithDisks(serverIDs []string) ([]*models.Server, e
 		WhereIn("id", stringsToInterfaceSlice(serverIDs)).
 		With("ServerGroup").
 		With("ServerDisks").
+		With("ServerSwap").
 		Get(&servers)
 
 	if err != nil {

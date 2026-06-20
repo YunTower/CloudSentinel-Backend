@@ -11,6 +11,7 @@ type Server struct {
 	Name           string     `gorm:"column:name" json:"name"`
 	IP             string     `gorm:"column:ip" json:"ip"`
 	Status         string     `gorm:"column:status" json:"status"`
+	Location       string     `gorm:"column:location" json:"location"`
 	OS             string     `gorm:"column:os" json:"os"`
 	Architecture   string     `gorm:"column:architecture" json:"architecture"`
 	Kernel         string     `gorm:"column:kernel" json:"kernel"`

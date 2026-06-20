@@ -69,11 +69,11 @@ func handleAuthError(ctx http.Context, err error) bool {
 
 	errMsg := err.Error()
 	if errMsg == "token has expired" || errMsg == "token expired" {
-		utils.ErrorResponse(ctx, 401, "Token已过期", "TOKEN_EXPIRED")
+		_ = utils.ErrorResponse(ctx, 401, "Token已过期", "TOKEN_EXPIRED")
 		return true
 	}
 
-	utils.ErrorResponse(ctx, 401, "Token无效", "TOKEN_INVALID")
+	_ = utils.ErrorResponse(ctx, 401, "Token无效", "TOKEN_INVALID")
 	return true
 }
 
@@ -81,7 +81,7 @@ func handleAuthError(ctx http.Context, err error) bool {
 func authenticate(ctx http.Context, requireAdmin bool) bool {
 	token, err := parseToken(ctx)
 	if err != nil {
-		utils.ErrorResponse(ctx, 401, err.Error(), "TOKEN_MISSING")
+		_ = utils.ErrorResponse(ctx, 401, err.Error(), "TOKEN_MISSING")
 		return false
 	}
 
@@ -93,7 +93,7 @@ func authenticate(ctx http.Context, requireAdmin bool) bool {
 	guard := getPayloadField(payload, "Guard")
 
 	if requireAdmin && guard != "admin" {
-		utils.ErrorResponse(ctx, 403, "权限不足", "INSUFFICIENT_PERMISSIONS")
+		_ = utils.ErrorResponse(ctx, 403, "权限不足", "INSUFFICIENT_PERMISSIONS")
 		return false
 	}
 

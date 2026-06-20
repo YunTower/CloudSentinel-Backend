@@ -1,9 +1,8 @@
 package routes
 
 import (
-	"os"
-
 	"goravel/app/http/middleware"
+	"time"
 
 	"github.com/goravel/framework/contracts/route"
 	"github.com/goravel/framework/facades"
@@ -17,16 +16,27 @@ func Api() {
 	settingsController := controllers.NewSettingsController()
 	updateController := controllers.NewUpdateController()
 	wsController := controllers.NewWebSocketController()
+	agentReportController := controllers.NewAgentReportController()
+	agentTaskController := controllers.NewAgentTaskController()
 	serverController := controllers.NewServerController()
 	serverGroupController := controllers.NewServerGroupController()
 	serverAlertController := controllers.NewServerAlertController()
 	serviceMonitorController := controllers.NewServiceMonitorController()
+	incidentController := controllers.NewIncidentController()
 	staticController := controllers.NewStaticController()
 
 	facades.Route().Prefix("api").Group(func(router route.Router) {
 		// 公开接口
 		router.Post("/auth/login", authController.Login)
-		router.Get("/settings/public", settingsController.GetPublicSettings)
+		router.Middleware(middleware.PublicRateLimit(120, 1*time.Minute)).Group(func(publicRouter route.Router) {
+			publicRouter.Get("/settings/public", settingsController.GetPublicSettings)
+			publicRouter.Get("/public/servers", serverController.GetServers)
+			publicRouter.Get("/public/incidents", incidentController.GetPublic)
+			publicRouter.Get("/public/service-monitors", serviceMonitorController.GetPublic)
+		})
+		router.Post("/agent/report", agentReportController.Report)
+		router.Post("/agent/tasks/pull", agentTaskController.Pull)
+		router.Post("/agent/tasks/complete", agentTaskController.Complete)
 
 		// WebSocket 连接
 		router.Get("/ws/agent", wsController.HandleAgentConnection)
@@ -39,17 +49,6 @@ func Api() {
 				authRoute.Get("/refresh", authController.Refresh)
 				authRoute.Get("/check", authController.Check)
 			})
-
-			// 服务器相关
-			authRouter.Prefix("/servers").Group(func(serversRoute route.Router) {
-				// 访客可读的基础列表
-				serversRoute.Get("", serverController.GetServers)
-			})
-
-			// 分组列表对访客可读
-			authRouter.Prefix("/servers/groups").Group(func(groupsRoute route.Router) {
-				groupsRoute.Get("", serverGroupController.GetGroups)
-			})
 		})
 
 		// 仅管理员接口
@@ -59,9 +58,13 @@ func Api() {
 				settingsRoute.Get("/panel", settingsController.GetPanelSettings)
 				settingsRoute.Get("/permissions", settingsController.GetPermissionsSettings)
 				settingsRoute.Get("/alerts", settingsController.GetAlertsSettings)
+				settingsRoute.Get("/public-display", settingsController.GetPublicDisplaySettings)
+				settingsRoute.Get("/public-pages", settingsController.GetPublicPagesSettings)
 				settingsRoute.Patch("/panel", settingsController.UpdatePanelSettings)
 				settingsRoute.Patch("/permissions", settingsController.UpdatePermissionsSettings)
 				settingsRoute.Patch("/alerts", settingsController.UpdateAlertsSettings)
+				settingsRoute.Patch("/public-display", settingsController.UpdatePublicDisplaySettings)
+				settingsRoute.Patch("/public-pages", settingsController.UpdatePublicPagesSettings)
 				settingsRoute.Post("/alerts/test", settingsController.TestAlertSettings)
 			})
 
@@ -75,6 +78,7 @@ func Api() {
 
 			// 服务器相关
 			adminRouter.Prefix("/servers").Group(func(serversRoute route.Router) {
+				serversRoute.Get("", serverController.GetServers)
 				serversRoute.Post("", serverController.CreateServer)
 				serversRoute.Get("/:id", serverController.GetServerDetail)
 				serversRoute.Patch("/:id", serverController.UpdateServer)
@@ -93,6 +97,7 @@ func Api() {
 
 				// 服务器告警规则
 				serversRoute.Get("/:id/alert-rules", serverAlertController.GetServerAlertRules)
+				serversRoute.Patch("/:id/alert-rules", serverAlertController.UpdateServerAlertRules)
 				serversRoute.Post("/alert-rules/copy", serverAlertController.CopyAlertRules)
 			})
 
@@ -100,12 +105,22 @@ func Api() {
 			adminRouter.Prefix("/service-monitors").Group(func(smRoute route.Router) {
 				smRoute.Get("", serviceMonitorController.GetAll)
 				smRoute.Post("", serviceMonitorController.Create)
+				smRoute.Get("/:id/results", serviceMonitorController.GetResults)
 				smRoute.Patch("/:id", serviceMonitorController.Update)
 				smRoute.Delete("/:id", serviceMonitorController.Delete)
 			})
 
+			// 事件时间线
+			adminRouter.Prefix("/incidents").Group(func(incidentRoute route.Router) {
+				incidentRoute.Get("", incidentController.GetAll)
+				incidentRoute.Post("/maintenance", incidentController.CreateMaintenance)
+				incidentRoute.Post("/:id/updates", incidentController.AddMaintenanceUpdate)
+				incidentRoute.Post("/:id/resolve", incidentController.ResolveMaintenance)
+			})
+
 			// 分组写操作
 			adminRouter.Prefix("/servers/groups").Group(func(groupsRoute route.Router) {
+				groupsRoute.Get("", serverGroupController.GetGroups)
 				groupsRoute.Post("", serverGroupController.CreateGroup)
 				groupsRoute.Patch("/:id", serverGroupController.UpdateGroup)
 				groupsRoute.Delete("/:id", serverGroupController.DeleteGroup)
@@ -127,10 +142,4 @@ func hasEmbeddedFiles() bool {
 		return false
 	}
 	return len(entries) > 0
-}
-
-// isProductionMode 检查是否在生产模式
-func isProductionMode() bool {
-	env := os.Getenv("APP_ENV")
-	return env == "production"
 }

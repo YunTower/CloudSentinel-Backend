@@ -64,8 +64,7 @@ func SendEmail(config EmailConfig, subject, content string) error {
 	if strings.ToUpper(config.Security) == "SSL" || strings.ToUpper(config.Security) == "TLS" {
 		// SSL/TLS 模式
 		tlsConfig := &tls.Config{
-			ServerName:         config.SMTP,
-			InsecureSkipVerify: true, // 允许自签名证书
+			ServerName: config.SMTP,
 		}
 		conn, err := tls.Dial("tcp", addr, tlsConfig)
 		if err != nil {
@@ -92,8 +91,7 @@ func SendEmail(config EmailConfig, subject, content string) error {
 	// STARTTLS 升级
 	if strings.ToUpper(config.Security) == "STARTTLS" {
 		tlsConfig := &tls.Config{
-			ServerName:         config.SMTP,
-			InsecureSkipVerify: true,
+			ServerName: config.SMTP,
 		}
 		if err := c.StartTLS(tlsConfig); err != nil {
 			return fmt.Errorf("STARTTLS升级失败: %v", err)

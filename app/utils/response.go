@@ -2,6 +2,7 @@ package utils
 
 import (
 	"github.com/goravel/framework/contracts/http"
+	"github.com/goravel/framework/facades"
 )
 
 // ErrorResponse 返回错误响应
@@ -16,12 +17,12 @@ func ErrorResponse(ctx http.Context, status int, message string, code ...string)
 	return ctx.Response().Status(status).Json(response)
 }
 
-// ErrorResponseWithError 返回带错误详情的错误响应
+// ErrorResponseWithError 返回错误响应，错误详情仅记录到服务端日志，不暴露给客户端
 func ErrorResponseWithError(ctx http.Context, status int, message string, err error, code ...string) http.Response {
+	facades.Log().Errorf("API error [%d] %s: %v", status, message, err)
 	response := http.Json{
 		"status":  false,
 		"message": message,
-		"error":   err.Error(),
 	}
 	if len(code) > 0 && code[0] != "" {
 		response["code"] = code[0]
@@ -52,4 +53,3 @@ func SuccessResponseWithStatus(ctx http.Context, status int, message string, dat
 	}
 	return ctx.Response().Status(status).Json(response)
 }
-

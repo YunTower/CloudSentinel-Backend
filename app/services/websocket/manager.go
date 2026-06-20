@@ -61,6 +61,8 @@ type connectionManager struct {
 	agentMutex              sync.RWMutex
 	frontendMutex           sync.RWMutex
 	oldConnectionCloseDelay time.Duration
+	offlineGracePeriod      time.Duration
+	offlineTimers           map[string]*time.Timer
 	onServerStatusChange    ServerStatusNotifier // 服务器上线/离线时回调，可选
 }
 
@@ -80,6 +82,8 @@ func NewConnectionManager(opts ...ManagerOption) ConnectionManager {
 		agentConnections:        make(map[string]*AgentConnection),
 		frontendConnections:     make(map[string]*FrontendConnection),
 		oldConnectionCloseDelay: 2 * time.Second, // 旧连接关闭延迟
+		offlineGracePeriod:      30 * time.Second,
+		offlineTimers:           make(map[string]*time.Timer),
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -91,6 +95,12 @@ func NewConnectionManager(opts ...ManagerOption) ConnectionManager {
 func (m *connectionManager) RegisterAgent(serverID string, conn *AgentConnection) error {
 	m.agentMutex.Lock()
 	defer m.agentMutex.Unlock()
+
+	if timer, ok := m.offlineTimers[serverID]; ok {
+		timer.Stop()
+		delete(m.offlineTimers, serverID)
+		facades.Log().Channel("websocket").Infof("服务器 %s 在离线宽限期内重新连接，取消离线判定", serverID)
+	}
 
 	// 如果已存在旧连接，先标记为已关闭，然后异步关闭
 	if oldConn, exists := m.agentConnections[serverID]; exists {
@@ -168,48 +178,64 @@ func (m *connectionManager) UnregisterAgent(serverID string) {
 		conn.Close()
 		delete(m.agentConnections, serverID)
 		facades.Log().Channel("websocket").Infof("注销服务器连接: %s", serverID)
+		m.scheduleOffline(serverID)
+	}
+}
 
-		// 更新服务器状态为offline并推送状态更新
-		go func() {
-			// 查询当前状态
-			var servers []map[string]interface{}
-			err := facades.Orm().Query().Table("servers").
-				Select("status").
-				Where("id", serverID).
-				Get(&servers)
+func (m *connectionManager) scheduleOffline(serverID string) {
+	if timer, ok := m.offlineTimers[serverID]; ok {
+		timer.Stop()
+	}
+	m.offlineTimers[serverID] = time.AfterFunc(m.offlineGracePeriod, func() {
+		m.agentMutex.Lock()
+		if _, exists := m.agentConnections[serverID]; exists {
+			delete(m.offlineTimers, serverID)
+			m.agentMutex.Unlock()
+			return
+		}
+		delete(m.offlineTimers, serverID)
+		m.agentMutex.Unlock()
+		m.markServerOffline(serverID)
+	})
+	facades.Log().Channel("websocket").Infof("服务器 %s 已断开，进入 %s 离线宽限期", serverID, m.offlineGracePeriod)
+}
 
-			var oldStatus string
-			if err == nil && len(servers) > 0 {
-				if status, ok := servers[0]["status"].(string); ok {
-					oldStatus = status
-				}
-			}
+func (m *connectionManager) markServerOffline(serverID string) {
+	var servers []map[string]interface{}
+	err := facades.Orm().Query().Table("servers").
+		Select("status").
+		Where("id", serverID).
+		Get(&servers)
 
-			_, err = facades.Orm().Query().Table("servers").
-				Where("id", serverID).
-				Update(map[string]interface{}{
-					"status":     "offline",
-					"updated_at": time.Now().Unix(),
-				})
-			if err != nil {
-				facades.Log().Channel("websocket").Errorf("更新服务器状态失败: %v", err)
-				return
-			}
+	var oldStatus string
+	if err == nil && len(servers) > 0 {
+		if status, ok := servers[0]["status"].(string); ok {
+			oldStatus = status
+		}
+	}
 
-			// 如果状态从online变为offline，向前端推送状态更新并触发离线告警回调
-			if oldStatus == "online" {
-				m.BroadcastToFrontend(map[string]interface{}{
-					"type": "server_status_update",
-					"data": map[string]interface{}{
-						"server_id": serverID,
-						"status":    "offline",
-					},
-				})
-				if m.onServerStatusChange != nil {
-					m.onServerStatusChange(serverID, false)
-				}
-			}
-		}()
+	_, err = facades.Orm().Query().Table("servers").
+		Where("id", serverID).
+		Update(map[string]interface{}{
+			"status":     "offline",
+			"updated_at": time.Now().Unix(),
+		})
+	if err != nil {
+		facades.Log().Channel("websocket").Errorf("更新服务器状态失败: %v", err)
+		return
+	}
+
+	if oldStatus == "online" {
+		m.BroadcastToFrontend(map[string]interface{}{
+			"type": "server_status_update",
+			"data": map[string]interface{}{
+				"server_id": serverID,
+				"status":    "offline",
+			},
+		})
+		if m.onServerStatusChange != nil {
+			m.onServerStatusChange(serverID, false)
+		}
 	}
 }
 
@@ -333,6 +359,26 @@ func (m *connectionManager) BroadcastToFrontend(message interface{}) {
 	connections := m.GetAllFrontendConnections()
 	frontendCount := len(connections)
 
+	extractServerID := func(msg interface{}) (string, bool) {
+		root, ok := msg.(map[string]interface{})
+		if !ok {
+			return "", false
+		}
+		// 常见结构：{ type, data: { server_id } }
+		if data, ok := root["data"].(map[string]interface{}); ok {
+			if sid, ok := data["server_id"].(string); ok && sid != "" {
+				return sid, true
+			}
+		}
+		// 兼容：{ server_id: "..." }
+		if sid, ok := root["server_id"].(string); ok && sid != "" {
+			return sid, true
+		}
+		return "", false
+	}
+
+	serverID, hasServerID := extractServerID(message)
+
 	// 尝试获取消息类型用于日志
 	var msgType string
 	if msgMap, ok := message.(map[string]interface{}); ok {
@@ -352,6 +398,11 @@ func (m *connectionManager) BroadcastToFrontend(message interface{}) {
 	for connID, conn := range connections {
 		if conn.IsClosed() {
 			logToChannel("websocket", "info", "BroadcastToFrontend: 跳过已关闭的连接 %s", connID)
+			continue
+		}
+
+		// guest allowlist：带 server_id 的消息按 server 过滤
+		if hasServerID && !conn.CanAccessServer(serverID) {
 			continue
 		}
 

@@ -152,6 +152,13 @@ func (c *WebSocketController) HandleAgentConnection(ctx http.Context) http.Respo
 			c.sendError(conn, "消息缺少type字段")
 			continue
 		}
+		if decoded, err := decodeAgentReportPayload(msg["data"]); err != nil {
+			facades.Log().Channel("websocket").Warningf("压缩上报解包失败: %v", err)
+			c.sendError(conn, "压缩上报格式错误")
+			continue
+		} else {
+			msg["data"] = decoded
+		}
 
 		// 再次检查连接状态
 		if agentConn.IsClosed() {
@@ -208,9 +215,14 @@ func (c *WebSocketController) handleAgentMessage(msgType string, data map[string
 		return c.agentHandler.HandleGPUInfo(data, conn)
 	case ws.MessageTypeAgentLog:
 		return c.agentHandler.HandleAgentLogs(data, conn)
+	case ws.MessageTypeCommandAck:
+		commandID, _ := data["command_id"].(string)
+		command, _ := data["command"].(string)
+		facades.Log().Channel("websocket").Infof("Agent 命令 ACK: server_id=%s command=%s command_id=%s", conn.GetServerID(), command, commandID)
+		return nil
 	case ws.MessageTypeServiceCheckResult:
 		if resultData, ok := data["data"].(map[string]interface{}); ok {
-			services.GetServiceMonitorService().HandleAgentResult(resultData)
+			services.GetServiceMonitorService().HandleAgentResult(resultData, conn.GetServerID())
 		}
 		return nil
 	default:
@@ -238,7 +250,7 @@ func (c *WebSocketController) HandleFrontendConnection(ctx http.Context) http.Re
 	frontendConn.SetRemoteAddr(remoteAddr)
 
 	// 前端必须在握手后首帧发送 auth 消息携带 token，禁止 URL Query 传 token
-	userID, err := c.authenticateFrontendConnection(ctx, frontendConn)
+	userID, userType, err := c.authenticateFrontendConnection(ctx, frontendConn)
 	if err != nil {
 		facades.Log().Channel("websocket").Warningf("前端WebSocket认证失败: %v (连接ID: %s)", err, connID)
 		c.sendError(conn, err.Error())
@@ -246,8 +258,15 @@ func (c *WebSocketController) HandleFrontendConnection(ctx http.Context) http.Re
 		return nil
 	}
 	frontendConn.SetUserID(userID)
+	frontendConn.SetUserType(userType)
 	frontendConn.SetState(ws.StateAuthenticated)
-	facades.Log().Channel("websocket").Infof("前端WebSocket认证成功: 用户ID=%s (连接ID: %s)", userID, connID)
+	// 应用公开展示策略（仅 guest）：为 WebSocket 连接绑定 allowlist
+	if userType == "guest" {
+		cfg := loadPublicDisplayConfigV1()
+		restrict, allowed := guestAllowedServerIDsFromConfigV1(cfg)
+		frontendConn.SetAllowedServerIDs(restrict, allowed)
+	}
+	facades.Log().Channel("websocket").Infof("前端WebSocket认证成功: 用户ID=%s 用户类型=%s (连接ID: %s)", userID, userType, connID)
 
 	// 注册连接
 	if err := c.manager.RegisterFrontend(connID, frontendConn); err != nil {
@@ -262,8 +281,9 @@ func (c *WebSocketController) HandleFrontendConnection(ctx http.Context) http.Re
 		"status":  "success",
 		"message": "连接已建立",
 		"data": map[string]interface{}{
-			"conn_id": connID,
-			"user_id": userID,
+			"conn_id":   connID,
+			"user_id":   userID,
+			"user_type": userType,
 		},
 	}
 	if err := frontendConn.WriteJSON(authSuccessMsg); err != nil {
@@ -339,20 +359,20 @@ func (c *WebSocketController) HandleFrontendConnection(ctx http.Context) http.Re
 	return nil
 }
 
-func (c *WebSocketController) authenticateFrontendConnection(ctx http.Context, frontendConn *ws.FrontendConnection) (string, error) {
+func (c *WebSocketController) authenticateFrontendConnection(ctx http.Context, frontendConn *ws.FrontendConnection) (string, string, error) {
 	_, message, err := frontendConn.ReadMessage()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	var authMsg map[string]interface{}
 	if err := json.Unmarshal(message, &authMsg); err != nil {
-		return "", fmt.Errorf("认证消息格式错误")
+		return "", "", fmt.Errorf("认证消息格式错误")
 	}
 
 	msgType, _ := authMsg["type"].(string)
 	if msgType != ws.MessageTypeAuth {
-		return "", fmt.Errorf("缺少认证消息")
+		return "", "", fmt.Errorf("缺少认证消息")
 	}
 
 	var token string
@@ -367,19 +387,23 @@ func (c *WebSocketController) authenticateFrontendConnection(ctx http.Context, f
 		}
 	}
 	if token == "" {
-		return "", fmt.Errorf("缺少认证token")
+		return "", "", fmt.Errorf("缺少认证token")
 	}
 
 	payload, err := facades.Auth(ctx).Parse(token)
 	if err != nil {
-		return "", fmt.Errorf("Token无效或已过期")
+		return "", "", fmt.Errorf("Token无效或已过期")
 	}
 
 	if payload.Key == "" {
-		return "", fmt.Errorf("用户标识无效")
+		return "", "", fmt.Errorf("用户标识无效")
 	}
 
-	return payload.Key, nil
+	userType := "guest"
+	if payload.Guard == "admin" {
+		userType = "admin"
+	}
+	return payload.Key, userType, nil
 }
 
 // sendError 发送错误消息
@@ -436,6 +460,11 @@ func (c *WebSocketController) pushInitialServerStates(frontendConn *ws.FrontendC
 	// 为每个服务器推送最新状态
 	for _, server := range servers {
 		serverID := server.ID
+
+		// guest allowlist
+		if !frontendConn.CanAccessServer(serverID) {
+			continue
+		}
 
 		// 检查连接是否已关闭
 		if frontendConn.IsClosed() {

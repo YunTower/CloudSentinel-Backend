@@ -38,6 +38,40 @@ func parseExpireTime(s string) *time.Time {
 	return nil
 }
 
+func normalizeTrafficSettings(
+	trafficLimitType string,
+	trafficResetCycle string,
+	trafficCustomCycleDays *int,
+) (string, string, *int) {
+	switch trafficResetCycle {
+	case "monthly", "quarterly", "yearly":
+		return "periodic", trafficResetCycle, nil
+	case "custom":
+		return "periodic", "custom", trafficCustomCycleDays
+	case "unlimited":
+		return "permanent", "unlimited", nil
+	}
+
+	switch trafficLimitType {
+	case "permanent", "unlimited":
+		return "permanent", "unlimited", nil
+	case "periodic":
+		return "periodic", trafficResetCycle, trafficCustomCycleDays
+	default:
+		return trafficLimitType, trafficResetCycle, trafficCustomCycleDays
+	}
+}
+
+func resolveTrafficCycleForResponse(trafficLimitType string, trafficResetCycle string) string {
+	if trafficResetCycle != "" {
+		return trafficResetCycle
+	}
+	if trafficLimitType == "permanent" || trafficLimitType == "unlimited" {
+		return "unlimited"
+	}
+	return ""
+}
+
 func maskAgentKey(agentKey string) string {
 	if len(agentKey) <= 8 {
 		return "********"
@@ -133,12 +167,21 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 		showTrafficResetCycle = *req.Network.ShowTrafficResetCycle
 	}
 
+	normalizedTrafficLimitType, normalizedTrafficResetCycle, normalizedTrafficCustomCycleDays :=
+		normalizeTrafficSettings(
+			req.Billing.TrafficLimitType,
+			req.Billing.TrafficResetCycle,
+			req.Billing.TrafficCustomCycleDays,
+		)
+
 	// 创建服务器模型
 	server := &models.Server{
 		ID:                     serverID,
 		Name:                   req.Name,
 		IP:                     req.IP,
+		Location:               req.Location,
 		Status:                 "offline",
+		OS:                     req.OS,
 		AgentKey:               agentKey,
 		Cores:                  1,
 		GroupID:                req.GroupID,
@@ -147,10 +190,10 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 		Price:                  req.Billing.Price,
 		ExpireTime:             expireTime,
 		BandwidthMbps:          req.Billing.BandwidthMbps,
-		TrafficLimitType:       req.Billing.TrafficLimitType,
+		TrafficLimitType:       normalizedTrafficLimitType,
 		TrafficLimitBytes:      req.Billing.TrafficLimitBytes,
-		TrafficResetCycle:      req.Billing.TrafficResetCycle,
-		TrafficCustomCycleDays: req.Billing.TrafficCustomCycleDays,
+		TrafficResetCycle:      normalizedTrafficResetCycle,
+		TrafficCustomCycleDays: normalizedTrafficCustomCycleDays,
 		ShowBillingCycle:       showBillingCycle,
 		ShowTrafficLimit:       showTrafficLimit,
 		ShowTrafficResetCycle:  showTrafficResetCycle,
@@ -223,8 +266,11 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 	if server.TrafficLimitBytes > 0 {
 		billingData["traffic_limit_bytes"] = server.TrafficLimitBytes
 	}
-	if server.TrafficResetCycle != "" {
-		billingData["traffic_reset_cycle"] = server.TrafficResetCycle
+	if resolvedTrafficCycle := resolveTrafficCycleForResponse(
+		server.TrafficLimitType,
+		server.TrafficResetCycle,
+	); resolvedTrafficCycle != "" {
+		billingData["traffic_reset_cycle"] = resolvedTrafficCycle
 	}
 	if server.TrafficCustomCycleDays != nil {
 		billingData["traffic_custom_cycle_days"] = *server.TrafficCustomCycleDays
@@ -270,6 +316,9 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 	shouldHideSensitive := userType == "guest" && hideSensitiveInfo
 	// 判断是否是管理员
 	isAdmin := userType == "admin"
+	// 公开展示策略（仅对 guest 生效）
+	publicDisplayCfg := loadPublicDisplayConfigV1()
+	applyPublicDisplay := userType == "guest" && publicDisplayCfg.Enabled
 
 	// 获取服务器列表（支持按分组筛选）
 	var allServers []*models.Server
@@ -282,6 +331,17 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 	if err != nil {
 		facades.Log().Errorf("获取服务器列表失败: %v", err)
 		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "获取服务器列表失败", err)
+	}
+
+	// 对 guest 应用 allowlist 过滤（后端强制执行）
+	if applyPublicDisplay && publicDisplayCfg.ServerFilter.Mode == publicDisplayServerFilterModeAllowList {
+		filtered := make([]*models.Server, 0, len(allServers))
+		for _, s := range allServers {
+			if isServerAllowedForGuestV1(publicDisplayCfg, s.ID, s.GroupID) {
+				filtered = append(filtered, s)
+			}
+		}
+		allServers = filtered
 	}
 
 	// 收集所有服务器ID
@@ -309,6 +369,7 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 			"id":           server.ID,
 			"name":         server.Name,
 			"ip":           server.IP,
+			"location":     server.Location,
 			"os":           server.OS,
 			"architecture": server.Architecture,
 			"status":       server.Status,
@@ -363,8 +424,11 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 		if server.TrafficLimitBytes > 0 {
 			billingData["traffic_limit_bytes"] = server.TrafficLimitBytes
 		}
-		if server.TrafficResetCycle != "" {
-			billingData["traffic_reset_cycle"] = server.TrafficResetCycle
+		if resolvedTrafficCycle := resolveTrafficCycleForResponse(
+			server.TrafficLimitType,
+			server.TrafficResetCycle,
+		); resolvedTrafficCycle != "" {
+			billingData["traffic_reset_cycle"] = resolvedTrafficCycle
 		}
 		if server.TrafficCustomCycleDays != nil {
 			billingData["traffic_custom_cycle_days"] = *server.TrafficCustomCycleDays
@@ -400,6 +464,23 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 		}
 		serverData["total_storage"] = utils.FormatStorageSize(totalStorageBytes)
 
+		// 概览卡片需要 swap 摘要，无需额外跳详情接口
+		if server.ServerSwap != nil {
+			var swapUsagePercent float64
+			if server.ServerSwap.SwapTotal > 0 {
+				swapUsagePercent = float64(server.ServerSwap.SwapUsed) / float64(server.ServerSwap.SwapTotal) * 100
+			}
+			serverData["swap"] = map[string]interface{}{
+				"swap_total":         server.ServerSwap.SwapTotal,
+				"swap_used":          server.ServerSwap.SwapUsed,
+				"swap_free":          server.ServerSwap.SwapFree,
+				"swap_usage_percent": swapUsagePercent,
+				"timestamp":          server.ServerSwap.Timestamp,
+			}
+		} else {
+			serverData["swap"] = nil
+		}
+
 		// 根据角色和设置过滤敏感信息
 		if shouldHideSensitive {
 			serverData["ip"] = "***"
@@ -408,6 +489,45 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 		// 如果是管理员，添加 agent_version
 		if isAdmin {
 			serverData["agent_version"] = server.AgentVersion
+		}
+
+		// 公开展示策略：字段级过滤（仅 guest）
+		if applyPublicDisplay {
+			fields := publicDisplayCfg.Fields
+			if !fields.ShowLocation {
+				serverData["location"] = ""
+			}
+			if !fields.ShowOS {
+				serverData["os"] = ""
+			}
+			if !fields.ShowArchitecture {
+				serverData["architecture"] = ""
+			}
+			if !fields.ShowCores {
+				serverData["cores"] = 0
+			}
+			if !fields.ShowNetworkIO {
+				if m, ok := serverData["metrics"].(map[string]interface{}); ok {
+					m["network_upload"] = 0.0
+					m["network_download"] = 0.0
+				}
+			}
+			if !fields.ShowBilling {
+				delete(serverData, "billing")
+			} else if !fields.ShowTraffic {
+				// 仅隐藏“流量/带宽相关”，保留计费周期/价格/到期
+				if b, ok := serverData["billing"].(map[string]interface{}); ok {
+					delete(b, "bandwidth_mbps")
+					delete(b, "traffic_limit_type")
+					delete(b, "traffic_limit_bytes")
+					delete(b, "traffic_reset_cycle")
+					delete(b, "traffic_custom_cycle_days")
+				}
+				if n, ok := serverData["network"].(map[string]interface{}); ok {
+					n["show_traffic_limit"] = false
+					n["show_traffic_reset_cycle"] = false
+				}
+			}
 		}
 
 		servers = append(servers, serverData)
@@ -449,6 +569,7 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 		"id":               server.ID,
 		"name":             server.Name,
 		"ip":               server.IP,
+		"location":         server.Location,
 		"status":           server.Status,
 		"os":               server.OS,
 		"architecture":     server.Architecture,
@@ -517,8 +638,11 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 	if server.TrafficLimitBytes > 0 {
 		billingData["traffic_limit_bytes"] = server.TrafficLimitBytes
 	}
-	if server.TrafficResetCycle != "" {
-		billingData["traffic_reset_cycle"] = server.TrafficResetCycle
+	if resolvedTrafficCycle := resolveTrafficCycleForResponse(
+		server.TrafficLimitType,
+		server.TrafficResetCycle,
+	); resolvedTrafficCycle != "" {
+		billingData["traffic_reset_cycle"] = resolvedTrafficCycle
 	}
 	if server.TrafficCustomCycleDays != nil {
 		billingData["traffic_custom_cycle_days"] = *server.TrafficCustomCycleDays
@@ -1219,16 +1343,24 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 		if req.Billing.BandwidthMbps > 0 {
 			updateData["bandwidth_mbps"] = req.Billing.BandwidthMbps
 		}
-		if req.Billing.TrafficLimitType != "" {
-			updateData["traffic_limit_type"] = req.Billing.TrafficLimitType
-		}
 		if req.Billing.TrafficLimitBytes > 0 {
 			updateData["traffic_limit_bytes"] = req.Billing.TrafficLimitBytes
 		}
-		if req.Billing.TrafficResetCycle != "" {
-			updateData["traffic_reset_cycle"] = req.Billing.TrafficResetCycle
-		}
-		if req.Billing.TrafficCustomCycleDays != nil {
+		if req.Billing.TrafficLimitType != "" || req.Billing.TrafficResetCycle != "" {
+			normalizedTrafficLimitType, normalizedTrafficResetCycle, normalizedTrafficCustomCycleDays :=
+				normalizeTrafficSettings(
+					req.Billing.TrafficLimitType,
+					req.Billing.TrafficResetCycle,
+					req.Billing.TrafficCustomCycleDays,
+				)
+			updateData["traffic_limit_type"] = normalizedTrafficLimitType
+			updateData["traffic_reset_cycle"] = normalizedTrafficResetCycle
+			if normalizedTrafficCustomCycleDays != nil {
+				updateData["traffic_custom_cycle_days"] = *normalizedTrafficCustomCycleDays
+			} else {
+				updateData["traffic_custom_cycle_days"] = nil
+			}
+		} else if req.Billing.TrafficCustomCycleDays != nil {
 			updateData["traffic_custom_cycle_days"] = *req.Billing.TrafficCustomCycleDays
 		}
 		// 处理显示开关字段
@@ -1468,8 +1600,10 @@ func (c *ServerController) DeleteServer(ctx http.Context) http.Response {
 	}
 
 	// 先删除所有关联的数据，避免外键约束错误
-	// 先禁用外键检查
-	_, _ = facades.Orm().Query().Exec("PRAGMA foreign_keys = OFF")
+	// 先禁用外键检查（PRAGMA 是 per-connection 的，在连接池中只影响当前连接）
+	if _, err := facades.Orm().Query().Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		facades.Log().Warningf("禁用外键检查失败: %v", err)
+	}
 
 	// 删除所有关联表的数据
 	tables := []string{
@@ -1490,7 +1624,23 @@ func (c *ServerController) DeleteServer(ctx http.Context) http.Response {
 		"service_monitor_alerts",
 	}
 
+	// 白名单校验：防止 tables 列表被意外修改后产生 SQL 注入风险
+	allowedTables := map[string]bool{
+		"server_alert_rules": true, "server_notification_channels": true,
+		"server_metrics": true, "server_disks": true,
+		"server_status_logs": true, "server_cpus": true,
+		"server_memory_history": true, "server_swap": true,
+		"server_network_connections": true, "server_traffic_usage": true,
+		"server_network_speed": true, "server_disk_io": true,
+		"alerts": true, "service_monitor_rule_servers": true,
+		"service_monitor_alerts": true,
+	}
+
 	for _, table := range tables {
+		if !allowedTables[table] {
+			facades.Log().Warningf("拒绝删除非白名单表: %s", table)
+			continue
+		}
 		_, err := facades.Orm().Query().Exec(fmt.Sprintf("DELETE FROM %s WHERE server_id = ?", table), serverID)
 		if err != nil {
 			facades.Log().Warningf("删除表 %s 中服务器 %s 的数据失败: %v", table, serverID, err)
@@ -1501,7 +1651,9 @@ func (c *ServerController) DeleteServer(ctx http.Context) http.Response {
 	_, err := facades.Orm().Query().Exec("DELETE FROM servers WHERE id = ?", serverID)
 
 	// 重新启用外键检查
-	_, _ = facades.Orm().Query().Exec("PRAGMA foreign_keys = ON")
+	if _, err := facades.Orm().Query().Exec("PRAGMA foreign_keys = ON"); err != nil {
+		facades.Log().Warningf("重新启用外键检查失败: %v", err)
+	}
 
 	if err != nil {
 		facades.Log().Errorf("删除服务器失败: %v", err)

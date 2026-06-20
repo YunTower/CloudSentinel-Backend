@@ -367,6 +367,9 @@ type FrontendConnection struct {
 	*BaseConnection
 	info *FrontendConnectionInfo
 	mu   sync.RWMutex
+	// guest allowlist（用于公开展示策略；仅在 restrictServers=true 时生效）
+	restrictServers  bool
+	allowedServerIDs map[string]struct{}
 }
 
 // NewFrontendConnection 创建 Frontend 连接
@@ -376,6 +379,8 @@ func NewFrontendConnection(conn *websocket.Conn, config *Config) *FrontendConnec
 		info: &FrontendConnectionInfo{
 			LastPing: time.Now(),
 		},
+		restrictServers:  false,
+		allowedServerIDs: nil,
 	}
 }
 
@@ -405,6 +410,55 @@ func (c *FrontendConnection) SetUserID(userID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.info.UserID = userID
+}
+
+func (c *FrontendConnection) GetUserType() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.info.UserType
+}
+
+func (c *FrontendConnection) SetUserType(userType string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.info.UserType = userType
+}
+
+func (c *FrontendConnection) SetAllowedServerIDs(restrict bool, serverIDs []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.restrictServers = restrict
+	if !restrict {
+		c.allowedServerIDs = nil
+		return
+	}
+
+	set := make(map[string]struct{}, len(serverIDs))
+	for _, id := range serverIDs {
+		if id == "" {
+			continue
+		}
+		set[id] = struct{}{}
+	}
+	c.allowedServerIDs = set
+}
+
+func (c *FrontendConnection) CanAccessServer(serverID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.info.UserType != "guest" {
+		return true
+	}
+	if !c.restrictServers {
+		return true
+	}
+	if serverID == "" {
+		return false
+	}
+	_, ok := c.allowedServerIDs[serverID]
+	return ok
 }
 
 // GetRemoteAddr 获取远程地址

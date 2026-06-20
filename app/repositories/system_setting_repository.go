@@ -64,10 +64,8 @@ func (r *SystemSettingRepository) SetValue(key, value string) error {
 		return facades.Orm().Query().Table("system_settings").Create(row)
 	}
 
-	_, updErr := facades.Orm().Query().Model(&models.SystemSetting{}).
-		Where("setting_key", key).
-		Update(map[string]any{"setting_value": value, "updated_at": time.Now().Unix()})
-	return updErr
+	existing.SettingValue = value
+	return facades.Orm().Query().Save(&existing)
 }
 
 // GetValue 获取值

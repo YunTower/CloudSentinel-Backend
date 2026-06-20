@@ -2,13 +2,16 @@ package services
 
 import (
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/goravel/framework/facades"
 )
 
 // LoginLockoutService IP锁定服务
-type LoginLockoutService struct{}
+type LoginLockoutService struct {
+	mu sync.Mutex
+}
 
 // NewLoginLockoutService 创建新的IP锁定服务实例
 func NewLoginLockoutService() *LoginLockoutService {
@@ -76,6 +79,9 @@ func (s *LoginLockoutService) GetFailedAttempts(ip string) (int, error) {
 
 // IncrementFailedAttempts 增加失败尝试次数，如果达到阈值则锁定IP
 func (s *LoginLockoutService) IncrementFailedAttempts(ip string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	maxAttempts, lockoutSeconds, err := s.getLockoutConfig()
 	if err != nil {
 		return err

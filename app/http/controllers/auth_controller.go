@@ -6,7 +6,6 @@ import (
 	"goravel/app/repositories"
 	"goravel/app/services"
 	"goravel/app/utils"
-	"time"
 
 	"github.com/goravel/framework/contracts/http"
 	"github.com/goravel/framework/facades"
@@ -82,165 +81,61 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 	// 获取客户端IP
 	ip := ctx.Request().Ip()
 	lockoutService := services.NewLoginLockoutService()
-
-	// 检查是否开启游客密码访问
 	settingRepo := repositories.GetSystemSettingRepository()
-	guestPasswordEnabled := "false"
-	if loginPost.Type == "guest" {
-		guestPasswordEnabled = settingRepo.GetValue("guest_password_enabled", "false")
-	}
 
 	// 检查IP是否被锁定
-	// 管理员：始终检查锁定
-	// 游客：只有在开启密码访问时才检查锁定
-	shouldCheckLockout := loginPost.Type == "admin" || (loginPost.Type == "guest" && guestPasswordEnabled == "true")
-	if shouldCheckLockout {
-		isLocked, err := lockoutService.IsIPLocked(ip)
-		if err != nil {
-			// 如果检查锁定失败，记录错误但不阻止登录
-			facades.Log().Errorf("检查IP锁定状态失败: %v", err)
-		} else if isLocked {
-			return ctx.Response().Status(429).Json(http.Json{
-				"status":  false,
-				"message": "IP已被锁定，请稍后再试",
-				"code":    "IP_LOCKED",
-			})
-		}
+	isLocked, err := lockoutService.IsIPLocked(ip)
+	if err != nil {
+		// 如果检查锁定失败，记录错误但不阻止登录
+		facades.Log().Errorf("检查IP锁定状态失败: %v", err)
+	} else if isLocked {
+		return ctx.Response().Status(429).Json(http.Json{
+			"status":  false,
+			"message": "IP已被锁定，请稍后再试",
+			"code":    "IP_LOCKED",
+		})
 	}
 
-	if loginPost.Type == "admin" {
+	// 查询用户名
+	userName := settingRepo.GetValue("admin_username", "admin")
+	if userName == "" {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  false,
+			"message": "用户名配置不存在",
+			"code":    "CONFIG_ERROR",
+			"error":   "Admin username not configured",
+		})
+	}
 
-		// 查询用户名
-		var userName string
-		userName = settingRepo.GetValue("admin_username", "admin")
-		if userName == "" {
-			return ctx.Response().Status(500).Json(http.Json{
-				"status":  false,
-				"message": "用户名配置不存在",
-				"code":    "CONFIG_ERROR",
-				"error":   "Admin username not configured",
-			})
+	// 查询密码哈希
+	userPasswordHash := settingRepo.GetValue("admin_password_hash", "")
+	if userPasswordHash == "" {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  false,
+			"message": "密码配置不存在",
+		})
+	}
+
+	// 验证用户名
+	if loginPost.Username != userName {
+		if err := lockoutService.IncrementFailedAttempts(ip); err != nil {
+			facades.Log().Errorf("增加登录失败计数失败: %v", err)
 		}
+		return ctx.Response().Status(401).Json(http.Json{
+			"status":  false,
+			"message": "用户名错误",
+		})
+	}
 
-		// 检查用户名是否为空
-		if userName == "" {
-			return ctx.Response().Status(500).Json(http.Json{
-				"status":  false,
-				"message": "用户名配置不存在",
-				"code":    "CONFIG_ERROR",
-				"error":   "Admin username not configured",
-			})
+	// 验证密码哈希
+	if facades.Hash().Check(loginPost.Password, userPasswordHash) != true {
+		if err := lockoutService.IncrementFailedAttempts(ip); err != nil {
+			facades.Log().Errorf("增加登录失败计数失败: %v", err)
 		}
-
-		// 查询密码哈希
-		var userPasswordHash string
-		userPasswordHash = settingRepo.GetValue("admin_password_hash", "")
-		if userPasswordHash == "" {
-			return ctx.Response().Status(500).Json(http.Json{
-				"status":  false,
-				"message": "密码配置不存在",
-			})
-		}
-
-		// 检查密码哈希是否为空
-		if userPasswordHash == "" {
-			return ctx.Response().Status(500).Json(http.Json{
-				"status":  false,
-				"message": "密码配置不存在",
-			})
-		}
-
-		// 验证用户名
-		if loginPost.Username != userName {
-			// 登录失败，增加失败计数
-			if err := lockoutService.IncrementFailedAttempts(ip); err != nil {
-				facades.Log().Errorf("增加登录失败计数失败: %v", err)
-			}
-			return ctx.Response().Status(401).Json(http.Json{
-				"status":  false,
-				"message": "用户名错误",
-			})
-		}
-
-		// 验证密码哈希
-		if facades.Hash().Check(loginPost.Password, userPasswordHash) != true {
-			// 登录失败，增加失败计数
-			if err := lockoutService.IncrementFailedAttempts(ip); err != nil {
-				facades.Log().Errorf("增加登录失败计数失败: %v", err)
-			}
-			return ctx.Response().Status(401).Json(http.Json{
-				"status":  false,
-				"message": "密码错误",
-			})
-		}
-	} else {
-		// 检查是否允许游客登录
-		var allowGuestLogin string
-		allowGuestLogin = settingRepo.GetValue("allow_guest_login", "false")
-		if allowGuestLogin == "" {
-			allowGuestLogin = "false"
-		}
-
-		if allowGuestLogin != "true" {
-			return ctx.Response().Status(403).Json(http.Json{
-				"status":  false,
-				"message": "游客登录功能已禁用",
-			})
-		}
-
-		// 检查是否开启游客密码访问
-		var guestPasswordEnabled string
-		guestPasswordEnabled = settingRepo.GetValue("guest_password_enabled", "false")
-		if guestPasswordEnabled == "" {
-			guestPasswordEnabled = "false"
-		}
-
-		// 如果开启密码访问，验证密码
-		if guestPasswordEnabled == "true" {
-			// 检查是否提供了密码
-			if loginPost.Password == "" {
-				// 登录失败，增加失败计数
-				if err := lockoutService.IncrementFailedAttempts(ip); err != nil {
-					facades.Log().Errorf("增加登录失败计数失败: %v", err)
-				}
-				return ctx.Response().Status(401).Json(http.Json{
-					"status":  false,
-					"message": "请输入访客访问密码",
-				})
-			}
-
-			// 从数据库读取密码hash
-			var guestPasswordHash string
-			guestPasswordHash = settingRepo.GetValue("guest_password_hash", "")
-			if guestPasswordHash == "" {
-				return ctx.Response().Status(500).Json(http.Json{
-					"status":  false,
-					"message": "游客密码配置不存在，请先在设置中配置访客访问密码",
-				})
-			}
-
-			// 检查hash值是否存在
-			if guestPasswordHash == "" {
-				return ctx.Response().Status(500).Json(http.Json{
-					"status":  false,
-					"message": "游客密码配置不存在，请先在设置中配置访客访问密码",
-				})
-			}
-
-			// 验证游客密码
-			if !facades.Hash().Check(loginPost.Password, guestPasswordHash) {
-				// 登录失败，增加失败计数
-				if err := lockoutService.IncrementFailedAttempts(ip); err != nil {
-					facades.Log().Errorf("增加登录失败计数失败: %v", err)
-				}
-				return ctx.Response().Status(401).Json(http.Json{
-					"status":  false,
-					"message": "访客访问密码错误",
-				})
-			}
-		}
-
-		loginPost.Username = "guest"
+		return ctx.Response().Status(401).Json(http.Json{
+			"status":  false,
+			"message": "密码错误",
+		})
 	}
 
 	// 创建用户模型用于认证
@@ -249,25 +144,13 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 	// 创建 User 模型实例
 	user := &models.User{
 		Username: loginPost.Username,
-		Type:     loginPost.Type,
+		Type:     "admin",
 		IP:       ip,
 		UA:       ua,
 	}
-	// 根据用户类型设置不同的 ID
-	if loginPost.Type == "admin" {
-		user.ID = 1 // 管理员使用固定 ID 1
-	} else {
-		// 游客使用动态 ID，基于时间戳和随机数生成唯一标识
-		user.ID = uint(time.Now().UnixNano()%1000000 + 100000) // 生成 100000-1099999 范围内的唯一 ID
-	}
+	user.ID = 1 // 管理员使用固定 ID 1
 
-	var token string
-	var tokenErr error
-	if loginPost.Type == "admin" {
-		token, tokenErr = facades.Auth(ctx).Guard("admin").Login(user)
-	} else {
-		token, tokenErr = facades.Auth(ctx).Guard("user").Login(user)
-	}
+	token, tokenErr := facades.Auth(ctx).Guard("admin").Login(user)
 	if tokenErr != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  false,
@@ -277,10 +160,8 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 	}
 
 	// 登录成功，清除失败计数
-	if shouldCheckLockout {
-		if err := lockoutService.ClearFailedAttempts(ip); err != nil {
-			facades.Log().Errorf("清除登录失败计数失败: %v", err)
-		}
+	if err := lockoutService.ClearFailedAttempts(ip); err != nil {
+		facades.Log().Errorf("清除登录失败计数失败: %v", err)
 	}
 
 	return ctx.Response().Success().Json(http.Json{
@@ -289,7 +170,7 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 		"data": map[string]any{
 			"token":    token,
 			"username": loginPost.Username,
-			"type":     loginPost.Type,
+			"type":     "admin",
 		},
 	})
 }

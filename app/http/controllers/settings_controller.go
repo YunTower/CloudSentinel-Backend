@@ -25,19 +25,20 @@ func NewSettingsController() *SettingsController {
 // GetPublicSettings 获取公开的系统设置
 func (r *SettingsController) GetPublicSettings(ctx http.Context) http.Response {
 	// 批量获取系统设置
-	settings := utils.GetSettings([]string{"allow_guest_login", "guest_password_enabled", "panel_title"})
+	settings := utils.GetSettings([]string{"panel_title"})
 
-	allowGuestLogin := settings["allow_guest_login"]
-	guestPasswordEnabled := settings["guest_password_enabled"]
 	panelTitle := settings["panel_title"]
 	if panelTitle == "" {
 		panelTitle = "CloudSentinel 云哨"
 	}
 
+	publicDisplayCfg := loadPublicDisplayConfigV1()
+	publicPagesCfg := loadPublicPagesConfigV1()
+
 	return utils.SuccessResponse(ctx, "success", map[string]any{
-		"allow_guest_login":      allowGuestLogin == "true",
-		"guest_password_enabled": guestPasswordEnabled == "true",
-		"panel_title":            panelTitle,
+		"panel_title":    panelTitle,
+		"public_display": publicDisplayPublicPayloadV1(publicDisplayCfg),
+		"public_pages":   publicPagesCfg,
 	})
 }
 
@@ -49,7 +50,6 @@ func (r *SettingsController) GetPanelSettings(ctx http.Context) http.Response {
 	panelTitle := utils.GetSetting("panel_title", "CloudSentinel 云哨")
 	logRetentionDays := utils.GetSetting("log_retention_days", "30")
 	updateChannel := utils.GetSetting("update_channel", "release")
-	fmt.Println(updateChannel)
 	if updateChannel != "dev" && updateChannel != "beta" && updateChannel != "release" {
 		updateChannel = "release"
 	}
@@ -76,18 +76,7 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 		return resp
 	}
 
-	// 批量获取系统设置
-	settings := utils.GetSettings([]string{
-		"allow_guest_login", "guest_password_enabled", "guest_password_hash",
-		"admin_username", "hide_sensitive_info", "session_timeout",
-		"max_login_attempts", "lockout_duration", "jwt_expiration",
-	})
-
-	allowGuestLogin := utils.GetSetting("allow_guest_login", "false")
-	guestPasswordEnabled := utils.GetSetting("guest_password_enabled", "false")
-	guestPasswordHash := settings["guest_password_hash"]
 	adminUsername := utils.GetSetting("admin_username", "admin")
-	hideSensitiveInfo := utils.GetSetting("hide_sensitive_info", "true")
 	sessionTimeoutSeconds := utils.GetSetting("session_timeout", "3600")
 	maxLoginAttempts := utils.GetSetting("max_login_attempts", "5")
 	lockoutDurationSeconds := utils.GetSetting("lockout_duration", "900")
@@ -105,16 +94,11 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 	jwtHours := int(parseInt(jwtExpirationSeconds, 86400) / 3600)
 
 	return utils.SuccessResponse(ctx, "success", map[string]any{
-		"allowGuest":        allowGuestLogin == "true",
-		"enablePassword":    guestPasswordEnabled == "true",
-		"guestPassword":     "",
-		"hasPassword":       guestPasswordHash != "",
-		"hideSensitiveInfo": hideSensitiveInfo == "true",
-		"sessionTimeout":    sessionMinutes,
-		"maxLoginAttempts":  parseInt(maxLoginAttempts, 5),
-		"lockoutDuration":   lockoutMinutes,
-		"jwtExpiration":     jwtHours,
-		"adminUsername":     adminUsername,
+		"sessionTimeout":   sessionMinutes,
+		"maxLoginAttempts": parseInt(maxLoginAttempts, 5),
+		"lockoutDuration":  lockoutMinutes,
+		"jwtExpiration":    jwtHours,
+		"adminUsername":    adminUsername,
 	})
 }
 
@@ -272,19 +256,15 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 	}
 
 	type UpdatePermissionsRequest struct {
-		AllowGuest        bool   `json:"allowGuest" form:"allowGuest"`
-		EnablePassword    bool   `json:"enablePassword" form:"enablePassword"`
-		GuestPassword     string `json:"guestPassword" form:"guestPassword"`
-		HideSensitiveInfo bool   `json:"hideSensitiveInfo" form:"hideSensitiveInfo"`
-		SessionTimeout    int    `json:"sessionTimeout" form:"sessionTimeout"`
-		MaxLoginAttempts  int    `json:"maxLoginAttempts" form:"maxLoginAttempts"`
-		LockoutDuration   int    `json:"lockoutDuration" form:"lockoutDuration"`
-		JwtSecret         string `json:"jwtSecret" form:"jwtSecret"`
-		JwtExpiration     int    `json:"jwtExpiration" form:"jwtExpiration"`
-		NewUsername       string `json:"newUsername" form:"newUsername"`
-		CurrentPassword   string `json:"currentPassword" form:"currentPassword"`
-		NewPassword       string `json:"newPassword" form:"newPassword"`
-		ConfirmPassword   string `json:"confirmPassword" form:"confirmPassword"`
+		SessionTimeout   int    `json:"sessionTimeout" form:"sessionTimeout"`
+		MaxLoginAttempts int    `json:"maxLoginAttempts" form:"maxLoginAttempts"`
+		LockoutDuration  int    `json:"lockoutDuration" form:"lockoutDuration"`
+		JwtSecret        string `json:"jwtSecret" form:"jwtSecret"`
+		JwtExpiration    int    `json:"jwtExpiration" form:"jwtExpiration"`
+		NewUsername      string `json:"newUsername" form:"newUsername"`
+		CurrentPassword  string `json:"currentPassword" form:"currentPassword"`
+		NewPassword      string `json:"newPassword" form:"newPassword"`
+		ConfirmPassword  string `json:"confirmPassword" form:"confirmPassword"`
 	}
 
 	var req UpdatePermissionsRequest
@@ -292,10 +272,6 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 		return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
 	}
 
-	allowGuest := req.AllowGuest
-	enablePassword := req.EnablePassword
-	guestPassword := req.GuestPassword
-	hideSensitiveInfo := req.HideSensitiveInfo
 	sessionMinutes := req.SessionTimeout
 	maxLoginAttempts := req.MaxLoginAttempts
 	lockoutMinutes := req.LockoutDuration
@@ -311,49 +287,27 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 	jwtSeconds := jwtHours * 3600
 
 	settingRepo := repositories.GetSystemSettingRepository()
-	write := func(key, val, typ string) error {
+	write := func(key, val string) error {
 		return settingRepo.SetValue(key, val)
 	}
 
-	if err := write("allow_guest_login", map[bool]string{true: "true", false: "false"}[allowGuest], "boolean"); err != nil {
+	if err := write("session_timeout", strconv.Itoa(sessionSeconds)); err != nil {
 		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
 	}
-	if err := write("guest_password_enabled", map[bool]string{true: "true", false: "false"}[enablePassword], "boolean"); err != nil {
+	if err := write("max_login_attempts", strconv.Itoa(maxLoginAttempts)); err != nil {
 		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
 	}
-	if err := write("hide_sensitive_info", map[bool]string{true: "true", false: "false"}[hideSensitiveInfo], "boolean"); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
-	}
-	if err := write("session_timeout", strconv.Itoa(sessionSeconds), "number"); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
-	}
-	if err := write("max_login_attempts", strconv.Itoa(maxLoginAttempts), "number"); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
-	}
-	if err := write("lockout_duration", strconv.Itoa(lockoutSeconds), "number"); err != nil {
+	if err := write("lockout_duration", strconv.Itoa(lockoutSeconds)); err != nil {
 		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
 	}
 	if jwtSecret != "" {
-		if err := write("jwt_secret", jwtSecret, "string"); err != nil {
+		if err := write("jwt_secret", jwtSecret); err != nil {
 			return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
 		}
 	}
 	if jwtSeconds > 0 {
-		if err := write("jwt_expiration", strconv.Itoa(jwtSeconds), "number"); err != nil {
+		if err := write("jwt_expiration", strconv.Itoa(jwtSeconds)); err != nil {
 			return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
-		}
-	}
-
-	// 处理访客密码hash
-	if enablePassword {
-		if guestPassword != "" {
-			hash, err := facades.Hash().Make(guestPassword)
-			if err != nil {
-				return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "加密失败", "error": err.Error()})
-			}
-			if err := write("guest_password_hash", hash, "string"); err != nil {
-				return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
-			}
 		}
 	}
 
@@ -363,13 +317,6 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 		userPasswordHash := settingRepo.GetValue("admin_password_hash", "")
 		if userPasswordHash == "" {
 			return utils.ErrorResponse(ctx, 500, "查询密码配置失败")
-		}
-
-		if userPasswordHash == "" {
-			return ctx.Response().Status(500).Json(http.Json{
-				"status":  false,
-				"message": "密码配置不存在",
-			})
 		}
 
 		// 验证当前密码
@@ -388,7 +335,7 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 
 		// 检查新用户名是否与当前用户名相同
 		if newUsername != currentUsername {
-			if err := write("admin_username", newUsername, "string"); err != nil {
+			if err := write("admin_username", newUsername); err != nil {
 				return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新用户名失败", "error": err.Error()})
 			}
 		}
@@ -441,7 +388,7 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 		}
 
 		// 更新密码hash
-		if err := write("admin_password_hash", newPasswordHash, "string"); err != nil {
+		if err := write("admin_password_hash", newPasswordHash); err != nil {
 			return utils.ErrorResponseWithError(ctx, 500, "更新密码失败", err)
 		}
 	}
@@ -457,20 +404,49 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 	notificationRepo := repositories.GetAlertNotificationRepository()
 	settingRepo := repositories.GetSystemSettingRepository()
 
-	emailEnabled := ctx.Request().Input("notifications.email.enabled") == "true"
-	emailCfg := map[string]any{
-		"smtp":     ctx.Request().Input("notifications.email.smtp"),
-		"port":     func() int { v, _ := strconv.Atoi(ctx.Request().Input("notifications.email.port")); return v }(),
-		"security": ctx.Request().Input("notifications.email.security"),
-		"from":     ctx.Request().Input("notifications.email.from"),
-		"to":       ctx.Request().Input("notifications.email.to"),
-		"password": ctx.Request().Input("notifications.email.password"),
+	type alertsEmailReq struct {
+		Enabled  bool   `json:"enabled"`
+		SMTP     string `json:"smtp"`
+		Port     int    `json:"port"`
+		Security string `json:"security"`
+		From     string `json:"from"`
+		To       string `json:"to"`
+		Password string `json:"password"`
 	}
-	webhookEnabled := ctx.Request().Input("notifications.webhook.enabled") == "true"
+	type alertsWebhookReq struct {
+		Enabled   bool   `json:"enabled"`
+		Webhook   string `json:"webhook"`
+		Mentioned string `json:"mentioned"`
+		Platform  string `json:"platform"`
+	}
+	type UpdateAlertsRequest struct {
+		Notifications struct {
+			Email   alertsEmailReq   `json:"email"`
+			Webhook alertsWebhookReq `json:"webhook"`
+		} `json:"notifications"`
+		AlertServerOfflineEnabled bool `json:"alertServerOfflineEnabled"`
+		AlertServerOnlineEnabled  bool `json:"alertServerOnlineEnabled"`
+	}
+
+	var req UpdateAlertsRequest
+	if err := ctx.Request().Bind(&req); err != nil {
+		return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
+	}
+
+	emailEnabled := req.Notifications.Email.Enabled
+	emailCfg := map[string]any{
+		"smtp":     req.Notifications.Email.SMTP,
+		"port":     req.Notifications.Email.Port,
+		"security": req.Notifications.Email.Security,
+		"from":     req.Notifications.Email.From,
+		"to":       req.Notifications.Email.To,
+		"password": req.Notifications.Email.Password,
+	}
+	webhookEnabled := req.Notifications.Webhook.Enabled
 	webhookCfg := map[string]any{
-		"webhook":   ctx.Request().Input("notifications.webhook.webhook"),
-		"mentioned": ctx.Request().Input("notifications.webhook.mentioned"),
-		"platform":  ctx.Request().Input("notifications.webhook.platform"),
+		"webhook":   req.Notifications.Webhook.Webhook,
+		"mentioned": req.Notifications.Webhook.Mentioned,
+		"platform":  req.Notifications.Webhook.Platform,
 	}
 
 	webhookURL := strings.TrimSpace(fmt.Sprint(webhookCfg["webhook"]))
@@ -512,9 +488,9 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 		return utils.ErrorResponseWithError(ctx, 500, "更新Webhook通知失败", err)
 	}
 
-	// 服务器离线/上线告警开关
-	alertServerOfflineEnabled := ctx.Request().Input("alertServerOfflineEnabled") == "true"
-	alertServerOnlineEnabled := ctx.Request().Input("alertServerOnlineEnabled") == "true"
+	// 服务器离线/上线告警开关（已通过 Bind 读取）
+	alertServerOfflineEnabled := req.AlertServerOfflineEnabled
+	alertServerOnlineEnabled := req.AlertServerOnlineEnabled
 
 	emailConfigured := emailEnabled && strings.TrimSpace(fmt.Sprint(emailCfg["smtp"])) != "" &&
 		strings.TrimSpace(fmt.Sprint(emailCfg["from"])) != "" && strings.TrimSpace(fmt.Sprint(emailCfg["to"])) != ""
@@ -532,6 +508,87 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 		return utils.ErrorResponseWithError(ctx, 500, "更新服务器上线告警设置失败", err)
 	}
 
+	return utils.SuccessResponse(ctx, "success")
+}
+
+// GetPublicDisplaySettings 管理员读取公开展示配置（V1）
+func (r *SettingsController) GetPublicDisplaySettings(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+	cfg := loadPublicDisplayConfigV1()
+	return utils.SuccessResponse(ctx, "success", cfg)
+}
+
+// UpdatePublicDisplaySettings 管理员更新公开展示配置（V1）
+func (r *SettingsController) UpdatePublicDisplaySettings(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
+	// 兼容 JSON/form：统一读 All() 再转结构体
+	all := ctx.Request().All()
+	if len(all) == 0 {
+		return utils.ErrorResponse(ctx, 422, "请求数据为空")
+	}
+
+	cfg, err := decodePublicDisplayConfigFromAny(all)
+	if err != nil {
+		return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
+	}
+	if cfg.Version == 0 {
+		cfg.Version = 1
+	}
+	if err := validatePublicDisplayConfigV1(&cfg); err != nil {
+		return utils.ErrorResponse(ctx, 422, err.Error())
+	}
+
+	if err := savePublicDisplayConfigV1(cfg); err != nil {
+		return utils.ErrorResponseWithError(ctx, 500, "保存失败", err)
+	}
+	return utils.SuccessResponse(ctx, "success")
+}
+
+// GetPublicPagesSettings 管理员读取公开页面配置（V1）
+func (r *SettingsController) GetPublicPagesSettings(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+	cfg := loadPublicPagesConfigV1()
+	return utils.SuccessResponse(ctx, "success", cfg)
+}
+
+// UpdatePublicPagesSettings 管理员更新公开页面配置（V1）
+func (r *SettingsController) UpdatePublicPagesSettings(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+
+	var cfg PublicPagesConfigV1
+	if err := ctx.Request().Bind(&cfg); err != nil {
+		return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
+	}
+	// 兼容 Bind 解析失败/为空时的回退（All 为 json+form+query 合集）
+	if cfg.Version == 0 && len(cfg.Pages) == 0 {
+		all := ctx.Request().All()
+		if len(all) == 0 {
+			return utils.ErrorResponse(ctx, 422, "请求数据为空")
+		}
+		raw, err := json.Marshal(all)
+		if err != nil {
+			return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
+		}
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
+		}
+	}
+	normalizePublicPagesConfigV1(&cfg)
+	if err := validatePublicPagesConfigV1(&cfg); err != nil {
+		return utils.ErrorResponse(ctx, 422, err.Error())
+	}
+	if err := savePublicPagesConfigV1(cfg); err != nil {
+		return utils.ErrorResponseWithError(ctx, 500, "保存失败", err)
+	}
 	return utils.SuccessResponse(ctx, "success")
 }
 
