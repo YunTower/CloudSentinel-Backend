@@ -46,18 +46,21 @@ func GetWebSocketService() *WebSocketService {
 	serviceOnce.Do(func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		alertSvc := NewAlertService()
+		incidentSvc := NewIncidentService()
 		wsService = &WebSocketService{
 			manager: ws.NewConnectionManager(
 				ws.WithServerStatusNotifier(func(serverID string, isOnline bool) {
 					if isOnline {
+						incidentSvc.ResolveServerOfflineIncident(serverID)
 						alertSvc.NotifyServerOnline(serverID)
 					} else {
+						incidentSvc.OpenServerOfflineIncident(serverID)
 						alertSvc.NotifyServerOffline(serverID)
 					}
 				}),
 			),
-			ctx:     ctx,
-			cancel:  cancel,
+			ctx:    ctx,
+			cancel: cancel,
 		}
 		// 启动心跳检测
 		go wsService.manager.StartHeartbeatChecker(ctx)

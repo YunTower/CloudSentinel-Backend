@@ -797,3 +797,101 @@ func (s *AlertService) NotifyServerOnline(serverID string) {
 		}).Dispatch()
 	}
 }
+
+// NotifyServiceMonitorProblem sends a notification when a service monitor enters a non-up state.
+func (s *AlertService) NotifyServiceMonitorProblem(monitorID uint, status string, responseTime int, cause error) {
+	cacheKey := fmt.Sprintf("alert_cooldown:service_monitor:%d:%s", monitorID, status)
+	if facades.Cache().Get(cacheKey) != nil {
+		return
+	}
+	_ = facades.Cache().Put(cacheKey, true, 2*time.Minute)
+
+	monitor, err := repositories.GetServiceMonitorRepository().GetByID(monitorID)
+	if err != nil || monitor == nil {
+		return
+	}
+
+	emailConfig, webhookConfig, err := s.getNotificationConfigs("")
+	if err != nil || (!emailConfig.Enabled && !webhookConfig.Enabled) {
+		return
+	}
+
+	statusText := map[string]string{
+		"down": "故障",
+		"slow": "响应慢",
+	}[status]
+	if statusText == "" {
+		statusText = status
+	}
+
+	reason := ""
+	if cause != nil {
+		reason = fmt.Sprintf("\n原因: %v", cause)
+	}
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	title := fmt.Sprintf("[告警] %s - 服务%s", monitor.Name, statusText)
+	content := fmt.Sprintf("服务监测告警\n\n服务: %s\n类型: %s\n目标: %s\n状态: %s\n响应时间: %dms\n触发时间: %s%s",
+		monitor.Name, monitor.Type, monitor.Target, statusText, responseTime, timestamp, reason)
+
+	if emailConfig.Enabled {
+		configJson, _ := json.Marshal(emailConfig)
+		_ = facades.Queue().Job(&jobs.SendAlertJob{
+			Channel: "email",
+			Config:  string(configJson),
+			Subject: title,
+			Content: content,
+		}).Dispatch()
+	}
+	if webhookConfig.Enabled {
+		configJson, _ := json.Marshal(webhookConfig)
+		_ = facades.Queue().Job(&jobs.SendAlertJob{
+			Channel: "webhook",
+			Config:  string(configJson),
+			Subject: title,
+			Content: content,
+		}).Dispatch()
+	}
+}
+
+// NotifyServiceMonitorRecovery sends a notification when a service monitor returns to up.
+func (s *AlertService) NotifyServiceMonitorRecovery(monitorID uint, previousStatus string, responseTime int) {
+	cacheKey := fmt.Sprintf("alert_cooldown:service_monitor:%d:recovery", monitorID)
+	if facades.Cache().Get(cacheKey) != nil {
+		return
+	}
+	_ = facades.Cache().Put(cacheKey, true, 2*time.Minute)
+
+	monitor, err := repositories.GetServiceMonitorRepository().GetByID(monitorID)
+	if err != nil || monitor == nil {
+		return
+	}
+
+	emailConfig, webhookConfig, err := s.getNotificationConfigs("")
+	if err != nil || (!emailConfig.Enabled && !webhookConfig.Enabled) {
+		return
+	}
+
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	title := fmt.Sprintf("[恢复] %s - 服务已恢复", monitor.Name)
+	content := fmt.Sprintf("服务监测恢复\n\n服务: %s\n类型: %s\n目标: %s\n上一状态: %s\n当前状态: 正常\n响应时间: %dms\n恢复时间: %s",
+		monitor.Name, monitor.Type, monitor.Target, previousStatus, responseTime, timestamp)
+
+	if emailConfig.Enabled {
+		configJson, _ := json.Marshal(emailConfig)
+		_ = facades.Queue().Job(&jobs.SendAlertJob{
+			Channel: "email",
+			Config:  string(configJson),
+			Subject: title,
+			Content: content,
+		}).Dispatch()
+	}
+	if webhookConfig.Enabled {
+		configJson, _ := json.Marshal(webhookConfig)
+		_ = facades.Queue().Job(&jobs.SendAlertJob{
+			Channel: "webhook",
+			Config:  string(configJson),
+			Subject: title,
+			Content: content,
+		}).Dispatch()
+	}
+}

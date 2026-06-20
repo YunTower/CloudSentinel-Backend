@@ -3,6 +3,7 @@ package repositories
 import (
 	"goravel/app/models"
 	"sync"
+	"time"
 
 	"github.com/goravel/framework/facades"
 )
@@ -74,5 +75,12 @@ func (r *ServiceMonitorHistoryRepository) PruneOld(monitorID uint, keepCount int
 	}
 	facades.Orm().Query().
 		Where("monitor_id = ? AND checked_at <= ?", monitorID, threshold.CheckedAt).
+		Delete(&models.ServiceMonitorHistory{})
+}
+
+// PruneBefore deletes history entries older than the given cutoff for a monitor.
+func (r *ServiceMonitorHistoryRepository) PruneBefore(monitorID uint, cutoff time.Time) {
+	facades.Orm().Query().
+		Where("monitor_id = ? AND checked_at < ?", monitorID, cutoff).
 		Delete(&models.ServiceMonitorHistory{})
 }
