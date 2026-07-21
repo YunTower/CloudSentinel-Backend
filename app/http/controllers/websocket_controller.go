@@ -9,12 +9,46 @@ import (
 	ws "goravel/app/services/websocket"
 	nethttp "net/http"
 	neturl "net/url"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/goravel/framework/contracts/http"
 	"github.com/goravel/framework/facades"
 	"github.com/gorilla/websocket"
 )
+
+const maxWebSocketConnectionsPerIP = 8
+
+var webSocketConnectionsByIP = struct {
+	sync.Mutex
+	counts map[string]int
+}{counts: make(map[string]int)}
+
+func acquireWebSocketConnection(ip string) bool {
+	if ip == "" {
+		ip = "unknown"
+	}
+	webSocketConnectionsByIP.Lock()
+	defer webSocketConnectionsByIP.Unlock()
+	if webSocketConnectionsByIP.counts[ip] >= maxWebSocketConnectionsPerIP {
+		return false
+	}
+	webSocketConnectionsByIP.counts[ip]++
+	return true
+}
+
+func releaseWebSocketConnection(ip string) {
+	if ip == "" {
+		ip = "unknown"
+	}
+	webSocketConnectionsByIP.Lock()
+	defer webSocketConnectionsByIP.Unlock()
+	if webSocketConnectionsByIP.counts[ip] <= 1 {
+		delete(webSocketConnectionsByIP.counts, ip)
+		return
+	}
+	webSocketConnectionsByIP.counts[ip]--
+}
 
 type WebSocketController struct {
 	upgrader        *ws.Upgrader
@@ -90,6 +124,13 @@ func NewWebSocketController() *WebSocketController {
 
 // HandleAgentConnection 处理agent的WebSocket连接
 func (c *WebSocketController) HandleAgentConnection(ctx http.Context) http.Response {
+	remoteIP := ctx.Request().Ip()
+	if !acquireWebSocketConnection(remoteIP) {
+		facades.Log().Channel("websocket").Warningf("拒绝超过并发上限的 WebSocket 连接: %s", remoteIP)
+		return ctx.Response().String(http.StatusTooManyRequests, "WebSocket 连接过多")
+	}
+	defer releaseWebSocketConnection(remoteIP)
+
 	// 升级HTTP连接为WebSocket
 	conn, err := c.upgrader.Upgrade(ctx.Response().Writer(), ctx.Request().Origin(), nil)
 	if err != nil {
@@ -233,6 +274,13 @@ func (c *WebSocketController) handleAgentMessage(msgType string, data map[string
 
 // HandleFrontendConnection 处理前端的WebSocket连接
 func (c *WebSocketController) HandleFrontendConnection(ctx http.Context) http.Response {
+	remoteIP := ctx.Request().Ip()
+	if !acquireWebSocketConnection(remoteIP) {
+		facades.Log().Channel("websocket").Warningf("拒绝超过并发上限的 WebSocket 连接: %s", remoteIP)
+		return ctx.Response().String(http.StatusTooManyRequests, "WebSocket 连接过多")
+	}
+	defer releaseWebSocketConnection(remoteIP)
+
 	// 先升级HTTP连接为WebSocket（必须在验证之前升级）
 	conn, err := c.upgrader.Upgrade(ctx.Response().Writer(), ctx.Request().Origin(), nil)
 	if err != nil {
