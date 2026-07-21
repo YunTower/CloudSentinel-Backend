@@ -215,10 +215,31 @@ func (s *UpdateService) ExecuteUpdate(options UpdateOptions) error {
 		return err
 	}
 
-	setStatus("downloading", 70, "校验文件下载完成")
+	signatureFileName, signatureDownloadURL := s.FindSignatureAsset(assets, sha256FileName)
+	if signatureFileName == "" {
+		setStatus("error", 0, "未找到 SHA256 签名文件")
+		s.CleanupTempFiles()
+		needRestore = true
+		return fmt.Errorf("未找到 SHA256 签名文件")
+	}
+	signaturePath := path.Base(signatureFileName)
+	if err := s.DownloadFile(signatureDownloadURL, signaturePath, nil); err != nil {
+		setStatus("error", 0, fmt.Sprintf("下载 SHA256 签名文件失败: %v", err))
+		s.CleanupTempFiles()
+		needRestore = true
+		return err
+	}
+
+	setStatus("downloading", 70, "校验文件及签名下载完成")
 
 	// 校验文件完整性
 	setStatus("verifying", 85, "正在校验文件完整性...")
+	if err := VerifyReleaseSignature(sha256Path, signaturePath); err != nil {
+		setStatus("error", 0, fmt.Sprintf("发布签名校验失败: %v", err))
+		s.CleanupTempFiles()
+		needRestore = true
+		return err
+	}
 
 	// 读取期望的 SHA256 值
 	expectedSHA256, err := s.ReadSHA256File(sha256Path)
@@ -316,6 +337,9 @@ func (s *UpdateService) ExecuteUpdate(options UpdateOptions) error {
 	// 删除 SHA256 文件
 	if err := os.Remove(sha256Path); err != nil {
 		facades.Log().Warningf("删除 SHA256 文件失败: %v", err)
+	}
+	if err := os.Remove(signaturePath); err != nil {
+		facades.Log().Warningf("删除 SHA256 签名文件失败: %v", err)
 	}
 
 	// 替换文件
@@ -843,6 +867,26 @@ func (s *UpdateService) FindSHA256Asset(assets []interface{}, osType, arch strin
 	return "", ""
 }
 
+// FindSignatureAsset finds the detached armored signature for a release asset.
+func (s *UpdateService) FindSignatureAsset(assets []interface{}, signedAssetName string) (string, string) {
+	expectedName := signedAssetName + ".asc"
+	for _, asset := range assets {
+		assetMap, ok := asset.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, ok := assetMap["name"].(string)
+		if !ok || name != expectedName {
+			continue
+		}
+		if downloadURL, ok := assetMap["browser_download_url"].(string); ok && downloadURL != "" {
+			return name, downloadURL
+		}
+	}
+
+	return "", ""
+}
+
 // DownloadFile 下载文件
 func (s *UpdateService) DownloadFile(url, filePath string, progressCallback func(int)) error {
 	response, err := facades.Http().Get(url)
@@ -1175,6 +1219,7 @@ func (s *UpdateService) CleanupTempFiles(files ...string) {
 	patterns := []string{
 		"dashboard-*.tar.gz",
 		"dashboard-*.sha256",
+		"dashboard-*.sha256.asc",
 		"update_extract",
 	}
 
