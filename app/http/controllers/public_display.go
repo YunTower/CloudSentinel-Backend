@@ -234,7 +234,7 @@ func savePublicDisplayConfigV1(cfg PublicDisplayConfigV1) error {
 
 func guestAllowedServerIDsFromConfigV1(cfg PublicDisplayConfigV1) (restrict bool, allowedIDs []string) {
 	if !cfg.Enabled {
-		return false, nil
+		return true, []string{}
 	}
 	if cfg.ServerFilter.Mode != publicDisplayServerFilterModeAllowList {
 		return false, nil
@@ -282,7 +282,7 @@ func guestAllowedServerIDsFromConfigV1(cfg PublicDisplayConfigV1) (restrict bool
 
 func isServerAllowedForGuestV1(cfg PublicDisplayConfigV1, serverID string, groupID *uint) bool {
 	if !cfg.Enabled {
-		return true
+		return false
 	}
 	if cfg.ServerFilter.Mode != publicDisplayServerFilterModeAllowList {
 		return true

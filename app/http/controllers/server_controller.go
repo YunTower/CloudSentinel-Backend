@@ -316,9 +316,9 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 	shouldHideSensitive := userType == "guest" && hideSensitiveInfo
 	// 判断是否是管理员
 	isAdmin := userType == "admin"
-	// 公开展示策略（仅对 guest 生效）
+	// 公开展示数据契约始终对 guest 生效；禁用时不返回服务器数据。
 	publicDisplayCfg := loadPublicDisplayConfigV1()
-	applyPublicDisplay := userType == "guest" && publicDisplayCfg.Enabled
+	applyPublicDisplay := userType == "guest"
 
 	// 获取服务器列表（支持按分组筛选）
 	var allServers []*models.Server
@@ -333,8 +333,11 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "获取服务器列表失败", err)
 	}
 
-	// 对 guest 应用 allowlist 过滤（后端强制执行）
-	if applyPublicDisplay && publicDisplayCfg.ServerFilter.Mode == publicDisplayServerFilterModeAllowList {
+	// 对 guest 应用公开展示策略（后端强制执行）。策略关闭时使用空列表，
+	// 避免公开接口退化为返回所有服务器及其计费/流量等字段。
+	if applyPublicDisplay && !publicDisplayCfg.Enabled {
+		allServers = []*models.Server{}
+	} else if applyPublicDisplay && publicDisplayCfg.ServerFilter.Mode == publicDisplayServerFilterModeAllowList {
 		filtered := make([]*models.Server, 0, len(allServers))
 		for _, s := range allServers {
 			if isServerAllowedForGuestV1(publicDisplayCfg, s.ID, s.GroupID) {
