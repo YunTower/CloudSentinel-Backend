@@ -9,6 +9,8 @@ import (
 	"io"
 )
 
+const maxAgentReportDecompressedBytes = 4 * 1024 * 1024
+
 func decodeAgentReportPayload(data interface{}) (interface{}, error) {
 	wrapper, ok := data.(map[string]interface{})
 	if !ok {
@@ -38,9 +40,12 @@ func decodeAgentReportPayload(data interface{}) (interface{}, error) {
 	}
 	defer gr.Close()
 
-	raw, err := io.ReadAll(gr)
+	raw, err := io.ReadAll(io.LimitReader(gr, maxAgentReportDecompressedBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(raw) > maxAgentReportDecompressedBytes {
+		return nil, errors.New("压缩上报解压后超过大小限制")
 	}
 
 	var decoded interface{}
