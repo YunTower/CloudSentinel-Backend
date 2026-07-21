@@ -164,11 +164,12 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 	rawWebhookURL, _ := webhook.Config["webhook"].(string)
 	hasWebhook := strings.TrimSpace(rawWebhookURL) != ""
 	webhookData := map[string]any{
-		"enabled":    webhook.Enabled,
-		"webhook":    "",
-		"hasWebhook": hasWebhook,
-		"mentioned":  webhook.Config["mentioned"],
-		"platform":   webhook.Config["platform"],
+		"enabled":      webhook.Enabled,
+		"webhook":      "",
+		"hasWebhook":   hasWebhook,
+		"clearWebhook": false,
+		"mentioned":    webhook.Config["mentioned"],
+		"platform":     webhook.Config["platform"],
 	}
 
 	// 是否已配置任意一个通知渠道
@@ -392,10 +393,11 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 		Password string `json:"password"`
 	}
 	type alertsWebhookReq struct {
-		Enabled   bool   `json:"enabled"`
-		Webhook   string `json:"webhook"`
-		Mentioned string `json:"mentioned"`
-		Platform  string `json:"platform"`
+		Enabled      bool   `json:"enabled"`
+		Webhook      string `json:"webhook"`
+		ClearWebhook bool   `json:"clearWebhook"`
+		Mentioned    string `json:"mentioned"`
+		Platform     string `json:"platform"`
 	}
 	type UpdateAlertsRequest struct {
 		Notifications struct {
@@ -421,6 +423,7 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 		"password": req.Notifications.Email.Password,
 	}
 	webhookEnabled := req.Notifications.Webhook.Enabled
+	clearWebhook := req.Notifications.Webhook.ClearWebhook
 	webhookCfg := map[string]any{
 		"webhook":   req.Notifications.Webhook.Webhook,
 		"mentioned": req.Notifications.Webhook.Mentioned,
@@ -428,7 +431,10 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 	}
 
 	webhookURL := strings.TrimSpace(fmt.Sprint(webhookCfg["webhook"]))
-	if webhookURL == "" {
+	if clearWebhook {
+		webhookURL = ""
+		webhookCfg["webhook"] = ""
+	} else if webhookURL == "" {
 		oldNotification, err := notificationRepo.GetByType("webhook")
 		if err == nil && oldNotification != nil && oldNotification.ConfigJson != "" {
 			var oldCfg map[string]any
