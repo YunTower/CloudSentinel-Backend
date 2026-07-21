@@ -50,6 +50,7 @@ func (kernel Kernel) Migrations() []schema.Migration {
 		&migrations.M20260619000003AddProbeMetadataToServiceMonitorResultsTable{},
 		&migrations.M20260619000004CreateAgentTasksTable{},
 		&migrations.M20260619000005AddStabilityFieldsToServiceMonitorsTable{},
+		&migrations.M20260721000001AddAgentTaskLeases{},
 	}
 }
 

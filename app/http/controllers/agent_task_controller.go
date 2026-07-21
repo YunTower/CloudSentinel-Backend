@@ -36,7 +36,7 @@ func (c *AgentTaskController) Pull(ctx http.Context) http.Response {
 		})
 	}
 
-	tasks, err := repositories.NewAgentTaskRepository().PullPending(serverID, req.Limit)
+	tasks, err := repositories.NewAgentTaskRepository().ClaimPending(serverID, req.Limit)
 	if err != nil {
 		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{
 			"status": false, "message": err.Error(),
@@ -50,34 +50,42 @@ func (c *AgentTaskController) Pull(ctx http.Context) http.Response {
 
 func (c *AgentTaskController) Complete(ctx http.Context) http.Response {
 	var req struct {
-		AgentKey string `json:"agent_key"`
-		TaskID   string `json:"task_id"`
-		Status   string `json:"status"`
-		Error    string `json:"error"`
+		AgentKey   string `json:"agent_key"`
+		TaskID     string `json:"task_id"`
+		LeaseToken string `json:"lease_token"`
+		Status     string `json:"status"`
+		Error      string `json:"error"`
 	}
 	if err := ctx.Request().Bind(&req); err != nil {
 		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
 			"status": false, "message": "参数错误",
 		})
 	}
-	if req.AgentKey == "" || req.TaskID == "" {
+	if req.AgentKey == "" || req.TaskID == "" || req.LeaseToken == "" {
 		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
-			"status": false, "message": "agent_key 和 task_id 不能为空",
+			"status": false, "message": "agent_key、task_id 和 lease_token 不能为空",
 		})
 	}
 	if req.Status != "failed" {
 		req.Status = "succeeded"
 	}
 
-	if _, err := services.GetAgentAuthValidator().ValidateAgentAuth(req.AgentKey, ctx.Request().Ip()); err != nil {
+	serverID, err := services.GetAgentAuthValidator().ValidateAgentAuth(req.AgentKey, ctx.Request().Ip())
+	if err != nil {
 		return ctx.Response().Json(http.StatusUnauthorized, map[string]interface{}{
 			"status": false, "message": "认证失败",
 		})
 	}
 
-	if err := repositories.NewAgentTaskRepository().Complete(req.TaskID, req.Status, req.Error); err != nil {
+	completed, err := repositories.NewAgentTaskRepository().Complete(serverID, req.TaskID, req.LeaseToken, req.Status, req.Error)
+	if err != nil {
 		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{
 			"status": false, "message": err.Error(),
+		})
+	}
+	if !completed {
+		return ctx.Response().Json(http.StatusConflict, map[string]interface{}{
+			"status": false, "message": "任务租约无效、已过期或不属于当前 Agent",
 		})
 	}
 	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
