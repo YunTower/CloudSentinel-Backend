@@ -66,6 +66,7 @@ func init() {
 		&providers.ValidationServiceProvider{},
 		&providers.DatabaseServiceProvider{},
 		&providers.CleanupServiceProvider{},
+		&providers.ScheduleServiceProvider{},
 		&gin.ServiceProvider{},
 	}
 

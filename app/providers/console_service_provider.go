@@ -12,7 +12,6 @@ type ConsoleServiceProvider struct {
 
 func (receiver *ConsoleServiceProvider) Register(app foundation.Application) {
 	kernel := console.Kernel{}
-	// facades.Schedule().Register(kernel.Schedule())
 	facades.Artisan().Register(kernel.Commands())
 }
 
