@@ -3,6 +3,7 @@ package controllers
 import (
 	"encoding/json"
 	"fmt"
+	"goravel/app/http/middleware"
 	"goravel/app/models"
 	"goravel/app/repositories"
 	"goravel/app/services"
@@ -433,6 +434,9 @@ func (c *WebSocketController) authenticateFrontendConnection(ctx http.Context, f
 		if tokenVal, ok := authMsg["token"].(string); ok {
 			token = tokenVal
 		}
+	}
+	if token == "" {
+		token = ctx.Request().Cookie(middleware.AuthTokenCookieName)
 	}
 	if token == "" {
 		return "", "", fmt.Errorf("缺少认证token")

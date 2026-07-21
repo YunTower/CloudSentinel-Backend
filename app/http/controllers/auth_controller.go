@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"goravel/app/http/middleware"
 	"goravel/app/http/requests/auth"
 	"goravel/app/models"
 	"goravel/app/repositories"
@@ -16,6 +17,25 @@ type UserInfo struct {
 	Type            string
 	Guard           string
 	IsAuthenticated bool
+}
+
+func setAuthenticationCookies(ctx http.Context, token string, remember bool) error {
+	csrfToken, err := middleware.RequireCSRFToken()
+	if err != nil {
+		return err
+	}
+	maxAge := 0
+	if remember {
+		maxAge = 14 * 24 * 60 * 60
+	}
+	ctx.Response().Cookie(http.Cookie{Name: middleware.AuthTokenCookieName, Value: token, Path: "/", MaxAge: maxAge, Secure: true, HttpOnly: true, SameSite: "strict"})
+	ctx.Response().Cookie(http.Cookie{Name: middleware.CSRFTokenCookieName, Value: csrfToken, Path: "/", MaxAge: maxAge, Secure: true, HttpOnly: false, SameSite: "strict"})
+	return nil
+}
+
+func clearAuthenticationCookies(ctx http.Context) {
+	ctx.Response().Cookie(http.Cookie{Name: middleware.AuthTokenCookieName, Value: "", Path: "/", MaxAge: -1, Secure: true, HttpOnly: true, SameSite: "strict"})
+	ctx.Response().Cookie(http.Cookie{Name: middleware.CSRFTokenCookieName, Value: "", Path: "/", MaxAge: -1, Secure: true, SameSite: "strict"})
 }
 
 type AuthController struct {
@@ -163,12 +183,14 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 	if err := lockoutService.ClearFailedAttempts(ip); err != nil {
 		facades.Log().Errorf("清除登录失败计数失败: %v", err)
 	}
+	if err := setAuthenticationCookies(ctx, token, loginPost.Remember); err != nil {
+		return utils.ErrorResponseWithError(ctx, 500, "设置认证 Cookie 失败", err)
+	}
 
 	return ctx.Response().Success().Json(http.Json{
 		"status":  true,
 		"message": "登录成功",
 		"data": map[string]any{
-			"token":    token,
 			"username": loginPost.Username,
 			"type":     "admin",
 		},
@@ -176,19 +198,12 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 }
 
 func (r *AuthController) Refresh(ctx http.Context) http.Response {
-	// 从请求头获取 Authorization token
-	authHeader := ctx.Request().Header("Authorization")
-	if authHeader == "" {
+	token := ctx.Request().Cookie(middleware.AuthTokenCookieName)
+	if token == "" {
 		return ctx.Response().Status(401).Json(http.Json{
 			"status":  false,
 			"message": "缺少认证令牌",
 		})
-	}
-
-	// 移除 "Bearer " 前缀（如果存在）
-	token := authHeader
-	if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
-		token = authHeader[7:]
 	}
 
 	// 解析 Token
@@ -221,12 +236,14 @@ func (r *AuthController) Refresh(ctx http.Context) http.Response {
 			"error":   refreshErr.Error(),
 		})
 	}
+	if err := setAuthenticationCookies(ctx, newToken, false); err != nil {
+		return utils.ErrorResponseWithError(ctx, 500, "设置认证 Cookie 失败", err)
+	}
 
 	return ctx.Response().Success().Json(http.Json{
 		"status":  true,
 		"message": "Token刷新成功",
 		"data": map[string]any{
-			"token":      newToken,
 			"user_id":    payload.Key,
 			"guard":      payload.Guard,
 			"expires_at": payload.ExpireAt.Unix(),
@@ -251,4 +268,9 @@ func (r *AuthController) Check(ctx http.Context) http.Response {
 			"is_valid":  true,
 		},
 	})
+}
+
+func (r *AuthController) Logout(ctx http.Context) http.Response {
+	clearAuthenticationCookies(ctx)
+	return utils.SuccessResponse(ctx, "已退出登录")
 }

@@ -52,11 +52,12 @@ func Api() {
 			authRouter.Prefix("/auth").Group(func(authRoute route.Router) {
 				authRoute.Get("/refresh", authController.Refresh)
 				authRoute.Get("/check", authController.Check)
+				authRoute.Middleware(middleware.VerifyCSRF()).Post("/logout", authController.Logout)
 			})
 		})
 
 		// 仅管理员接口
-		router.Middleware(middleware.AdminAuth()).Group(func(adminRouter route.Router) {
+		router.Middleware(middleware.AdminAuth(), middleware.VerifyCSRF()).Group(func(adminRouter route.Router) {
 			// 设置相关
 			adminRouter.Prefix("/settings").Group(func(settingsRoute route.Router) {
 				settingsRoute.Get("/panel", settingsController.GetPanelSettings)

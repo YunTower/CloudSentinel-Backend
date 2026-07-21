@@ -10,8 +10,13 @@ import (
 	"github.com/goravel/framework/facades"
 )
 
+const AuthTokenCookieName = "__Host-auth"
+
 // parseToken 统一解析 Authorization token
 func parseToken(ctx http.Context) (string, error) {
+	if token := ctx.Request().Cookie(AuthTokenCookieName); token != "" {
+		return token, nil
+	}
 	authHeader := ctx.Request().Header("Authorization")
 	if authHeader == "" {
 		return "", fmt.Errorf("缺少认证令牌")
