@@ -27,20 +27,24 @@ func Api() {
 
 	facades.Route().Prefix("api").Group(func(router route.Router) {
 		// 公开接口
-		router.Post("/auth/login", authController.Login)
+		router.Middleware(middleware.LoginRateLimit()).Post("/auth/login", authController.Login)
 		router.Middleware(middleware.PublicRateLimit(120, 1*time.Minute)).Group(func(publicRouter route.Router) {
 			publicRouter.Get("/settings/public", settingsController.GetPublicSettings)
 			publicRouter.Get("/public/servers", serverController.GetServers)
 			publicRouter.Get("/public/incidents", incidentController.GetPublic)
 			publicRouter.Get("/public/service-monitors", serviceMonitorController.GetPublic)
 		})
-		router.Post("/agent/report", agentReportController.Report)
-		router.Post("/agent/tasks/pull", agentTaskController.Pull)
-		router.Post("/agent/tasks/complete", agentTaskController.Complete)
+		router.Middleware(middleware.AgentRateLimit()).Group(func(agentRouter route.Router) {
+			agentRouter.Post("/agent/report", agentReportController.Report)
+			agentRouter.Post("/agent/tasks/pull", agentTaskController.Pull)
+			agentRouter.Post("/agent/tasks/complete", agentTaskController.Complete)
+		})
 
 		// WebSocket 连接
-		router.Get("/ws/agent", wsController.HandleAgentConnection)
-		router.Get("/ws/frontend", wsController.HandleFrontendConnection)
+		router.Middleware(middleware.WebSocketRateLimit()).Group(func(wsRouter route.Router) {
+			wsRouter.Get("/ws/agent", wsController.HandleAgentConnection)
+			wsRouter.Get("/ws/frontend", wsController.HandleFrontendConnection)
+		})
 
 		// 通用登录用户接口
 		router.Middleware(middleware.Auth()).Group(func(authRouter route.Router) {

@@ -17,7 +17,7 @@ var (
 	publicRateLimitBuckets = map[string]*rateLimitBucket{}
 )
 
-func PublicRateLimit(maxRequests int, window time.Duration) http.Middleware {
+func RateLimit(scope string, maxRequests int, window time.Duration) http.Middleware {
 	if maxRequests <= 0 {
 		maxRequests = 120
 	}
@@ -26,7 +26,7 @@ func PublicRateLimit(maxRequests int, window time.Duration) http.Middleware {
 	}
 
 	return func(ctx http.Context) {
-		key := ctx.Request().Ip()
+		key := scope + ":" + ctx.Request().Ip()
 		if key == "" {
 			key = "unknown"
 		}
@@ -58,3 +58,13 @@ func PublicRateLimit(maxRequests int, window time.Duration) http.Middleware {
 		ctx.Request().Next()
 	}
 }
+
+func PublicRateLimit(maxRequests int, window time.Duration) http.Middleware {
+	return RateLimit("public", maxRequests, window)
+}
+
+func LoginRateLimit() http.Middleware { return RateLimit("login", 10, time.Minute) }
+
+func AgentRateLimit() http.Middleware { return RateLimit("agent", 120, time.Minute) }
+
+func WebSocketRateLimit() http.Middleware { return RateLimit("websocket", 20, time.Minute) }
