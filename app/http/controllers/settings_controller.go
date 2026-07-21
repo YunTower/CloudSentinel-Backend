@@ -78,10 +78,8 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 	}
 
 	adminUsername := utils.GetSetting("admin_username", "admin")
-	sessionTimeoutSeconds := utils.GetSetting("session_timeout", "3600")
 	maxLoginAttempts := utils.GetSetting("max_login_attempts", "5")
 	lockoutDurationSeconds := utils.GetSetting("lockout_duration", "900")
-	jwtExpirationSeconds := utils.GetSetting("jwt_expiration", "86400")
 
 	parseInt := func(s string, def int64) int64 {
 		if v, err := strconv.ParseInt(s, 10, 64); err == nil {
@@ -90,15 +88,11 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 		return def
 	}
 
-	sessionMinutes := int(parseInt(sessionTimeoutSeconds, 3600) / 60)
 	lockoutMinutes := int(parseInt(lockoutDurationSeconds, 900) / 60)
-	jwtHours := int(parseInt(jwtExpirationSeconds, 86400) / 3600)
 
 	return utils.SuccessResponse(ctx, "success", map[string]any{
-		"sessionTimeout":   sessionMinutes,
 		"maxLoginAttempts": parseInt(maxLoginAttempts, 5),
 		"lockoutDuration":  lockoutMinutes,
-		"jwtExpiration":    jwtHours,
 		"adminUsername":    adminUsername,
 	})
 }
@@ -261,11 +255,8 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 	}
 
 	type UpdatePermissionsRequest struct {
-		SessionTimeout   int    `json:"sessionTimeout" form:"sessionTimeout"`
 		MaxLoginAttempts int    `json:"maxLoginAttempts" form:"maxLoginAttempts"`
 		LockoutDuration  int    `json:"lockoutDuration" form:"lockoutDuration"`
-		JwtSecret        string `json:"jwtSecret" form:"jwtSecret"`
-		JwtExpiration    int    `json:"jwtExpiration" form:"jwtExpiration"`
 		NewUsername      string `json:"newUsername" form:"newUsername"`
 		CurrentPassword  string `json:"currentPassword" form:"currentPassword"`
 		NewPassword      string `json:"newPassword" form:"newPassword"`
@@ -277,43 +268,25 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 		return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
 	}
 
-	sessionMinutes := req.SessionTimeout
 	maxLoginAttempts := req.MaxLoginAttempts
 	lockoutMinutes := req.LockoutDuration
-	jwtSecret := req.JwtSecret
-	jwtHours := req.JwtExpiration
 	newUsername := req.NewUsername
 	currentPassword := req.CurrentPassword
 	newPassword := req.NewPassword
 	confirmPassword := req.ConfirmPassword
 
-	sessionSeconds := sessionMinutes * 60
 	lockoutSeconds := lockoutMinutes * 60
-	jwtSeconds := jwtHours * 3600
 
 	settingRepo := repositories.GetSystemSettingRepository()
 	write := func(key, val string) error {
 		return settingRepo.SetValue(key, val)
 	}
 
-	if err := write("session_timeout", strconv.Itoa(sessionSeconds)); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
-	}
 	if err := write("max_login_attempts", strconv.Itoa(maxLoginAttempts)); err != nil {
 		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
 	}
 	if err := write("lockout_duration", strconv.Itoa(lockoutSeconds)); err != nil {
 		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
-	}
-	if jwtSecret != "" {
-		if err := write("jwt_secret", jwtSecret); err != nil {
-			return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
-		}
-	}
-	if jwtSeconds > 0 {
-		if err := write("jwt_expiration", strconv.Itoa(jwtSeconds)); err != nil {
-			return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
-		}
 	}
 
 	// 处理管理员用户名修改
