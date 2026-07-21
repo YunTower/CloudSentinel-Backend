@@ -12,23 +12,12 @@ import (
 
 const AuthTokenCookieName = "__Host-auth"
 
-// parseToken 统一解析 Authorization token
+// parseToken 从 HttpOnly Cookie 读取会话令牌，避免令牌暴露给浏览器脚本。
 func parseToken(ctx http.Context) (string, error) {
 	if token := ctx.Request().Cookie(AuthTokenCookieName); token != "" {
 		return token, nil
 	}
-	authHeader := ctx.Request().Header("Authorization")
-	if authHeader == "" {
-		return "", fmt.Errorf("缺少认证令牌")
-	}
-
-	// 移除 "Bearer " 前缀（如果存在）
-	token := authHeader
-	if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
-		token = authHeader[7:]
-	}
-
-	return token, nil
+	return "", fmt.Errorf("缺少认证 Cookie")
 }
 
 // setUserContext 设置用户信息到上下文

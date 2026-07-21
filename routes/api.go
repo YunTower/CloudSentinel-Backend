@@ -50,7 +50,7 @@ func Api() {
 		router.Middleware(middleware.Auth()).Group(func(authRouter route.Router) {
 			// 认证相关
 			authRouter.Prefix("/auth").Group(func(authRoute route.Router) {
-				authRoute.Get("/refresh", authController.Refresh)
+				authRoute.Middleware(middleware.VerifyCSRF()).Post("/refresh", authController.Refresh)
 				authRoute.Get("/check", authController.Check)
 				authRoute.Middleware(middleware.VerifyCSRF()).Post("/logout", authController.Logout)
 			})
