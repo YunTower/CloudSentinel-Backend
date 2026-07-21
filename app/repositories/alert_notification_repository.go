@@ -39,7 +39,7 @@ func (r *AlertNotificationRepository) GetAll() ([]*models.AlertNotification, err
 }
 
 // UpdateConfig 更新通知配置
-func (r *AlertNotificationRepository) UpdateConfig(notificationType string, config map[string]interface{}) error {
+func (r *AlertNotificationRepository) UpdateConfig(notificationType string, enabled bool, config map[string]interface{}) error {
 	if notificationType == "email" {
 		if v, ok := config["password"].(string); ok && v != "" {
 			if !strings.HasPrefix(v, "enc:") {
@@ -69,7 +69,7 @@ func (r *AlertNotificationRepository) UpdateConfig(notificationType string, conf
 		// 不存在则创建
 		notification = models.AlertNotification{
 			NotificationType: notificationType,
-			Enabled:          true,
+			Enabled:          enabled,
 			ConfigJson:       string(configJson),
 		}
 		return facades.Orm().Query().Create(&notification)
@@ -77,7 +77,7 @@ func (r *AlertNotificationRepository) UpdateConfig(notificationType string, conf
 
 	// 存在则更新
 	notification.ConfigJson = string(configJson)
-	notification.Enabled = true
+	notification.Enabled = enabled
 	return facades.Orm().Query().Save(&notification)
 }
 

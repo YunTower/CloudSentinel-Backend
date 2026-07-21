@@ -6,6 +6,7 @@ import (
 	"goravel/app/repositories"
 	"goravel/app/utils"
 	"goravel/app/utils/notification"
+	"goravel/app/utils/secret"
 	"goravel/app/utils/security"
 	"strconv"
 	"strings"
@@ -143,8 +144,9 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 		if !wh.Enabled {
 			return false
 		}
-		url, _ := wh.Config["webhook"].(string)
-		return strings.TrimSpace(url) != "" && (strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://"))
+		rawURL, _ := wh.Config["webhook"].(string)
+		url, err := secret.DecryptStringWithAppKey(rawURL)
+		return err == nil && strings.TrimSpace(url) != "" && (strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://"))
 	}
 
 	email := fetchNotify("email")
@@ -165,11 +167,14 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 		"to":          email.Config["to"],
 		"hasPassword": hasPassword,
 	}
+	rawWebhookURL, _ := webhook.Config["webhook"].(string)
+	hasWebhook := strings.TrimSpace(rawWebhookURL) != ""
 	webhookData := map[string]any{
-		"enabled":   webhook.Enabled,
-		"webhook":   webhook.Config["webhook"],
-		"mentioned": webhook.Config["mentioned"],
-		"platform":  webhook.Config["platform"],
+		"enabled":    webhook.Enabled,
+		"webhook":    "",
+		"hasWebhook": hasWebhook,
+		"mentioned":  webhook.Config["mentioned"],
+		"platform":   webhook.Config["platform"],
 	}
 
 	// 是否已配置任意一个通知渠道
@@ -450,7 +455,20 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 	}
 
 	webhookURL := strings.TrimSpace(fmt.Sprint(webhookCfg["webhook"]))
-	if webhookURL != "" {
+	if webhookURL == "" {
+		oldNotification, err := notificationRepo.GetByType("webhook")
+		if err == nil && oldNotification != nil && oldNotification.ConfigJson != "" {
+			var oldCfg map[string]any
+			if err := json.Unmarshal([]byte(oldNotification.ConfigJson), &oldCfg); err == nil {
+				if oldURL, ok := oldCfg["webhook"].(string); ok && oldURL != "" {
+					webhookCfg["webhook"] = oldURL
+					if decryptedURL, err := secret.DecryptStringWithAppKey(oldURL); err == nil {
+						webhookURL = strings.TrimSpace(decryptedURL)
+					}
+				}
+			}
+		}
+	} else {
 		u, err := security.ParseAndValidateWebhookURLForConfig(webhookURL)
 		if err != nil {
 			return utils.ErrorResponse(ctx, 422, "Webhook URL 不合法")
@@ -479,7 +497,7 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 			}
 		}
 
-		return notificationRepo.UpdateConfig(nType, cfg)
+		return notificationRepo.UpdateConfig(nType, enabled, cfg)
 	}
 	if err := writeNotify("email", emailEnabled, emailCfg); err != nil {
 		return utils.ErrorResponseWithError(ctx, 500, "更新邮件通知失败", err)
@@ -638,7 +656,9 @@ func (r *SettingsController) TestAlertSettings(ctx http.Context) http.Response {
 				var savedCfg notification.EmailConfig
 				if err := json.Unmarshal([]byte(savedNotification.ConfigJson), &savedCfg); err == nil {
 					if savedCfg.Password != "" {
-						emailCfg.Password = savedCfg.Password
+						if password, err := secret.DecryptStringWithAppKey(savedCfg.Password); err == nil {
+							emailCfg.Password = password
+						}
 					}
 				}
 			}
@@ -656,6 +676,17 @@ func (r *SettingsController) TestAlertSettings(ctx http.Context) http.Response {
 		var webhookCfg notification.WebhookConfig
 		if err := json.Unmarshal(configBytes, &webhookCfg); err != nil {
 			return utils.ErrorResponseWithError(ctx, 422, "无效的Webhook配置", err)
+		}
+		if strings.TrimSpace(webhookCfg.Webhook) == "" {
+			savedNotification, err := notificationRepo.GetByType("webhook")
+			if err == nil && savedNotification != nil && savedNotification.ConfigJson != "" {
+				var savedCfg notification.WebhookConfig
+				if err := json.Unmarshal([]byte(savedNotification.ConfigJson), &savedCfg); err == nil && savedCfg.Webhook != "" {
+					if webhookURL, err := secret.DecryptStringWithAppKey(savedCfg.Webhook); err == nil {
+						webhookCfg.Webhook = webhookURL
+					}
+				}
+			}
 		}
 		if u, err := security.ParseAndValidateWebhookURLForConfig(webhookCfg.Webhook); err == nil {
 			facades.Log().Infof("alert test webhook target: user_id=%s host=%s", userID, u.Hostname())
