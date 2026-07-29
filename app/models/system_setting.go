@@ -3,11 +3,10 @@ package models
 import (
 	"strconv"
 	"time"
-
-	"github.com/goravel/framework/database/orm"
 )
 
 // SystemSetting 系统设置模型
+// 注意：不要嵌入 orm.Model，避免与本表 ID/时间戳字段冲突导致 Save 丢 key。
 type SystemSetting struct {
 	ID           uint      `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
 	SettingKey   string    `gorm:"column:setting_key;uniqueIndex;not null;size:100" json:"setting_key"`
@@ -16,8 +15,6 @@ type SystemSetting struct {
 	Description  string    `gorm:"column:description;type:text" json:"description"`
 	CreatedAt    time.Time `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt    time.Time `gorm:"column:updated_at" json:"updated_at"`
-
-	orm.Model
 }
 
 // TableName 指定表名

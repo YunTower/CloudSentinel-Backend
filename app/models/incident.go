@@ -14,6 +14,8 @@ type Incident struct {
 	Title       string     `gorm:"column:title;not null;size:255" json:"title"`
 	Status      string     `gorm:"column:status;not null;size:30;index" json:"status"` // active, resolved
 	Impact      string     `gorm:"column:impact;not null;size:30" json:"impact"`       // degraded, outage, maintenance
+	// PageIDs 为 JSON 字符串数组，如 ["home"]；空/null 表示全站可见
+	PageIDs     *string    `gorm:"column:page_ids;type:text" json:"page_ids"`
 	StartedAt   time.Time  `gorm:"column:started_at;not null;index" json:"started_at"`
 	ResolvedAt  *time.Time `gorm:"column:resolved_at" json:"resolved_at"`
 	LastEventAt time.Time  `gorm:"column:last_event_at;not null;index" json:"last_event_at"`

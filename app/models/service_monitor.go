@@ -30,6 +30,11 @@ type ServiceMonitor struct {
 	ConsecutiveFailures  int      `gorm:"column:consecutive_failures;default:0" json:"consecutive_failures"`
 	ConsecutiveSuccesses int      `gorm:"column:consecutive_successes;default:0" json:"consecutive_successes"`
 
+	// HTTPS 证书有效期检测（仅 type=https 且开启时生效）
+	CheckCertExpiry bool       `gorm:"column:check_cert_expiry;default:0" json:"check_cert_expiry"`
+	CertExpiresAt   *time.Time `gorm:"column:cert_expires_at" json:"cert_expires_at"`
+	CertDaysLeft    *int       `gorm:"column:cert_days_left" json:"cert_days_left"`
+
 	// Virtual field – not stored in DB, populated by GetAll
 	History []*ServiceMonitorHistory `gorm:"-" json:"history"`
 	Uptime  map[string]UptimeStat    `gorm:"-" json:"uptime,omitempty"`
