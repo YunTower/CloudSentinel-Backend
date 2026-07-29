@@ -26,14 +26,16 @@ func Api() {
 	staticController := controllers.NewStaticController()
 
 	facades.Route().Prefix("api").Group(func(router route.Router) {
-		// 公开接口
-		router.Middleware(middleware.LoginRateLimit()).Post("/auth/login", authController.Login)
-		router.Middleware(middleware.PublicRateLimit(120, 1*time.Minute)).Group(func(publicRouter route.Router) {
+		// 公开接口：始终以访客权限执行，绝不读取或提升管理员会话。
+		router.Middleware(middleware.Public(), middleware.PublicRateLimit(120, 1*time.Minute)).Group(func(publicRouter route.Router) {
 			publicRouter.Get("/settings/public", settingsController.GetPublicSettings)
 			publicRouter.Get("/public/servers", serverController.GetServers)
 			publicRouter.Get("/public/incidents", incidentController.GetPublic)
 			publicRouter.Get("/public/service-monitors", serviceMonitorController.GetPublic)
 		})
+
+		// 管理认证入口仅供管理端来源调用；后续管理 API 必须经过 AdminAuth 与 CSRF 校验。
+		router.Middleware(middleware.LoginRateLimit()).Post("/auth/login", authController.Login)
 		router.Middleware(middleware.AgentRateLimit()).Group(func(agentRouter route.Router) {
 			agentRouter.Post("/agent/report", agentReportController.Report)
 			agentRouter.Post("/agent/tasks/pull", agentTaskController.Pull)
@@ -50,6 +52,7 @@ func Api() {
 		router.Middleware(middleware.Auth()).Group(func(authRouter route.Router) {
 			// 认证相关
 			authRouter.Prefix("/auth").Group(func(authRoute route.Router) {
+				authRoute.Get("/csrf", authController.CSRFToken)
 				authRoute.Middleware(middleware.VerifyCSRF()).Post("/refresh", authController.Refresh)
 				authRoute.Get("/check", authController.Check)
 				authRoute.Middleware(middleware.VerifyCSRF()).Post("/logout", authController.Logout)

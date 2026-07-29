@@ -270,6 +270,15 @@ func (r *AuthController) Check(ctx http.Context) http.Response {
 	})
 }
 
+// CSRFToken 仅向已认证会话返回双提交 Token，供分域管理前端写入请求头。
+func (r *AuthController) CSRFToken(ctx http.Context) http.Response {
+	token := ctx.Request().Cookie(middleware.CSRFTokenCookieName)
+	if token == "" {
+		return utils.ErrorResponse(ctx, 401, "缺少 CSRF Token", "CSRF_TOKEN_MISSING")
+	}
+	return utils.SuccessResponse(ctx, "success", map[string]any{"csrf_token": token})
+}
+
 func (r *AuthController) Logout(ctx http.Context) http.Response {
 	clearAuthenticationCookies(ctx)
 	return utils.SuccessResponse(ctx, "已退出登录")
