@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,9 +35,9 @@ const (
 )
 
 type ServiceMonitorService struct {
-	mu            sync.Mutex
-	stopChs       map[uint]chan struct{}
-	pendingChecks map[string]*pendingServiceCheck
+	mu      sync.Mutex
+	stopChs map[uint]chan struct{}
+	rounds  *serviceMonitorRounds
 }
 
 type probeCheckResult struct {
@@ -46,19 +47,11 @@ type probeCheckResult struct {
 	err          error
 }
 
-type pendingServiceCheck struct {
-	monitorID uint
-	checkID   string
-	expected  map[string]struct{}
-	results   map[string]probeCheckResult
-	timer     *time.Timer
-}
-
 func GetServiceMonitorService() *ServiceMonitorService {
 	serviceMonitorOnce.Do(func() {
 		serviceMonitorInstance = &ServiceMonitorService{
-			stopChs:       make(map[uint]chan struct{}),
-			pendingChecks: make(map[string]*pendingServiceCheck),
+			stopChs: make(map[uint]chan struct{}),
+			rounds:  newServiceMonitorRounds(),
 		}
 	})
 	return serviceMonitorInstance
@@ -113,15 +106,7 @@ func (s *ServiceMonitorService) Stop(id uint) {
 		close(ch)
 		delete(s.stopChs, id)
 	}
-	for key, pending := range s.pendingChecks {
-		if pending.monitorID != id {
-			continue
-		}
-		if pending.timer != nil {
-			pending.timer.Stop()
-		}
-		delete(s.pendingChecks, key)
-	}
+	s.rounds.CancelMonitor(id)
 }
 
 func (s *ServiceMonitorService) runCheck(m *models.ServiceMonitor) {
@@ -131,7 +116,12 @@ func (s *ServiceMonitorService) runCheck(m *models.ServiceMonitor) {
 		manager := wsService.GetManager()
 		checkID := uuid.NewString()
 		commandID := uuid.NewString()
-		s.createPendingCheck(m.ID, checkID, m.ServerIDs, m.Timeout)
+		timeoutSec := m.Timeout
+		if timeoutSec <= 0 {
+			timeoutSec = 10
+		}
+		deadlineAt := time.Now().Add(time.Duration(timeoutSec+2) * time.Second).UTC()
+		s.createPendingCheck(m.ID, checkID, commandID, m.ServerIDs, timeoutSec)
 		payload := map[string]interface{}{
 			"command":    "service_check",
 			"command_id": commandID,
@@ -147,6 +137,7 @@ func (s *ServiceMonitorService) runCheck(m *models.ServiceMonitor) {
 				"http_method":   m.HTTPMethod,
 				"http_headers":  m.HTTPHeaders,
 				"http_body":     m.HTTPBody,
+				"deadline_at":   deadlineAt.Format(time.RFC3339Nano),
 			},
 		}
 		sentCount := 0
@@ -171,13 +162,14 @@ func (s *ServiceMonitorService) runCheck(m *models.ServiceMonitor) {
 		return
 	}
 	// 面板直接检查
-	s.doCheck(m.ID, m.Type, m.Target, m.Port, m.Timeout, m.ExpectStatus, m.ExpectBody, m.HTTPMethod, m.HTTPHeaders, m.HTTPBody)
+	s.doCheck(m.ID, m.Type, m.Target, m.Port, m.Timeout, m.ExpectStatus, m.ExpectBody, m.HTTPMethod, m.HTTPHeaders, m.HTTPBody, m.CheckCertExpiry)
 }
 
 // 执行检查
-func (s *ServiceMonitorService) doCheck(id uint, typ, target string, port, timeout, expectStatus int, expectBody, httpMethod, httpHeaders, httpBody string) {
+func (s *ServiceMonitorService) doCheck(id uint, typ, target string, port, timeout, expectStatus int, expectBody, httpMethod, httpHeaders, httpBody string, checkCertExpiry bool) {
 	start := time.Now()
 	var checkErr error
+	var certInfo *certCheckInfo
 
 	if timeout <= 0 {
 		timeout = 10
@@ -185,7 +177,11 @@ func (s *ServiceMonitorService) doCheck(id uint, typ, target string, port, timeo
 
 	switch typ {
 	case "http", "https":
-		checkErr = checkHTTP(target, timeout, expectStatus, expectBody, httpMethod, httpHeaders, httpBody)
+		info, err := checkHTTP(target, timeout, expectStatus, expectBody, httpMethod, httpHeaders, httpBody, typ == "https" && checkCertExpiry)
+		checkErr = err
+		if typ == "https" && checkCertExpiry && !info.ExpiresAt.IsZero() {
+			certInfo = &info
+		}
 	case "tcp":
 		checkErr = checkTCP(target, port, timeout)
 	case "udp":
@@ -211,13 +207,13 @@ func (s *ServiceMonitorService) doCheck(id uint, typ, target string, port, timeo
 		}
 	}
 
-	s.recordResult(id, "panel", "", status, elapsed, checkErr)
+	s.recordResult(id, "panel", "", status, elapsed, checkErr, certInfo)
 }
 
-func (s *ServiceMonitorService) recordResult(id uint, probeType, probeID, status string, elapsed int, checkErr error) {
+func (s *ServiceMonitorService) recordResult(id uint, probeType, probeID, status string, elapsed int, checkErr error, certInfo *certCheckInfo) {
 	now := time.Now()
 	s.saveProbeResult(id, probeType, probeID, status, elapsed, checkErr, now)
-	s.commitMonitorStatus(id, status, elapsed, checkErr, now)
+	s.commitMonitorStatus(id, status, elapsed, checkErr, now, certInfo)
 }
 
 func (s *ServiceMonitorService) saveProbeResult(id uint, probeType, probeID, status string, elapsed int, checkErr error, checkedAt time.Time) {
@@ -246,7 +242,18 @@ func (s *ServiceMonitorService) saveProbeResult(id uint, probeType, probeID, sta
 	}
 }
 
-func (s *ServiceMonitorService) commitMonitorStatus(id uint, status string, elapsed int, checkErr error, now time.Time) {
+// certCheckInfo 面板 HTTPS 证书有效期检测结果
+type certCheckInfo struct {
+	ExpiresAt time.Time
+	DaysLeft  int
+}
+
+func (s *ServiceMonitorService) commitMonitorStatus(id uint, status string, elapsed int, checkErr error, now time.Time, certInfo *certCheckInfo) {
+	if status == "unknown" {
+		s.commitUnknownMonitorStatus(id, elapsed, checkErr, now)
+		return
+	}
+
 	repo := repositories.GetServiceMonitorRepository()
 	previous, _ := repo.GetByID(id)
 	oldStatus := "unknown"
@@ -255,13 +262,18 @@ func (s *ServiceMonitorService) commitMonitorStatus(id uint, status string, elap
 	}
 	effectiveStatus, consecutiveFailures, consecutiveSuccesses := applyMonitorStability(previous, oldStatus, status)
 
-	_ = repo.Update(id, map[string]interface{}{
+	update := map[string]interface{}{
 		"status":                effectiveStatus,
 		"response_time":         elapsed,
 		"last_check_at":         now,
 		"consecutive_failures":  consecutiveFailures,
 		"consecutive_successes": consecutiveSuccesses,
-	})
+	}
+	if certInfo != nil {
+		update["cert_expires_at"] = certInfo.ExpiresAt
+		update["cert_days_left"] = certInfo.DaysLeft
+	}
+	_ = repo.Update(id, update)
 
 	// 保存历史记录，按时间保留，列表接口只读取最近若干条用于展示。
 	histRepo := repositories.GetServiceMonitorHistoryRepository()
@@ -302,6 +314,46 @@ func (s *ServiceMonitorService) commitMonitorStatus(id uint, status string, elap
 
 	if checkErr != nil {
 		facades.Log().Warningf("服务监测 [%d] 检测失败: %v", id, checkErr)
+	}
+}
+
+// commitUnknownMonitorStatus records that no monitoring point produced a
+// trustworthy result. It deliberately skips incidents and alerts because probe
+// availability is not evidence that the monitored target is unavailable.
+func (s *ServiceMonitorService) commitUnknownMonitorStatus(id uint, elapsed int, checkErr error, now time.Time) {
+	repo := repositories.GetServiceMonitorRepository()
+	_ = repo.Update(id, map[string]interface{}{
+		"status":        "unknown",
+		"response_time": elapsed,
+		"last_check_at": now,
+	})
+
+	histRepo := repositories.GetServiceMonitorHistoryRepository()
+	if err := histRepo.Save(&models.ServiceMonitorHistory{
+		MonitorID:    id,
+		Status:       "unknown",
+		ResponseTime: elapsed,
+		CheckedAt:    now,
+	}); err == nil {
+		go histRepo.PruneBefore(id, now.Add(-serviceMonitorHistoryRetention))
+	}
+
+	GetWebSocketService().GetManager().BroadcastToFrontend(map[string]interface{}{
+		"type": "service_monitor_update",
+		"data": map[string]interface{}{
+			"id":            id,
+			"status":        "unknown",
+			"response_time": elapsed,
+			"last_check_at": now.Format(time.RFC3339),
+			"history_entry": map[string]interface{}{
+				"status":        "unknown",
+				"response_time": elapsed,
+				"checked_at":    now.Format(time.RFC3339),
+			},
+		},
+	})
+	if checkErr != nil {
+		facades.Log().Warningf("服务监测 [%d] 监测点不可用: %v", id, checkErr)
 	}
 }
 
@@ -358,37 +410,13 @@ func (s *ServiceMonitorService) HandleAgentResult(data map[string]interface{}, s
 		s.addPendingAgentResult(id, checkID, serverID, status, elapsed, checkErr)
 		return
 	}
-	s.recordResult(id, "agent", serverID, status, elapsed, checkErr)
+	s.recordResult(id, "agent", serverID, status, elapsed, checkErr, nil)
 }
 
-func (s *ServiceMonitorService) createPendingCheck(monitorID uint, checkID string, serverIDs []string, timeoutSec int) {
-	if timeoutSec <= 0 {
-		timeoutSec = 10
-	}
-	key := pendingCheckKey(monitorID, checkID)
-	expected := make(map[string]struct{}, len(serverIDs))
-	for _, serverID := range serverIDs {
-		if serverID == "" {
-			continue
-		}
-		expected[serverID] = struct{}{}
-	}
-	timer := time.AfterFunc(time.Duration(timeoutSec+2)*time.Second, func() {
+func (s *ServiceMonitorService) createPendingCheck(monitorID uint, checkID, commandID string, serverIDs []string, timeoutSec int) {
+	s.rounds.Open(monitorID, checkID, commandID, serverIDs, timeoutSec, func() {
 		s.finalizePendingCheck(monitorID, checkID, true)
 	})
-
-	s.mu.Lock()
-	if old, ok := s.pendingChecks[key]; ok && old.timer != nil {
-		old.timer.Stop()
-	}
-	s.pendingChecks[key] = &pendingServiceCheck{
-		monitorID: monitorID,
-		checkID:   checkID,
-		expected:  expected,
-		results:   make(map[string]probeCheckResult, len(expected)),
-		timer:     timer,
-	}
-	s.mu.Unlock()
 }
 
 func (s *ServiceMonitorService) addPendingAgentResult(monitorID uint, checkID, serverID, status string, elapsed int, checkErr error) {
@@ -398,72 +426,62 @@ func (s *ServiceMonitorService) addPendingAgentResult(monitorID uint, checkID, s
 	now := time.Now()
 	s.saveProbeResult(monitorID, "agent", serverID, status, elapsed, checkErr, now)
 
-	key := pendingCheckKey(monitorID, checkID)
-	shouldFinalize := false
-
-	s.mu.Lock()
-	pending, ok := s.pendingChecks[key]
-	if ok {
-		pending.results[serverID] = probeCheckResult{
-			probeID:      serverID,
-			status:       status,
-			responseTime: elapsed,
-			err:          checkErr,
-		}
-		shouldFinalize = len(pending.expected) > 0 && len(pending.results) >= len(pending.expected)
-	}
-	s.mu.Unlock()
-
-	if shouldFinalize {
+	if s.rounds.AddResult(monitorID, checkID, probeCheckResult{
+		probeID:      serverID,
+		status:       status,
+		responseTime: elapsed,
+		err:          checkErr,
+	}) {
 		s.finalizePendingCheck(monitorID, checkID, false)
 	}
 }
 
 func (s *ServiceMonitorService) finalizePendingCheck(monitorID uint, checkID string, markMissing bool) {
-	key := pendingCheckKey(monitorID, checkID)
-
-	s.mu.Lock()
-	pending, ok := s.pendingChecks[key]
-	if !ok {
-		s.mu.Unlock()
+	pending := s.rounds.Complete(monitorID, checkID)
+	if pending == nil {
 		return
 	}
-	delete(s.pendingChecks, key)
-	if pending.timer != nil {
-		pending.timer.Stop()
-	}
+
 	results := make([]probeCheckResult, 0, len(pending.expected))
 	for _, result := range pending.results {
 		results = append(results, result)
 	}
 	if markMissing {
+		manager := GetWebSocketService().GetManager()
 		for serverID := range pending.expected {
 			if _, ok := pending.results[serverID]; ok {
 				continue
 			}
-			err := errors.New("agent result timeout")
-			result := probeCheckResult{probeID: serverID, status: "down", responseTime: 0, err: err}
-			results = append(results, result)
+			err := errors.New("monitoring point unavailable: agent offline")
+			if conn, online := manager.GetAgentConnection(serverID); online && !conn.IsClosed() {
+				err = errors.New("monitoring point unavailable: agent result timeout")
+				_ = manager.SendToAgent(serverID, map[string]interface{}{
+					"command":    "service_check_cancel",
+					"command_id": uuid.NewString(),
+					"data": map[string]interface{}{
+						"monitor_id": monitorID,
+						"check_id":   checkID,
+					},
+				})
+			}
+			_ = NewAgentTaskService().CancelByCommandID(serverID, pending.commandID, "监测轮次已截止")
+			s.saveProbeResult(monitorID, "agent", serverID, "unknown", 0, err, time.Now())
 		}
 	}
-	s.mu.Unlock()
+
+	if !s.rounds.IsLatest(monitorID, checkID) {
+		return
+	}
 
 	if len(results) == 0 {
-		err := errors.New("no available agent for service check")
-		s.recordResult(monitorID, "agent", strings.Join(mapKeys(pending.expected), ","), "down", 0, err)
+		err := errors.New("all monitoring points unavailable")
+		s.commitMonitorStatus(monitorID, "unknown", 0, err, time.Now(), nil)
 		return
 	}
 
 	now := time.Now()
-	if markMissing {
-		for _, result := range results {
-			if result.err != nil && result.err.Error() == "agent result timeout" {
-				s.saveProbeResult(monitorID, "agent", result.probeID, result.status, result.responseTime, result.err, now)
-			}
-		}
-	}
 	status, elapsed, err := aggregateProbeResults(results)
-	s.commitMonitorStatus(monitorID, status, elapsed, err, now)
+	s.commitMonitorStatus(monitorID, status, elapsed, err, now, nil)
 }
 
 func aggregateProbeResults(results []probeCheckResult) (string, int, error) {
@@ -511,18 +529,6 @@ func joinAggregateErrors(messages []string, fallback string) error {
 	return errors.New(strings.Join(messages, "; "))
 }
 
-func pendingCheckKey(monitorID uint, checkID string) string {
-	return fmt.Sprintf("%d:%s", monitorID, checkID)
-}
-
-func mapKeys(m map[string]struct{}) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	return keys
-}
-
 func normalizeProbeType(probeType string) string {
 	if probeType == "agent" || probeType == "panel" {
 		return probeType
@@ -551,12 +557,18 @@ func resolveProbeMetadata(probeType, probeID string) (string, string) {
 	return name, strings.TrimSpace(server.Location)
 }
 
-// 检查HTTP服务
-func checkHTTP(target string, timeoutSec, expectStatus int, expectBody, method, headersJSON, requestBody string) error {
+// 检查HTTP服务；checkCert 为 true 时解析叶证书有效期（过期仍可读，便于展示剩余天数）
+func checkHTTP(target string, timeoutSec, expectStatus int, expectBody, method, headersJSON, requestBody string, checkCert bool) (certCheckInfo, error) {
+	var info certCheckInfo
+	tlsConfig := &tls.Config{InsecureSkipVerify: false}
+	if checkCert {
+		// 允许过期证书完成握手，以便采集 NotAfter；过期判定由下方逻辑负责
+		tlsConfig.InsecureSkipVerify = true
+	}
 	client := &http.Client{
 		Timeout: time.Duration(timeoutSec) * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+			TLSClientConfig: tlsConfig,
 		},
 	}
 	method = normalizeRequestMethod(method)
@@ -566,11 +578,11 @@ func checkHTTP(target string, timeoutSec, expectStatus int, expectBody, method, 
 	}
 	req, err := http.NewRequest(method, target, body)
 	if err != nil {
-		return err
+		return info, err
 	}
 	headers, err := parseHTTPHeaders(headersJSON)
 	if err != nil {
-		return err
+		return info, err
 	}
 	for key, value := range headers {
 		req.Header.Set(key, value)
@@ -580,30 +592,53 @@ func checkHTTP(target string, timeoutSec, expectStatus int, expectBody, method, 
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return info, err
 	}
 	defer resp.Body.Close()
+
+	if checkCert {
+		leaf := extractLeafCertificate(resp)
+		if leaf == nil {
+			return info, fmt.Errorf("无法获取 TLS 证书信息")
+		}
+		info.ExpiresAt = leaf.NotAfter
+		info.DaysLeft = int(time.Until(leaf.NotAfter).Hours() / 24)
+		now := time.Now()
+		if now.Before(leaf.NotBefore) {
+			return info, fmt.Errorf("证书尚未生效（生效于 %s）", leaf.NotBefore.Format(time.RFC3339))
+		}
+		if now.After(leaf.NotAfter) {
+			return info, fmt.Errorf("证书已过期（过期于 %s）", leaf.NotAfter.Format(time.RFC3339))
+		}
+	}
 
 	// 检查状态码
 	if expectStatus > 0 {
 		if resp.StatusCode != expectStatus {
-			return fmt.Errorf("期望状态码 %d，实际 %d", expectStatus, resp.StatusCode)
+			return info, fmt.Errorf("期望状态码 %d，实际 %d", expectStatus, resp.StatusCode)
 		}
 	} else if resp.StatusCode >= 500 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		return info, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	// 检查响应体
 	if expectBody != "" {
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024)) // 限制 1MB 防止内存耗尽
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024)) // 限制 1MB 防止内存耗尽
 		if err != nil {
-			return fmt.Errorf("读取响应体失败: %v", err)
+			return info, fmt.Errorf("读取响应体失败: %v", err)
 		}
-		if !strings.Contains(string(body), expectBody) {
-			return fmt.Errorf("响应体不包含期望内容")
+		if !strings.Contains(string(respBody), expectBody) {
+			return info, fmt.Errorf("响应体不包含期望内容")
 		}
 	}
-	return nil
+	return info, nil
+}
+
+func extractLeafCertificate(resp *http.Response) *x509.Certificate {
+	if resp == nil || resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
+		return nil
+	}
+	return resp.TLS.PeerCertificates[0]
 }
 
 func normalizeRequestMethod(method string) string {

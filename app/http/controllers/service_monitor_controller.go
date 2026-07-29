@@ -96,15 +96,18 @@ func (c *ServiceMonitorController) GetResults(ctx http.Context) http.Response {
 }
 
 type publicServiceMonitor struct {
-	ID           uint                            `json:"id"`
-	Name         string                          `json:"name"`
-	GroupName    string                          `json:"group_name"`
-	Type         string                          `json:"type"`
-	Status       string                          `json:"status"`
-	ResponseTime int                             `json:"response_time"`
-	LastCheckAt  *time.Time                      `json:"last_check_at"`
-	History      []*models.ServiceMonitorHistory `json:"history"`
-	Uptime       map[string]models.UptimeStat    `json:"uptime,omitempty"`
+	ID              uint                            `json:"id"`
+	Name            string                          `json:"name"`
+	GroupName       string                          `json:"group_name"`
+	Type            string                          `json:"type"`
+	Status          string                          `json:"status"`
+	ResponseTime    int                             `json:"response_time"`
+	LastCheckAt     *time.Time                      `json:"last_check_at"`
+	CheckCertExpiry bool                            `json:"check_cert_expiry"`
+	CertExpiresAt   *time.Time                      `json:"cert_expires_at"`
+	CertDaysLeft    *int                            `json:"cert_days_left"`
+	History         []*models.ServiceMonitorHistory `json:"history"`
+	Uptime          map[string]models.UptimeStat    `json:"uptime,omitempty"`
 }
 
 func (c *ServiceMonitorController) GetPublic(ctx http.Context) http.Response {
@@ -135,25 +138,41 @@ func (c *ServiceMonitorController) GetPublic(ctx http.Context) http.Response {
 		for i, monitor := range enabled {
 			ids[i] = monitor.ID
 		}
-		histMap, _ := repositories.GetServiceMonitorHistoryRepository().GetBatchLast(ids, 60)
 		resultRepo := repositories.NewServiceMonitorResultRepository()
+		dailyMap, _ := resultRepo.BatchDailyStatus(ids, 90)
 		uptime24h, _ := resultRepo.BatchUptimeStats(ids, time.Now().Add(-24*time.Hour))
 		uptime7d, _ := resultRepo.BatchUptimeStats(ids, time.Now().Add(-7*24*time.Hour))
 		uptime30d, _ := resultRepo.BatchUptimeStats(ids, time.Now().Add(-30*24*time.Hour))
+		var lastUpdated *time.Time
 		for _, monitor := range enabled {
-			history := histMap[monitor.ID]
-			if history == nil {
-				history = []*models.ServiceMonitorHistory{}
+			daily := dailyMap[monitor.ID]
+			history := make([]*models.ServiceMonitorHistory, 0, len(daily))
+			for _, bar := range daily {
+				history = append(history, &models.ServiceMonitorHistory{
+					MonitorID:    monitor.ID,
+					Status:       bar.Status,
+					ResponseTime: bar.ResponseTime,
+					CheckedAt:    bar.CheckedAt,
+				})
+			}
+			if monitor.LastCheckAt != nil {
+				if lastUpdated == nil || monitor.LastCheckAt.After(*lastUpdated) {
+					t := *monitor.LastCheckAt
+					lastUpdated = &t
+				}
 			}
 			data = append(data, publicServiceMonitor{
-				ID:           monitor.ID,
-				Name:         monitor.Name,
-				GroupName:    monitor.GroupName,
-				Type:         monitor.Type,
-				Status:       monitor.Status,
-				ResponseTime: monitor.ResponseTime,
-				LastCheckAt:  monitor.LastCheckAt,
-				History:      history,
+				ID:              monitor.ID,
+				Name:            monitor.Name,
+				GroupName:       monitor.GroupName,
+				Type:            monitor.Type,
+				Status:          monitor.Status,
+				ResponseTime:    monitor.ResponseTime,
+				LastCheckAt:     monitor.LastCheckAt,
+				CheckCertExpiry: monitor.CheckCertExpiry,
+				CertExpiresAt:   monitor.CertExpiresAt,
+				CertDaysLeft:    monitor.CertDaysLeft,
+				History:         history,
 				Uptime: map[string]models.UptimeStat{
 					"24h": uptime24h[monitor.ID],
 					"7d":  uptime7d[monitor.ID],
@@ -161,11 +180,22 @@ func (c *ServiceMonitorController) GetPublic(ctx http.Context) http.Response {
 				},
 			})
 		}
+
+		return ctx.Response().Json(http.StatusOK, map[string]interface{}{
+			"status": true,
+			"data":   data,
+			"meta": map[string]interface{}{
+				"last_updated_at": lastUpdated,
+			},
+		})
 	}
 
 	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
 		"status": true,
 		"data":   data,
+		"meta": map[string]interface{}{
+			"last_updated_at": nil,
+		},
 	})
 }
 
@@ -191,6 +221,7 @@ func (c *ServiceMonitorController) Create(ctx http.Context) http.Response {
 		HTTPBody          string   `json:"http_body"`
 		FailureThreshold  int      `json:"failure_threshold"`
 		RecoveryThreshold int      `json:"recovery_threshold"`
+		CheckCertExpiry   bool     `json:"check_cert_expiry"`
 	}
 	if err := ctx.Request().Bind(&req); err != nil {
 		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
@@ -233,6 +264,7 @@ func (c *ServiceMonitorController) Create(ctx http.Context) http.Response {
 		HTTPBody:          req.HTTPBody,
 		FailureThreshold:  req.FailureThreshold,
 		RecoveryThreshold: req.RecoveryThreshold,
+		CheckCertExpiry:   req.Type == "https" && req.CheckCertExpiry,
 	}
 
 	repo := repositories.GetServiceMonitorRepository()
@@ -281,6 +313,7 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 		HTTPBody          *string  `json:"http_body"`
 		FailureThreshold  *int     `json:"failure_threshold"`
 		RecoveryThreshold *int     `json:"recovery_threshold"`
+		CheckCertExpiry   *bool    `json:"check_cert_expiry"`
 	}
 	if err := ctx.Request().Bind(&req); err != nil {
 		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
@@ -339,6 +372,23 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 	}
 	if req.RecoveryThreshold != nil && *req.RecoveryThreshold > 0 {
 		data["recovery_threshold"] = *req.RecoveryThreshold
+	}
+	monitorType := req.Type
+	if monitorType == "" {
+		if existing, getErr := repo.GetByID(uint(id)); getErr == nil && existing != nil {
+			monitorType = existing.Type
+		}
+	}
+	if req.CheckCertExpiry != nil {
+		data["check_cert_expiry"] = monitorType == "https" && *req.CheckCertExpiry
+		if monitorType != "https" || !*req.CheckCertExpiry {
+			data["cert_expires_at"] = nil
+			data["cert_days_left"] = nil
+		}
+	} else if monitorType != "" && monitorType != "https" {
+		data["check_cert_expiry"] = false
+		data["cert_expires_at"] = nil
+		data["cert_days_left"] = nil
 	}
 
 	if err := repo.Update(uint(id), data); err != nil {
