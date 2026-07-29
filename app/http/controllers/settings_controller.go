@@ -23,24 +23,49 @@ func NewSettingsController() *SettingsController {
 	return &SettingsController{}
 }
 
-// GetPublicSettings 获取公开的系统设置
+// GetPublicSettings 获取公开设置。
+// 未传 path 时仅返回面板标题；传入 path 时校验公开页并只返回该页渲染所需配置。
 func (r *SettingsController) GetPublicSettings(ctx http.Context) http.Response {
-	// 批量获取系统设置
-	settings := utils.GetSettings([]string{"panel_title"})
+	path := strings.TrimSpace(ctx.Request().Query("path", ""))
+	if path == "" {
+		panelTitle := utils.GetSetting("panel_title", "CloudSentinel 云哨")
+		if panelTitle == "" {
+			panelTitle = "CloudSentinel 云哨"
+		}
+		return utils.SuccessResponse(ctx, "success", publicSettingsBasePayload(panelTitle))
+	}
 
-	panelTitle := settings["panel_title"]
-	if panelTitle == "" {
-		panelTitle = "CloudSentinel 云哨"
+	resolution, err := getPublicPagePolicy().Resolve(path)
+	if err != nil {
+		return utils.ErrorResponse(ctx, http.StatusNotFound, err.Error())
 	}
 
 	publicDisplayCfg := loadPublicDisplayConfigV1()
-	publicPagesCfg := loadPublicPagesConfigV1()
+	return utils.SuccessResponse(ctx, "success", publicPageSettingsPayload(
+		publicDisplayCfg,
+		resolution.Config.RefreshIntervalSeconds,
+		resolution.Page,
+	))
+}
 
-	return utils.SuccessResponse(ctx, "success", map[string]any{
-		"panel_title":    panelTitle,
-		"public_display": publicDisplayPublicPayloadV1(publicDisplayCfg),
-		"public_pages":   publicPagesCfg,
-	})
+func publicSettingsBasePayload(panelTitle string) map[string]any {
+	return map[string]any{
+		"panel_title": panelTitle,
+	}
+}
+
+func publicPageSettingsPayload(
+	publicDisplayCfg PublicDisplayConfigV1,
+	refreshIntervalSeconds int,
+	page *PublicPageV1,
+) map[string]any {
+	return map[string]any{
+		"public_display": publicPageDisplayPayloadV1(publicDisplayCfg),
+		"public_pages": map[string]any{
+			"refreshIntervalSeconds": refreshIntervalSeconds,
+			"page":                   page,
+		},
+	}
 }
 
 func (r *SettingsController) GetPanelSettings(ctx http.Context) http.Response {
@@ -543,7 +568,7 @@ func (r *SettingsController) UpdatePublicDisplaySettings(ctx http.Context) http.
 	if err := savePublicDisplayConfigV1(cfg); err != nil {
 		return utils.ErrorResponseWithError(ctx, 500, "保存失败", err)
 	}
-	return utils.SuccessResponse(ctx, "success")
+	return utils.SuccessResponse(ctx, "success", loadPublicDisplayConfigV1())
 }
 
 // GetPublicPagesSettings 管理员读取公开页面配置（V1）
@@ -561,32 +586,27 @@ func (r *SettingsController) UpdatePublicPagesSettings(ctx http.Context) http.Re
 		return resp
 	}
 
-	var cfg PublicPagesConfigV1
-	if err := ctx.Request().Bind(&cfg); err != nil {
+	// 统一走 All()+JSON，避免 Bind 对嵌套 block.data(RawMessage) 解析丢失
+	all := ctx.Request().All()
+	if len(all) == 0 {
+		return utils.ErrorResponse(ctx, 422, "请求数据为空")
+	}
+	raw, err := json.Marshal(all)
+	if err != nil {
 		return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
 	}
-	// 兼容 Bind 解析失败/为空时的回退（All 为 json+form+query 合集）
-	if cfg.Version == 0 && len(cfg.Pages) == 0 {
-		all := ctx.Request().All()
-		if len(all) == 0 {
-			return utils.ErrorResponse(ctx, 422, "请求数据为空")
-		}
-		raw, err := json.Marshal(all)
-		if err != nil {
-			return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
-		}
-		if err := json.Unmarshal(raw, &cfg); err != nil {
-			return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
-		}
+	var cfg PublicPagesConfigV1
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
 	}
-	normalizePublicPagesConfigV1(&cfg)
-	if err := validatePublicPagesConfigV1(&cfg); err != nil {
+	policy := getPublicPagePolicy()
+	if err := policy.NormalizeValidate(&cfg); err != nil {
 		return utils.ErrorResponse(ctx, 422, err.Error())
 	}
-	if err := savePublicPagesConfigV1(cfg); err != nil {
+	if err := policy.Save(cfg); err != nil {
 		return utils.ErrorResponseWithError(ctx, 500, "保存失败", err)
 	}
-	return utils.SuccessResponse(ctx, "success")
+	return utils.SuccessResponse(ctx, "success", loadPublicPagesConfigV1())
 }
 
 func (r *SettingsController) TestAlertSettings(ctx http.Context) http.Response {
