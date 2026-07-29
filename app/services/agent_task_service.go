@@ -38,3 +38,13 @@ func (s *AgentTaskService) Enqueue(serverID, command, commandID string, payload 
 	}
 	return task, nil
 }
+
+// CancelByCommandID removes queued work for an expired monitoring round. A
+// currently leased Agent still receives the WebSocket cancellation message; its
+// deadline payload prevents a late queued execution from reporting a result.
+func (s *AgentTaskService) CancelByCommandID(serverID, commandID, reason string) error {
+	if commandID == "" {
+		return nil
+	}
+	return s.repo.CancelByCommandID(serverID, commandID, reason)
+}

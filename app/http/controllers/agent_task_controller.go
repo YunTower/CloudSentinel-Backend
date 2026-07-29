@@ -66,7 +66,7 @@ func (c *AgentTaskController) Complete(ctx http.Context) http.Response {
 			"status": false, "message": "agent_key、task_id 和 lease_token 不能为空",
 		})
 	}
-	if req.Status != "failed" {
+	if req.Status != "failed" && req.Status != "cancelled" {
 		req.Status = "succeeded"
 	}
 

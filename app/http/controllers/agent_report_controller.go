@@ -1,7 +1,6 @@
 package controllers
 
 import (
-	"errors"
 	"goravel/app/services"
 
 	"github.com/goravel/framework/contracts/http"
@@ -43,8 +42,11 @@ func (c *AgentReportController) Report(ctx http.Context) http.Response {
 		})
 	}
 
-	saver := services.GetAgentDataSaver()
-	if err := saveAgentReportPayload(saver, serverID, req.Type, data); err != nil {
+	ingestor := services.NewAgentReportIngestor(
+		services.GetAgentDataSaver(),
+		services.GetServiceMonitorService().HandleAgentResult,
+	)
+	if err := ingestor.Ingest(serverID, req.Type, data); err != nil {
 		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
 			"status": false, "message": err.Error(),
 		})
@@ -53,113 +55,4 @@ func (c *AgentReportController) Report(ctx http.Context) http.Response {
 	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
 		"status": true,
 	})
-}
-
-func saveAgentReportPayload(saver interface {
-	SaveSystemInfo(string, map[string]interface{}) error
-	SaveMetrics(string, map[string]interface{}) error
-	SaveMemoryInfo(string, map[string]interface{}) error
-	SaveDiskInfo(string, []interface{}) error
-	SaveDiskIO(string, map[string]interface{}) error
-	SaveNetworkInfo(string, map[string]interface{}) error
-	SaveSwapInfo(string, map[string]interface{}) error
-	SaveProcessInfo(string, map[string]interface{}) error
-	SaveGPUInfo(string, map[string]interface{}) error
-	SaveAgentLogs(string, []interface{}) error
-}, serverID, reportType string, data interface{}) error {
-	switch reportType {
-	case "service_check_result":
-		payload, err := agentReportMap(data)
-		if err != nil {
-			return err
-		}
-		services.GetServiceMonitorService().HandleAgentResult(payload, serverID)
-		return nil
-	case "system_info":
-		payload, err := agentReportMap(data)
-		if err != nil {
-			return err
-		}
-		return saver.SaveSystemInfo(serverID, payload)
-	case "metrics":
-		payload, err := agentReportMap(data)
-		if err != nil {
-			return err
-		}
-		return saver.SaveMetrics(serverID, payload)
-	case "memory_info":
-		payload, err := agentReportMap(data)
-		if err != nil {
-			return err
-		}
-		return saver.SaveMemoryInfo(serverID, payload)
-	case "disk_info":
-		payload, err := agentReportSlice(data)
-		if err != nil {
-			return err
-		}
-		return saver.SaveDiskInfo(serverID, payload)
-	case "disk_io":
-		payload, err := agentReportMap(data)
-		if err != nil {
-			return err
-		}
-		return saver.SaveDiskIO(serverID, payload)
-	case "network_info":
-		payload, err := agentReportMap(data)
-		if err != nil {
-			return err
-		}
-		return saver.SaveNetworkInfo(serverID, payload)
-	case "swap_info":
-		payload, err := agentReportMap(data)
-		if err != nil {
-			return err
-		}
-		return saver.SaveSwapInfo(serverID, payload)
-	case "process_info":
-		payload, err := agentReportMap(data)
-		if err != nil {
-			return err
-		}
-		return saver.SaveProcessInfo(serverID, payload)
-	case "gpu_info":
-		payload, err := agentReportMap(data)
-		if err != nil {
-			return err
-		}
-		return saver.SaveGPUInfo(serverID, payload)
-	case "agent_log":
-		payload, err := agentReportSlice(data)
-		if err != nil {
-			return err
-		}
-		return saver.SaveAgentLogs(serverID, payload)
-	default:
-		return &unsupportedAgentReportType{typ: reportType}
-	}
-}
-
-func agentReportMap(data interface{}) (map[string]interface{}, error) {
-	payload, ok := data.(map[string]interface{})
-	if !ok {
-		return nil, errors.New("data 必须是对象")
-	}
-	return payload, nil
-}
-
-func agentReportSlice(data interface{}) ([]interface{}, error) {
-	payload, ok := data.([]interface{})
-	if !ok {
-		return nil, errors.New("data 必须是数组")
-	}
-	return payload, nil
-}
-
-type unsupportedAgentReportType struct {
-	typ string
-}
-
-func (e *unsupportedAgentReportType) Error() string {
-	return "不支持的上报类型: " + e.typ
 }
