@@ -16,10 +16,13 @@ func init() {
 		// To learn more: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
 		"paths":                []string{},
 		"allowed_methods":      []string{"*"},
-		"allowed_origins":      []string{"*"},
+		"allowed_origins":      []string{},
 		"allowed_headers":      []string{"*"},
 		"exposed_headers":      []string{},
 		"max_age":              0,
-		"supports_credentials": false,
+		"supports_credentials": true,
+		// 逗号分隔；须经 facades.Config 读取（.env 不会写入 os.Environ）。
+		"admin_origins":  config.Env("CORS_ADMIN_ORIGINS", ""),
+		"public_origins": config.Env("CORS_PUBLIC_ORIGINS", ""),
 	})
 }
