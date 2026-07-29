@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"encoding/json"
 	"goravel/app/models"
 	"goravel/app/repositories"
 	"strconv"
@@ -28,9 +29,26 @@ func (c *IncidentController) GetAll(ctx http.Context) http.Response {
 		})
 	}
 
+	data := make([]map[string]interface{}, 0, len(incidents))
+	for _, incident := range incidents {
+		if incident == nil {
+			continue
+		}
+		raw, err := json.Marshal(incident)
+		if err != nil {
+			continue
+		}
+		item := map[string]interface{}{}
+		if err := json.Unmarshal(raw, &item); err != nil {
+			continue
+		}
+		item["page_ids"] = parseIncidentPageIDs(incident.PageIDs)
+		data = append(data, item)
+	}
+
 	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
 		"status": true,
-		"data":   incidents,
+		"data":   data,
 	})
 }
 
@@ -40,19 +58,55 @@ func (c *IncidentController) CreateMaintenance(ctx http.Context) http.Response {
 	}
 
 	var req struct {
-		Title   string `json:"title"`
-		Message string `json:"message"`
+		Title   string   `json:"title"`
+		Message string   `json:"message"`
+		Impact  string   `json:"impact"`
+		PageIDs []string `json:"page_ids"`
 	}
 	if err := ctx.Request().Bind(&req); err != nil {
 		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "参数错误"})
 	}
 	req.Title = strings.TrimSpace(req.Title)
 	req.Message = strings.TrimSpace(req.Message)
+	req.Impact = strings.TrimSpace(req.Impact)
 	if req.Title == "" || req.Message == "" {
 		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "title 和 message 不能为空"})
 	}
 	if len(req.Title) > 255 || len(req.Message) > 5000 {
 		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "内容过长"})
+	}
+	if req.Impact == "" {
+		req.Impact = "maintenance"
+	}
+	if req.Impact != "outage" && req.Impact != "degraded" && req.Impact != "maintenance" {
+		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "impact 不合法"})
+	}
+
+	pageIDs := make([]string, 0, len(req.PageIDs))
+	seen := map[string]struct{}{}
+	for _, id := range req.PageIDs {
+		id = strings.TrimSpace(id)
+		if id == "" || len(id) > 64 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		pageIDs = append(pageIDs, id)
+	}
+	if len(pageIDs) > 50 {
+		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "page_ids 过多（最大 50）"})
+	}
+
+	var pageIDsRaw *string
+	if len(pageIDs) > 0 {
+		encoded, err := json.Marshal(pageIDs)
+		if err != nil {
+			return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{"status": false, "message": "page_ids 编码失败"})
+		}
+		s := string(encoded)
+		pageIDsRaw = &s
 	}
 
 	now := time.Now()
@@ -62,7 +116,8 @@ func (c *IncidentController) CreateMaintenance(ctx http.Context) http.Response {
 		SourceID:    "manual",
 		Title:       req.Title,
 		Status:      "active",
-		Impact:      "maintenance",
+		Impact:      req.Impact,
+		PageIDs:     pageIDsRaw,
 		StartedAt:   now,
 		LastEventAt: now,
 		CreatedAt:   now,
@@ -74,7 +129,7 @@ func (c *IncidentController) CreateMaintenance(ctx http.Context) http.Response {
 	if err := repo.AddEvent(&models.IncidentEvent{
 		IncidentID: incident.ID,
 		EventType:  "opened",
-		Status:     "maintenance",
+		Status:     req.Impact,
 		Message:    req.Message,
 		OccurredAt: now,
 		CreatedAt:  now,
@@ -109,13 +164,13 @@ func (c *IncidentController) AddMaintenanceUpdate(ctx http.Context) http.Respons
 	repo := repositories.NewIncidentRepository()
 	incident, err := repo.GetByID(id)
 	if err != nil || incident.SourceType != "maintenance" || incident.Status != "active" {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "只能更新进行中的维护事件"})
+		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "只能更新进行中的手动事件"})
 	}
 	now := time.Now()
 	if err := repo.AddEvent(&models.IncidentEvent{
 		IncidentID: id,
 		EventType:  "update",
-		Status:     "maintenance",
+		Status:     incident.Impact,
 		Message:    req.Message,
 		OccurredAt: now,
 		CreatedAt:  now,
@@ -143,7 +198,7 @@ func (c *IncidentController) ResolveMaintenance(ctx http.Context) http.Response 
 	_ = ctx.Request().Bind(&req)
 	req.Message = strings.TrimSpace(req.Message)
 	if req.Message == "" {
-		req.Message = "维护已结束。"
+		req.Message = "事件已结束。"
 	}
 	if len(req.Message) > 5000 {
 		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "message 不能超过 5000 字"})
@@ -152,7 +207,7 @@ func (c *IncidentController) ResolveMaintenance(ctx http.Context) http.Response 
 	repo := repositories.NewIncidentRepository()
 	incident, err := repo.GetByID(id)
 	if err != nil || incident.SourceType != "maintenance" || incident.Status != "active" {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "只能关闭进行中的维护事件"})
+		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "只能关闭进行中的手动事件"})
 	}
 	now := time.Now()
 	if err := repo.AddEvent(&models.IncidentEvent{
@@ -195,34 +250,77 @@ type publicIncidentEvent struct {
 type publicIncident struct {
 	ID          uint                  `json:"id"`
 	SourceType  string                `json:"source_type"`
+	SourceID    string                `json:"source_id"`
 	Title       string                `json:"title"`
 	Status      string                `json:"status"`
 	Impact      string                `json:"impact"`
+	PageIDs     []string              `json:"page_ids"`
 	StartedAt   time.Time             `json:"started_at"`
 	ResolvedAt  *time.Time            `json:"resolved_at"`
 	LastEventAt time.Time             `json:"last_event_at"`
 	Events      []publicIncidentEvent `json:"events"`
 }
 
+func parseIncidentPageIDs(raw *string) []string {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return []string{}
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(*raw), &ids); err != nil {
+		return []string{}
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 func (c *IncidentController) GetPublic(ctx http.Context) http.Response {
-	incidents, err := repositories.NewIncidentRepository().List(50)
+	path := strings.TrimSpace(ctx.Request().Query("path", ""))
+	if path == "" {
+		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
+			"status": false, "message": "path 参数必填",
+		})
+	}
+
+	resolution, err := getPublicPagePolicy().Resolve(path)
+	if err != nil {
+		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
+			"status": false, "message": err.Error(),
+		})
+	}
+	filter := resolution.IncidentFilter
+	if filter.Empty {
+		return ctx.Response().Json(http.StatusOK, map[string]interface{}{
+			"status": true,
+			"data":   []publicIncident{},
+		})
+	}
+
+	incidents, err := repositories.NewIncidentRepository().List(200)
 	if err != nil {
 		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{
 			"status": false, "message": err.Error(),
 		})
 	}
 
-	data := make([]publicIncident, 0, len(incidents))
+	data := make([]publicIncident, 0, filter.Limit)
 	for _, incident := range incidents {
-		if incident == nil {
+		if !matchPublicIncident(incident, filter) {
 			continue
 		}
 		item := publicIncident{
 			ID:          incident.ID,
 			SourceType:  incident.SourceType,
+			SourceID:    incident.SourceID,
 			Title:       incident.Title,
 			Status:      incident.Status,
 			Impact:      incident.Impact,
+			PageIDs:     parseIncidentPageIDs(incident.PageIDs),
 			StartedAt:   incident.StartedAt,
 			ResolvedAt:  incident.ResolvedAt,
 			LastEventAt: incident.LastEventAt,
@@ -241,6 +339,9 @@ func (c *IncidentController) GetPublic(ctx http.Context) http.Response {
 			})
 		}
 		data = append(data, item)
+		if len(data) >= filter.Limit {
+			break
+		}
 	}
 
 	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
