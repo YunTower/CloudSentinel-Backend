@@ -52,6 +52,9 @@ func (kernel Kernel) Migrations() []schema.Migration {
 		&migrations.M20260619000005AddStabilityFieldsToServiceMonitorsTable{},
 		&migrations.M20260721000001AddAgentTaskLeases{},
 		&migrations.M20260721000002CreateRateLimitBuckets{},
+		&migrations.M20260723000001RepairPublicSettingsKeys{},
+		&migrations.M20260723000002AddCertExpiryToServiceMonitors{},
+		&migrations.M20260723000003AddPageIDsToIncidents{},
 	}
 }
 
