@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"goravel/app/models"
@@ -48,12 +49,19 @@ func (r *SystemSettingRepository) GetByKeys(keys []string) (map[string]*models.S
 }
 
 // SetValue 设置值（不存在则新建，存在则只更新 setting_value）
+// 使用 Table + map 写入，避免模型 Save 因字段冲突把 setting_key 写成空字符串。
 func (r *SystemSettingRepository) SetValue(key, value string) error {
-	var existing models.SystemSetting
-	err := facades.Orm().Query().Where("setting_key", key).First(&existing)
+	if key == "" {
+		return fmt.Errorf("setting_key 不能为空")
+	}
 
+	count, err := facades.Orm().Query().Table("system_settings").Where("setting_key", key).Count()
 	if err != nil {
-		now := time.Now().Unix()
+		return err
+	}
+
+	now := time.Now()
+	if count == 0 {
 		row := map[string]any{
 			"setting_key":   key,
 			"setting_value": value,
@@ -64,8 +72,13 @@ func (r *SystemSettingRepository) SetValue(key, value string) error {
 		return facades.Orm().Query().Table("system_settings").Create(row)
 	}
 
-	existing.SettingValue = value
-	return facades.Orm().Query().Save(&existing)
+	_, err = facades.Orm().Query().Table("system_settings").
+		Where("setting_key", key).
+		Update(map[string]any{
+			"setting_value": value,
+			"updated_at":    now,
+		})
+	return err
 }
 
 // GetValue 获取值

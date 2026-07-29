@@ -95,3 +95,21 @@ func (r *AgentTaskRepository) Complete(serverID, id, leaseToken, status, errText
 	}
 	return result.RowsAffected == 1, nil
 }
+
+func (r *AgentTaskRepository) CancelByCommandID(serverID, commandID, reason string) error {
+	now := time.Now()
+	_, err := facades.Orm().Query().
+		Model(&models.AgentTask{}).
+		Where("server_id", serverID).
+		Where("command_id", commandID).
+		WhereIn("status", []any{"pending", "leased"}).
+		Update(map[string]interface{}{
+			"status":           "cancelled",
+			"error":            reason,
+			"completed_at":     now,
+			"updated_at":       now,
+			"lease_token":      nil,
+			"lease_expires_at": nil,
+		})
+	return err
+}
