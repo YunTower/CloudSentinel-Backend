@@ -122,3 +122,12 @@ func AdminAuth() http.Middleware {
 		}
 	}
 }
+
+// Public 显式为公开端点建立访客上下文。公开路由不得从 Cookie 推导管理员身份。
+func Public() http.Middleware {
+	return func(ctx http.Context) {
+		ctx.WithValue("user_type", "guest")
+		ctx.WithValue("is_authenticated", false)
+		ctx.Request().Next()
+	}
+}

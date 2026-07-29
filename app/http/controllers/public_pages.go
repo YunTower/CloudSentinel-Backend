@@ -4,15 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-
-	"goravel/app/repositories"
 )
 
 const publicPagesSettingKeyV1 = "public_pages_v1"
 
 type PublicPagesConfigV1 struct {
-	Version int            `json:"version"`
-	Pages   []PublicPageV1 `json:"pages"`
+	Version                int            `json:"version"`
+	RefreshIntervalSeconds int            `json:"refreshIntervalSeconds"`
+	Pages                  []PublicPageV1 `json:"pages"`
 }
 
 type PublicPageV1 struct {
@@ -62,6 +61,8 @@ type PublicBlockIncidentsV1 struct {
 	Limit        int      `json:"limit"`        // 0 = default
 	ShowResolved bool     `json:"showResolved"` // include resolved incidents
 	SourceTypes  []string `json:"sourceTypes"`  // empty = all
+	MonitorIDs   []uint   `json:"monitorIds"`   // empty = all service_monitor incidents
+	ServerIDs    []string `json:"serverIds"`    // empty = all server incidents
 }
 
 type PublicBlockLinksV1 struct {
@@ -75,31 +76,18 @@ type PublicBlockLinkV1 struct {
 
 func defaultPublicPagesConfigV1() PublicPagesConfigV1 {
 	return PublicPagesConfigV1{
-		Version: 1,
+		Version:                1,
+		RefreshIntervalSeconds: 30,
 		Pages: []PublicPageV1{
 			{
 				ID:          "home",
 				Path:        "/public",
-				Title:       "公开页面",
+				Title:       "状态",
 				BrandName:   "CloudSentinel",
 				AccentColor: "#18a058",
 				Blocks: []PublicPageBlockV1{
-					mustBlock("hero", PublicBlockHeroV1{
-						Title:    "CloudSentinel",
-						Subtitle: "服务状态与资源概览",
-						Badge:    "PUBLIC",
-					}),
 					mustBlock("markdown", PublicBlockMarkdownV1{
 						Markdown: "## 公告\n欢迎访问公开页面。\n\n- 本页内容由管理员配置\n- 指标为实时/准实时展示",
-					}),
-					mustBlock("stats", PublicBlockStatsV1{
-						Items: []string{"onlineCount", "offlineCount", "avgCpu", "avgMemory"},
-					}),
-					mustBlock("serverList", PublicBlockServerListV1{
-						View:        "table",
-						GroupBy:     "status",
-						Limit:       0,
-						ShowToolbar: true,
 					}),
 					mustBlock("serviceStatus", PublicBlockServiceStatusV1{
 						MonitorIDs: []uint{},
@@ -107,15 +95,21 @@ func defaultPublicPagesConfigV1() PublicPagesConfigV1 {
 						Limit:      0,
 						ShowUptime: true,
 					}),
-					mustBlock("incidents", PublicBlockIncidentsV1{
-						Limit:        10,
-						ShowResolved: true,
-						SourceTypes:  []string{},
+					mustBlock("serverList", PublicBlockServerListV1{
+						View:        "table",
+						GroupBy:     "none",
+						Limit:       0,
+						ShowToolbar: false,
 					}),
 					mustBlock("links", PublicBlockLinksV1{
 						Links: []PublicBlockLinkV1{
 							{Label: "联系管理员", Href: "mailto:ops@example.com"},
 						},
+					}),
+					mustBlock("incidents", PublicBlockIncidentsV1{
+						Limit:        20,
+						ShowResolved: true,
+						SourceTypes:  []string{},
 					}),
 				},
 			},
@@ -129,11 +123,7 @@ func mustBlock(t string, data any) PublicPageBlockV1 {
 }
 
 func loadPublicPagesConfigV1() PublicPagesConfigV1 {
-	repo := repositories.GetSystemSettingRepository()
-	cfg := defaultPublicPagesConfigV1()
-	_ = repo.GetJSONWithDefault(publicPagesSettingKeyV1, &cfg, defaultPublicPagesConfigV1())
-	normalizePublicPagesConfigV1(&cfg)
-	return cfg
+	return getPublicPagePolicy().Load()
 }
 
 func normalizePublicPagesConfigV1(cfg *PublicPagesConfigV1) {
@@ -142,6 +132,15 @@ func normalizePublicPagesConfigV1(cfg *PublicPagesConfigV1) {
 	}
 	if cfg.Version == 0 {
 		cfg.Version = 1
+	}
+	if cfg.RefreshIntervalSeconds <= 0 {
+		cfg.RefreshIntervalSeconds = 30
+	}
+	if cfg.RefreshIntervalSeconds < 5 {
+		cfg.RefreshIntervalSeconds = 5
+	}
+	if cfg.RefreshIntervalSeconds > 3600 {
+		cfg.RefreshIntervalSeconds = 3600
 	}
 	if cfg.Pages == nil {
 		cfg.Pages = []PublicPageV1{}
@@ -168,6 +167,9 @@ func validatePublicPagesConfigV1(cfg *PublicPagesConfigV1) error {
 	}
 	if cfg.Version != 1 {
 		return errors.New("仅支持 version=1")
+	}
+	if cfg.RefreshIntervalSeconds < 5 || cfg.RefreshIntervalSeconds > 3600 {
+		return errors.New("refreshIntervalSeconds 必须在 5–3600 秒之间")
 	}
 	if len(cfg.Pages) == 0 {
 		return errors.New("pages 不能为空")
@@ -283,6 +285,17 @@ func validatePublicPagesConfigV1(cfg *PublicPagesConfigV1) error {
 						return errors.New("incidents.sourceTypes 值不合法")
 					}
 				}
+				if len(d.MonitorIDs) > 500 {
+					return errors.New("incidents.monitorIds 过多（最大 500）")
+				}
+				if len(d.ServerIDs) > 500 {
+					return errors.New("incidents.serverIds 过多（最大 500）")
+				}
+				for _, serverID := range d.ServerIDs {
+					if strings.TrimSpace(serverID) == "" || len(serverID) > 100 {
+						return errors.New("incidents.serverIds 值不合法")
+					}
+				}
 			case "links":
 				var d PublicBlockLinksV1
 				if err := json.Unmarshal(b.Data, &d); err != nil {
@@ -309,8 +322,7 @@ func validatePublicPagesConfigV1(cfg *PublicPagesConfigV1) error {
 }
 
 func savePublicPagesConfigV1(cfg PublicPagesConfigV1) error {
-	repo := repositories.GetSystemSettingRepository()
-	return repo.SetJSON(publicPagesSettingKeyV1, cfg)
+	return getPublicPagePolicy().Save(cfg)
 }
 
 func isValidPublicHexColor(value string) bool {

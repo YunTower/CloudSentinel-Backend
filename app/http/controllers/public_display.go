@@ -302,17 +302,11 @@ func isServerAllowedForGuestV1(cfg PublicDisplayConfigV1, serverID string, group
 	return false
 }
 
-// publicDisplayPublicPayloadV1 返回公开侧可下发的配置子集（避免泄露 allowlist 细节）
-func publicDisplayPublicPayloadV1(cfg PublicDisplayConfigV1) map[string]any {
+// publicPageDisplayPayloadV1 仅返回公开页面渲染实际使用的展示字段。
+func publicPageDisplayPayloadV1(cfg PublicDisplayConfigV1) map[string]any {
 	return map[string]any{
-		"version":      cfg.Version,
-		"enabled":      cfg.Enabled,
-		"overview":     cfg.Overview,
-		"fields":       cfg.Fields,
-		"announcement": cfg.Announcement,
-		"serverFilter": map[string]any{
-			"mode": cfg.ServerFilter.Mode,
-		},
+		"enabled": cfg.Enabled,
+		"fields":  cfg.Fields,
 	}
 }
 
