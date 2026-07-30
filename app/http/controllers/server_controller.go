@@ -1156,40 +1156,13 @@ func (c *ServerController) getServerMetricsByType(ctx http.Context, metricType s
 		metrics = []map[string]interface{}{}
 	}
 
-	// 如果无数据，生成包含0值的数据点，覆盖整个时间范围
+	// 记录查询结果条数；缺失桶会在后续按采样间隔统一补齐（保证不返回空、且整段有覆盖）
 	if len(metrics) == 0 {
-		facades.Log().Infof("获取服务器%s指标无数据，生成0值数据点: server_id=%s, startTime=%v, endTime=%v, 采样间隔=%d分钟",
-			metricType, serverID, startTime, endTime, sampleIntervalMinutes)
-
-		// 根据采样间隔生成数据点
-		sampleIntervalSeconds := sampleIntervalMinutes * 60
-		currentTime := startTime
-
-		for currentTime.Before(endTime) || currentTime.Equal(endTime) {
-			dataPoint := map[string]interface{}{
-				"timestamp": currentTime.Unix(),
-			}
-
-			// 根据指标类型设置不同的字段
-			switch metricType {
-			case "cpu":
-				dataPoint["cpu_usage"] = 0.0
-			case "memory":
-				dataPoint["memory_usage"] = 0.0
-			case "disk":
-				dataPoint["disk_read"] = 0.0
-				dataPoint["disk_write"] = 0.0
-			case "network":
-				dataPoint["network_upload"] = 0.0
-				dataPoint["network_download"] = 0.0
-			}
-
-			metrics = append(metrics, dataPoint)
-			currentTime = currentTime.Add(time.Duration(sampleIntervalSeconds) * time.Second)
-		}
+		facades.Log().Infof("获取服务器%s指标无数据（或未覆盖完整桶），将补齐时间桶: server_id=%s, 时间范围=%d分钟, 采样间隔=%d分钟, startTime=%v, endTime=%v",
+			metricType, serverID, durationMinutes, sampleIntervalMinutes, startTime, endTime)
 	} else {
-		// 查询成功且有数据
-		facades.Log().Infof("获取服务器%s指标成功: server_id=%s, 时间范围=%d分钟, 采样间隔=%d分钟, 数据量=%d, startTime=%v, endTime=%v",
+		// 查询成功且可能存在部分桶缺失
+		facades.Log().Infof("获取服务器%s指标成功（可能缺失部分桶）: server_id=%s, 时间范围=%d分钟, 采样间隔=%d分钟, 数据量=%d, startTime=%v, endTime=%v",
 			metricType, serverID, durationMinutes, sampleIntervalMinutes, len(metrics), startTime, endTime)
 	}
 
@@ -1226,6 +1199,103 @@ func (c *ServerController) getServerMetricsByType(ctx http.Context, metricType s
 				continue // 跳过timestamp字段
 			}
 			// 使用统一的格式化函数
+			metrics[i][key] = services.FormatMetricValue(value)
+		}
+	}
+
+	// 补齐缺失时间桶：按采样间隔生成完整序列，缺失的桶用 0 填充。
+	// 注意：SQL 的 group by 会把时间戳对齐到 sampleIntervalSeconds 的桶边界，
+	// 因此补齐时也使用同样的 floor 对齐方式生成桶起点。
+	sampleIntervalSeconds := int64(sampleIntervalMinutes * 60)
+	startUnix := startTime.Unix()
+	endUnix := endTime.Unix()
+	bucketStart := (startUnix / sampleIntervalSeconds) * sampleIntervalSeconds
+
+	metricsByTimestamp := make(map[int64]map[string]interface{}, len(metrics))
+	for _, m := range metrics {
+		if ts, ok := m["timestamp"]; ok {
+			switch v := ts.(type) {
+			case int64:
+				metricsByTimestamp[v] = m
+			case int:
+				metricsByTimestamp[int64(v)] = m
+			case float64:
+				metricsByTimestamp[int64(v)] = m
+			}
+		}
+	}
+
+	filled := make([]map[string]interface{}, 0)
+	for t := bucketStart; t <= endUnix; t += sampleIntervalSeconds {
+		entry := map[string]interface{}{
+			"timestamp": t,
+		}
+
+		if found, ok := metricsByTimestamp[t]; ok {
+			// 命中已有桶
+			switch metricType {
+			case "cpu":
+				if v, ok := found["cpu_usage"]; ok && v != nil {
+					entry["cpu_usage"] = v
+				} else {
+					entry["cpu_usage"] = 0.0
+				}
+			case "memory":
+				if v, ok := found["memory_usage"]; ok && v != nil {
+					entry["memory_usage"] = v
+				} else {
+					entry["memory_usage"] = 0.0
+				}
+			case "disk":
+				if v, ok := found["disk_read"]; ok && v != nil {
+					entry["disk_read"] = v
+				} else {
+					entry["disk_read"] = 0.0
+				}
+				if v, ok := found["disk_write"]; ok && v != nil {
+					entry["disk_write"] = v
+				} else {
+					entry["disk_write"] = 0.0
+				}
+			case "network":
+				if v, ok := found["network_upload"]; ok && v != nil {
+					entry["network_upload"] = v
+				} else {
+					entry["network_upload"] = 0.0
+				}
+				if v, ok := found["network_download"]; ok && v != nil {
+					entry["network_download"] = v
+				} else {
+					entry["network_download"] = 0.0
+				}
+			}
+		} else {
+			// 未命中桶：补 0
+			switch metricType {
+			case "cpu":
+				entry["cpu_usage"] = 0.0
+			case "memory":
+				entry["memory_usage"] = 0.0
+			case "disk":
+				entry["disk_read"] = 0.0
+				entry["disk_write"] = 0.0
+			case "network":
+				entry["network_upload"] = 0.0
+				entry["network_download"] = 0.0
+			}
+		}
+
+		filled = append(filled, entry)
+	}
+
+	metrics = filled
+
+	// 再走一次统一格式化，确保补齐出来的 0 值也符合数值展示规范。
+	for i := range metrics {
+		for key, value := range metrics[i] {
+			if key == "timestamp" {
+				continue
+			}
 			metrics[i][key] = services.FormatMetricValue(value)
 		}
 	}
