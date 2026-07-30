@@ -10,7 +10,7 @@ import (
 	"github.com/goravel/framework/facades"
 )
 
-const AuthTokenCookieName = "__Host-auth"
+const AuthTokenCookieName = "cloudsentinel_auth"
 
 // parseToken 从 HttpOnly Cookie 读取会话令牌，避免令牌暴露给浏览器脚本。
 func parseToken(ctx http.Context) (string, error) {

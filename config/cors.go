@@ -21,7 +21,8 @@ func init() {
 		"exposed_headers":      []string{},
 		"max_age":              0,
 		"supports_credentials": true,
-		// 逗号分隔；须经 facades.Config 读取（.env 不会写入 os.Environ）。
+		// CORS 白名单：英文逗号`,` 分隔多个 Origin；运行时会 trim 空格。
+		// 该值通过 facades.Config 读取（由框架加载 .env / 环境变量）。
 		"admin_origins":  config.Env("CORS_ADMIN_ORIGINS", ""),
 		"public_origins": config.Env("CORS_PUBLIC_ORIGINS", ""),
 	})

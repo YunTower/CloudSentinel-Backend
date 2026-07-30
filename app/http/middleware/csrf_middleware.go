@@ -9,7 +9,7 @@ import (
 	"github.com/goravel/framework/contracts/http"
 )
 
-const CSRFTokenCookieName = "__Host-csrf"
+const CSRFTokenCookieName = "cloudsentinel_csrf"
 
 func NewCSRFToken() (string, error) {
 	b := make([]byte, 32)

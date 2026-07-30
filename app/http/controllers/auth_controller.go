@@ -19,6 +19,58 @@ type UserInfo struct {
 	IsAuthenticated bool
 }
 
+type authCookieConfig struct {
+	Path     string
+	Domain   string
+	Secure   bool
+	SameSite string
+}
+
+// currentAuthCookieConfig 读取认证 Cookie 使用的基础配置。
+func currentAuthCookieConfig() authCookieConfig {
+	config := facades.Config()
+
+	path := config.GetString("session.path")
+	if path == "" {
+		path = "/"
+	}
+
+	return authCookieConfig{
+		Path:     path,
+		Domain:   config.GetString("session.domain"),
+		Secure:   config.GetBool("session.secure"),
+		SameSite: normalizeCookieSameSite(config.GetString("session.same_site")),
+	}
+}
+
+// normalizeCookieSameSite 规范化 SameSite 配置，非法值回退到 lax。
+func normalizeCookieSameSite(value string) string {
+	switch value {
+	case "strict", "Strict", "STRICT":
+		return "strict"
+	case "none", "None", "NONE":
+		return "none"
+	case "lax", "Lax", "LAX":
+		return "lax"
+	default:
+		return "lax"
+	}
+}
+
+// buildAuthCookie 根据统一配置构造认证相关 Cookie。
+func buildAuthCookie(name, value string, maxAge int, httpOnly bool, config authCookieConfig) http.Cookie {
+	return http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     config.Path,
+		Domain:   config.Domain,
+		MaxAge:   maxAge,
+		Secure:   config.Secure,
+		HttpOnly: httpOnly,
+		SameSite: config.SameSite,
+	}
+}
+
 func setAuthenticationCookies(ctx http.Context, token string, remember bool) error {
 	csrfToken, err := middleware.RequireCSRFToken()
 	if err != nil {
@@ -28,14 +80,16 @@ func setAuthenticationCookies(ctx http.Context, token string, remember bool) err
 	if remember {
 		maxAge = 14 * 24 * 60 * 60
 	}
-	ctx.Response().Cookie(http.Cookie{Name: middleware.AuthTokenCookieName, Value: token, Path: "/", MaxAge: maxAge, Secure: true, HttpOnly: true, SameSite: "strict"})
-	ctx.Response().Cookie(http.Cookie{Name: middleware.CSRFTokenCookieName, Value: csrfToken, Path: "/", MaxAge: maxAge, Secure: true, HttpOnly: false, SameSite: "strict"})
+	cookieConfig := currentAuthCookieConfig()
+	ctx.Response().Cookie(buildAuthCookie(middleware.AuthTokenCookieName, token, maxAge, true, cookieConfig))
+	ctx.Response().Cookie(buildAuthCookie(middleware.CSRFTokenCookieName, csrfToken, maxAge, false, cookieConfig))
 	return nil
 }
 
 func clearAuthenticationCookies(ctx http.Context) {
-	ctx.Response().Cookie(http.Cookie{Name: middleware.AuthTokenCookieName, Value: "", Path: "/", MaxAge: -1, Secure: true, HttpOnly: true, SameSite: "strict"})
-	ctx.Response().Cookie(http.Cookie{Name: middleware.CSRFTokenCookieName, Value: "", Path: "/", MaxAge: -1, Secure: true, SameSite: "strict"})
+	cookieConfig := currentAuthCookieConfig()
+	ctx.Response().Cookie(buildAuthCookie(middleware.AuthTokenCookieName, "", -1, true, cookieConfig))
+	ctx.Response().Cookie(buildAuthCookie(middleware.CSRFTokenCookieName, "", -1, false, cookieConfig))
 }
 
 type AuthController struct {
