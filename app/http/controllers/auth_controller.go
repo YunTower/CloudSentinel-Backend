@@ -152,6 +152,9 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 		})
 	}
 
+	// 认证配置动态化：登录前同步 system_settings 中的 JWT 密钥/有效期（DB 优先）
+	services.SyncAuthSettingsFromDB()
+
 	// 获取客户端IP
 	ip := ctx.Request().Ip()
 	lockoutService := services.NewLoginLockoutService()
@@ -252,6 +255,9 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 }
 
 func (r *AuthController) Refresh(ctx http.Context) http.Response {
+	// 认证配置动态化：刷新前同步（管理员轮换密钥后旧 token 立即失效，需重新登录）
+	services.SyncAuthSettingsFromDB()
+
 	token := ctx.Request().Cookie(middleware.AuthTokenCookieName)
 	if token == "" {
 		return ctx.Response().Status(401).Json(http.Json{

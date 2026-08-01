@@ -102,6 +102,9 @@ func main() {
 	_ = services.CleanupStaleLogLocks()
 	services.StartPeriodicLogLockCleanup()
 
+	// 认证配置动态化：启动时从 system_settings 同步 JWT 密钥/有效期（DB 优先）
+	services.SyncAuthSettingsFromDB()
+
 	// 初始化Agent数据Worker池
 	_ = services.GetGlobalDataWorker()
 
@@ -119,9 +122,17 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	// Start http server by facades.Route().
+	// 配置了 TLS 证书（TLS_CERT_FILE/TLS_KEY_FILE）时以 HTTPS/WSS 监听，
+	// 否则保持 HTTP 监听。Agent 侧默认拒绝 ws://，强制 wss://。
 	go func() {
-		if err := facades.Route().Run(); err != nil {
-			facades.Log().Errorf("Route Run error: %v", err)
+		var runErr error
+		if facades.Config().GetString("http.tls.ssl.cert") != "" && facades.Config().GetString("http.tls.ssl.key") != "" {
+			runErr = facades.Route().RunTLS()
+		} else {
+			runErr = facades.Route().Run()
+		}
+		if runErr != nil {
+			facades.Log().Errorf("Route Run error: %v", runErr)
 		}
 	}()
 
