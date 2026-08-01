@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/goravel/framework/contracts/http"
 	"github.com/goravel/framework/facades"
@@ -37,12 +38,19 @@ func (c *CertsController) GetCA(ctx http.Context) http.Response {
 	return ctx.Response().Header("Content-Type", "application/x-pem-file").Status(http.StatusOK).String(text)
 }
 
-// Bootstrap 是 Agent 首次启动的统一引导接口：一次请求返回全部引导配置。
-// 当前返回面板自签 CA（未启用 TLS 时为空字符串）；后续需要下发其他引导
-// 配置（版本约束、时间同步等）时在此扩展，Agent 侧无需多次请求。
+// Bootstrap 是 Agent 首次启动的统一引导接口：一次请求返回全部引导配置，
+// Agent 侧无需逐项请求（未来新增引导项在此扩展即可）。当前包含：
+//
+//	ca           面板自签 CA（PEM 文本）；面板未启用 TLS 时为空字符串
+//	panel_version 面板版本号（agent 可据此判断兼容性）
+//	server_time  面板当前 Unix 时间（秒），agent 可据此校准本地时钟
+//	wss_enabled  面板是否以 HTTPS/WSS 监听（强制 wss 时 agent 不得回退 ws://）
 func (c *CertsController) Bootstrap(ctx http.Context) http.Response {
 	data := map[string]any{
-		"ca": "",
+		"ca":            "",
+		"panel_version": facades.Config().GetString("app.version", "0.0.1-release"),
+		"server_time":   time.Now().Unix(),
+		"wss_enabled":   false,
 	}
 
 	certFile := facades.Config().GetString("http.tls.ssl.cert")
@@ -52,6 +60,7 @@ func (c *CertsController) Bootstrap(ctx http.Context) http.Response {
 			text := strings.TrimSpace(string(pemBytes))
 			if strings.Contains(text, "BEGIN CERTIFICATE") {
 				data["ca"] = text
+				data["wss_enabled"] = true
 			}
 		}
 	}
