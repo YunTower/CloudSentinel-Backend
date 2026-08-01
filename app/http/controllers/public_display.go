@@ -58,7 +58,8 @@ type PublicDisplayConfigV1 struct {
 func defaultPublicDisplayConfigV1() PublicDisplayConfigV1 {
 	return PublicDisplayConfigV1{
 		Version: 1,
-		Enabled: true,
+		// 安全默认值：新装实例默认关闭公开展示，管理员显式开启后才对外暴露
+		Enabled: false,
 		Overview: PublicDisplayOverviewV1{
 			DefaultViewMode:     "card",
 			AllowViewModeSwitch: true,
@@ -76,8 +77,9 @@ func defaultPublicDisplayConfigV1() PublicDisplayConfigV1 {
 			ShowArchitecture: true,
 			ShowCores:        true,
 			ShowNetworkIO:    true,
-			ShowBilling:      true,
-			ShowTraffic:      true,
+			// 计费/流量属经营敏感数据，默认不对外展示
+			ShowBilling:      false,
+			ShowTraffic:      false,
 		},
 		Announcement: PublicDisplayAnnouncementV1{
 			Enabled:   false,
