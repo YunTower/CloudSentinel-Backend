@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"goravel/app/repositories"
+	"goravel/app/services"
 	"goravel/app/utils"
 	"goravel/app/utils/notification"
 	"goravel/app/utils/secret"
@@ -115,10 +116,22 @@ func (r *SettingsController) GetPermissionsSettings(ctx http.Context) http.Respo
 
 	lockoutMinutes := int(parseInt(lockoutDurationSeconds, 900) / 60)
 
+	// 认证配置动态化（P2-01）：返回 DB 中的会话/JWT 有效期；密钥仅以掩码标示是否显式配置，
+	// 不回显任何明文或密文密钥。seeder 占位密钥视为未配置（运行时回退环境变量）。
+	sessionTimeoutSec := parseInt(utils.GetSetting("session_timeout", ""), 0)
+	jwtExpirationSec := parseInt(utils.GetSetting("jwt_expiration", ""), 0)
+	jwtSecret := ""
+	if s := utils.GetSetting("jwt_secret", ""); s != "" && s != "cloudsentinel-secret-key-change-in-production" {
+		jwtSecret = "***"
+	}
+
 	return utils.SuccessResponse(ctx, "success", map[string]any{
 		"maxLoginAttempts": parseInt(maxLoginAttempts, 5),
 		"lockoutDuration":  lockoutMinutes,
 		"adminUsername":    adminUsername,
+		"sessionTimeout":   sessionTimeoutSec,
+		"jwtExpiration":    jwtExpirationSec,
+		"jwtSecret":        jwtSecret,
 	})
 }
 
@@ -188,9 +201,14 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 	}
 	rawWebhookURL, _ := webhook.Config["webhook"].(string)
 	hasWebhook := strings.TrimSpace(rawWebhookURL) != ""
+	// 不回显密文或明文 URL：已配置时以掩码占位，前端“留空即保持原值”
+	webhookDisplay := ""
+	if hasWebhook {
+		webhookDisplay = "***"
+	}
 	webhookData := map[string]any{
 		"enabled":      webhook.Enabled,
-		"webhook":      "",
+		"webhook":      webhookDisplay,
 		"hasWebhook":   hasWebhook,
 		"clearWebhook": false,
 		"mentioned":    webhook.Config["mentioned"],
@@ -283,6 +301,9 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 	type UpdatePermissionsRequest struct {
 		MaxLoginAttempts int    `json:"maxLoginAttempts" form:"maxLoginAttempts"`
 		LockoutDuration  int    `json:"lockoutDuration" form:"lockoutDuration"`
+		SessionTimeout   *int   `json:"sessionTimeout" form:"sessionTimeout"`
+		JwtExpiration    *int   `json:"jwtExpiration" form:"jwtExpiration"`
+		JwtSecret        string `json:"jwtSecret" form:"jwtSecret"`
 		NewUsername      string `json:"newUsername" form:"newUsername"`
 		CurrentPassword  string `json:"currentPassword" form:"currentPassword"`
 		NewPassword      string `json:"newPassword" form:"newPassword"`
@@ -314,6 +335,32 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 	if err := write("lockout_duration", strconv.Itoa(lockoutSeconds)); err != nil {
 		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": "更新失败", "error": err.Error()})
 	}
+
+	// 认证配置动态化（P2-01）：会话/JWT 有效期（秒）仅 >0 时写入，留空不更改
+	if req.SessionTimeout != nil && *req.SessionTimeout > 0 {
+		if err := write("session_timeout", strconv.Itoa(*req.SessionTimeout)); err != nil {
+			return utils.ErrorResponseWithError(ctx, 500, "更新会话有效期失败", err)
+		}
+	}
+	if req.JwtExpiration != nil && *req.JwtExpiration > 0 {
+		if err := write("jwt_expiration", strconv.Itoa(*req.JwtExpiration)); err != nil {
+			return utils.ErrorResponseWithError(ctx, 500, "更新JWT有效期失败", err)
+		}
+	}
+
+	// JWT 密钥：留空不更改；拒绝掩码占位与过短值；密钥本身不回显
+	jwtSecret := strings.TrimSpace(req.JwtSecret)
+	if jwtSecret != "" && jwtSecret != "***" {
+		if len(jwtSecret) < 16 {
+			return utils.ErrorResponse(ctx, 422, "JWT 密钥至少 16 位")
+		}
+		if err := write("jwt_secret", jwtSecret); err != nil {
+			return utils.ErrorResponseWithError(ctx, 500, "更新JWT密钥失败", err)
+		}
+	}
+
+	// 认证配置已变更：同步到运行时。轮换密钥后旧 token 立即失效，需重新登录。
+	services.SyncAuthSettingsFromDB()
 
 	// 处理管理员用户名修改
 	if newUsername != "" && currentPassword != "" {
