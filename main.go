@@ -105,6 +105,9 @@ func main() {
 	// 认证配置动态化：启动时从 system_settings 同步 JWT 密钥/有效期（DB 优先）
 	services.SyncAuthSettingsFromDB()
 
+	services.EnsureTLSCertificates()
+	services.CheckTLSCertificateExpiry()
+
 	// 初始化Agent数据Worker池
 	_ = services.GetGlobalDataWorker()
 

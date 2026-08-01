@@ -44,10 +44,11 @@ func init() {
 			"port": config.Env("APP_PORT", "3000"),
 			// SSL Certificate, you can put the certificate in /public folder
 			"ssl": map[string]any{
-				// ca.pem
-				"cert": "",
-				// ca.key
-				"key": "",
+				// 面板 HTTPS/WSS 证书与私钥（PEM）。两者同时配置后，面板以 HTTPS 监听，
+				// Agent 必须通过 wss:// 连接（除非显式开启 allow_insecure_transport）。
+				// 自签证书可用 scripts/certs/generate-certs.sh 生成。
+				"cert": config.Env("TLS_CERT_FILE", ""),
+				"key":  config.Env("TLS_KEY_FILE", ""),
 			},
 		},
 		// HTTP Client Configuration

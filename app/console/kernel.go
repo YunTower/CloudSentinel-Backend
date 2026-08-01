@@ -34,5 +34,8 @@ func (kernel Kernel) Commands() []console.Command {
 		commands.NewPanelInfoCommand(),
 		commands.NewUninstallCommand(),
 		commands.NewUpdateCommand(),
+		commands.NewGenerateCertCommand(),
+		commands.NewRenewCertCommand(),
+		commands.NewInfoCertCommand(),
 	}
 }

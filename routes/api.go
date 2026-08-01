@@ -24,6 +24,7 @@ func Api() {
 	serviceMonitorController := controllers.NewServiceMonitorController()
 	incidentController := controllers.NewIncidentController()
 	staticController := controllers.NewStaticController()
+	certsController := controllers.NewCertsController()
 
 	facades.Route().Prefix("api").Group(func(router route.Router) {
 		// 公开接口：始终以访客权限执行，绝不读取或提升管理员会话。
@@ -32,6 +33,10 @@ func Api() {
 			publicRouter.Get("/public/servers", serverController.GetServers)
 			publicRouter.Get("/public/incidents", incidentController.GetPublic)
 			publicRouter.Get("/public/service-monitors", serviceMonitorController.GetPublic)
+			// 自签 CA 公钥下载：Agent 安装时自动获取并信任（仅 PEM 文本，无敏感信息）
+			publicRouter.Get("/certs/ca", certsController.GetCA)
+			// Agent 首次启动统一引导：一次请求返回 CA 等全部引导配置
+			publicRouter.Get("/agent/bootstrap", certsController.Bootstrap)
 		})
 
 		// 管理认证入口仅供管理端来源调用；后续管理 API 必须经过 AdminAuth 与 CSRF 校验。
