@@ -55,6 +55,7 @@ func (kernel Kernel) Migrations() []schema.Migration {
 		&migrations.M20260723000001RepairPublicSettingsKeys{},
 		&migrations.M20260723000002AddCertExpiryToServiceMonitors{},
 		&migrations.M20260723000003AddPageIDsToIncidents{},
+		&migrations.M20260730000001AddCpuNameToServersTable{},
 	}
 }
 

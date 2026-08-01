@@ -375,6 +375,8 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 			"location":     server.Location,
 			"os":           server.OS,
 			"architecture": server.Architecture,
+			"system_name":  server.SystemName,
+			"cpu_name":     server.CpuName,
 			"status":       server.Status,
 			"cores":        server.Cores,
 			"created_at":   server.CreatedAt.Format("2006-01-02 15:04:05"),
@@ -502,12 +504,16 @@ func (c *ServerController) GetServers(ctx http.Context) http.Response {
 			}
 			if !fields.ShowOS {
 				serverData["os"] = ""
+				serverData["system_name"] = ""
 			}
 			if !fields.ShowArchitecture {
 				serverData["architecture"] = ""
 			}
+			// 公开页不暴露核心数与磁盘容量
+			delete(serverData, "cores")
+			delete(serverData, "total_storage")
 			if !fields.ShowCores {
-				serverData["cores"] = 0
+				serverData["cpu_name"] = ""
 			}
 			if !fields.ShowNetworkIO {
 				if m, ok := serverData["metrics"].(map[string]interface{}); ok {
@@ -580,6 +586,7 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 		"hostname":         server.Hostname,
 		"cores":            server.Cores,
 		"system_name":      server.SystemName,
+		"cpu_name":         server.CpuName,
 		"boot_time":        server.BootTime,
 		"last_report_time": server.LastReportTime,
 		"uptime_days":      server.UptimeDays,

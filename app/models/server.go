@@ -19,6 +19,7 @@ type Server struct {
 	AgentKey       string     `gorm:"column:agent_key" json:"agent_key"`
 	AgentVersion   string     `gorm:"column:agent_version" json:"agent_version"`
 	SystemName     string     `gorm:"column:system_name" json:"system_name"`
+	CpuName        string     `gorm:"column:cpu_name" json:"cpu_name"`
 	BootTime       *time.Time `gorm:"column:boot_time" json:"boot_time"`
 	LastReportTime *time.Time `gorm:"column:last_report_time" json:"last_report_time"`
 	UptimeDays     int        `gorm:"column:uptime_days" json:"uptime_days"`

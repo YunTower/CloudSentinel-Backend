@@ -28,7 +28,7 @@ type saveSystemInfoJob struct {
 }
 
 func (j *saveSystemInfoJob) Execute() error {
-	// 更新 servers 表
+	// 更新 servers 表（列名必须与 models.Server / migrations 一致）
 	updates := map[string]interface{}{
 		"updated_at": time.Now(),
 	}
@@ -39,15 +39,28 @@ func (j *saveSystemInfoJob) Execute() error {
 			"UPDATE servers SET name = ? WHERE id = ? AND (name IS NULL OR name = '')",
 			hostname, j.serverID,
 		)
+		updates["hostname"] = hostname
 	}
-	if osInfo, ok := j.data["os"].(string); ok {
-		updates["os_type"] = osInfo
+	if osInfo, ok := j.data["os"].(string); ok && osInfo != "" {
+		updates["os"] = osInfo
 	}
-	if kernel, ok := j.data["kernel"].(string); ok {
-		updates["kernel_version"] = kernel
+	if systemName, ok := j.data["system_name"].(string); ok && systemName != "" {
+		updates["system_name"] = systemName
 	}
-	if uptime, ok := j.data["uptime"].(float64); ok {
-		updates["uptime"] = int64(uptime)
+	if arch, ok := j.data["architecture"].(string); ok && arch != "" {
+		updates["architecture"] = arch
+	}
+	if kernel, ok := j.data["kernel"].(string); ok && kernel != "" {
+		updates["kernel"] = kernel
+	}
+	if cpuName, ok := j.data["cpu_name"].(string); ok && cpuName != "" {
+		updates["cpu_name"] = cpuName
+	}
+	if cores, ok := toPositiveInt(j.data["cores"]); ok {
+		updates["cores"] = cores
+	}
+	if agentVersion, ok := j.data["agent_version"].(string); ok && agentVersion != "" {
+		updates["agent_version"] = agentVersion
 	}
 	if bootTime, ok := j.data["boot_time"].(string); ok {
 		if t, err := time.Parse(time.RFC3339, bootTime); err == nil {
@@ -551,6 +564,17 @@ func toInt64(value interface{}) int64 {
 
 func toInt(value interface{}) int {
 	return int(toInt64(value))
+}
+
+func toPositiveInt(value interface{}) (int, bool) {
+	if value == nil {
+		return 0, false
+	}
+	n := toInt(value)
+	if n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 func upsertTrafficUsage(serverID string, uploadBytes, downloadBytes int64, now time.Time) error {
