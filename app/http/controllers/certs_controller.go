@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/goravel/framework/contracts/http"
 	"github.com/goravel/framework/facades"
@@ -38,29 +37,21 @@ func (c *CertsController) GetCA(ctx http.Context) http.Response {
 	return ctx.Response().Header("Content-Type", "application/x-pem-file").Status(http.StatusOK).String(text)
 }
 
-// Bootstrap 是 Agent 首次启动的统一引导接口：一次请求返回全部引导配置，
-// Agent 侧无需逐项请求（未来新增引导项在此扩展即可）。当前包含：
+// Bootstrap 是 Agent 首次启动的统一引导接口（公开、未认证）。
 //
-//	ca           面板自签 CA（PEM 文本）；面板未启用 TLS 时为空字符串
-//	panel_version 面板版本号（agent 可据此判断兼容性）
-//	server_time  面板当前 Unix 时间（秒），agent 可据此校准本地时钟
-//	wss_enabled  面板是否以 HTTPS/WSS 监听（强制 wss 时 agent 不得回退 ws://）
+// 安全边界：公开接口最小化响应——仅返回 Agent 建立 wss 连接所必需的 CA 公钥
+// （CA 本就是需要分发给所有客户端的公开材料，无保密需求）。不返回面板版本号、
+// 服务器时间、TLS 状态等可被攻击者用于漏洞侦察的信息；这类信息后续如有需要，
+// 应在 Agent 完成认证（WS 通道）后下发。
 func (c *CertsController) Bootstrap(ctx http.Context) http.Response {
-	data := map[string]any{
-		"ca":            "",
-		"panel_version": facades.Config().GetString("app.version", "0.0.1-release"),
-		"server_time":   time.Now().Unix(),
-		"wss_enabled":   false,
-	}
-
+	ca := ""
 	certFile := facades.Config().GetString("http.tls.ssl.cert")
 	if certFile != "" {
 		caFile := filepath.Join(filepath.Dir(certFile), "ca.crt")
 		if pemBytes, err := os.ReadFile(caFile); err == nil {
 			text := strings.TrimSpace(string(pemBytes))
 			if strings.Contains(text, "BEGIN CERTIFICATE") {
-				data["ca"] = text
-				data["wss_enabled"] = true
+				ca = text
 			}
 		}
 	}
@@ -68,6 +59,8 @@ func (c *CertsController) Bootstrap(ctx http.Context) http.Response {
 	return ctx.Response().Success().Json(http.Json{
 		"status":  true,
 		"message": "success",
-		"data":    data,
+		"data": map[string]any{
+			"ca": ca, // 面板未启用 TLS 时为空字符串
+		},
 	})
 }
