@@ -2,6 +2,7 @@ package auth
 
 import (
 	"github.com/goravel/framework/contracts/http"
+	"github.com/goravel/framework/contracts/validation"
 )
 
 type LoginPostRequest struct {
@@ -19,11 +20,11 @@ func (r *LoginPostRequest) Authorize(ctx http.Context) error {
 }
 
 // Rules 验证规则
-func (r *LoginPostRequest) Rules(ctx http.Context) map[string]string {
-	rules := map[string]string{
+func (r *LoginPostRequest) Rules(ctx http.Context) map[string]any {
+	rules := map[string]any{
 		"type":     "required|in:admin",
-		"username": "required_if:type,admin|min_len:3|max_len:50",
-		"password": "required|min_len:6",
+		"username": "required_if:type,admin|min:3|max:50",
+		"password": "required|min:6",
 		"remember": "boolean",
 	}
 
@@ -31,15 +32,15 @@ func (r *LoginPostRequest) Rules(ctx http.Context) map[string]string {
 }
 
 // Messages 自定义错误消息
-func (r *LoginPostRequest) Messages() map[string]string {
+func (r *LoginPostRequest) Messages(ctx http.Context) map[string]string {
 	messages := map[string]string{
 		"type.required":        "用户类型不能为空",
 		"type.in":              "用户类型必须是 admin",
 		"username.required_if": "管理员用户必须提供用户名",
-		"username.min_len":     "用户名长度不能少于3位",
-		"username.max_len":     "用户名长度不能超过50位",
+		"username.min":         "用户名长度不能少于3位",
+		"username.max":         "用户名长度不能超过50位",
 		"password.required":    "管理员用户必须提供密码",
-		"password.min_len":     "密码长度不能少于6位",
+		"password.min":         "密码长度不能少于6位",
 		"remember.boolean":     "记住我字段必须是布尔值",
 	}
 
@@ -47,7 +48,7 @@ func (r *LoginPostRequest) Messages() map[string]string {
 }
 
 // Attributes 自定义验证属性名称
-func (r *LoginPostRequest) Attributes() map[string]string {
+func (r *LoginPostRequest) Attributes(ctx http.Context) map[string]string {
 	return map[string]string{
 		"type":     "用户类型",
 		"password": "密码",
@@ -57,15 +58,16 @@ func (r *LoginPostRequest) Attributes() map[string]string {
 }
 
 // Filters 输入数据过滤
-func (r *LoginPostRequest) Filters(ctx http.Context) map[string]string {
-	return map[string]string{
+func (r *LoginPostRequest) Filters(ctx http.Context) map[string]any {
+	return map[string]any{
 		"username": "trim",
 		"type":     "trim",
 	}
 }
 
 // PrepareForValidation 验证前准备数据
-func (r *LoginPostRequest) PrepareForValidation(ctx http.Context) {
+func (r *LoginPostRequest) PrepareForValidation(ctx http.Context, data validation.Data) error {
 	// 在验证前对数据进行预处理
 	// 比如转换大小写、去除空格等
+	return nil
 }
