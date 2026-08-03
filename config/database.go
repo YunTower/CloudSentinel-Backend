@@ -2,8 +2,8 @@ package config
 
 import (
 	"github.com/goravel/framework/contracts/database/driver"
-	"github.com/goravel/framework/facades"
 	sqlitefacades "github.com/goravel/sqlite/facades"
+	"goravel/app/facades"
 )
 
 func init() {

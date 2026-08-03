@@ -1,8 +1,8 @@
 package config
 
 import (
-	"github.com/goravel/framework/facades"
 	"github.com/goravel/framework/support/path"
+	"goravel/app/facades"
 )
 
 func init() {

@@ -1,80 +1,15 @@
 package config
 
 import (
-	"os"
-
-	"github.com/goravel/framework/auth"
-	"github.com/goravel/framework/cache"
-	"github.com/goravel/framework/console"
-	"github.com/goravel/framework/contracts/foundation"
-	"github.com/goravel/framework/database"
-	"github.com/goravel/framework/facades"
-	"github.com/goravel/framework/hash"
-	"github.com/goravel/framework/http"
-	"github.com/goravel/framework/log"
-	"github.com/goravel/framework/queue"
-	"github.com/goravel/framework/route"
-
-	"github.com/goravel/framework/schedule"
 	"github.com/goravel/framework/support/carbon"
-	"github.com/goravel/framework/validation"
-	"github.com/goravel/gin"
-	"github.com/goravel/sqlite"
-
-	"goravel/app/providers"
+	"goravel/app/facades"
 )
 
 // Boot Start all init methods of the current folder to bootstrap all config.
 func Boot() {}
 
-// isProductionMode 检查是否在生产模式
-func isProductionMode() bool {
-	env := os.Getenv("APP_ENV")
-	return env == "production"
-}
-
 func init() {
 	config := facades.Config()
-
-	// 构建 providers 列表
-	serviceProviders := []foundation.ServiceProvider{
-		&log.ServiceProvider{},
-		//&postgres.ServiceProvider{},
-		&sqlite.ServiceProvider{},
-		&database.ServiceProvider{},
-		&cache.ServiceProvider{},
-		&http.ServiceProvider{},
-		&route.ServiceProvider{},
-		&schedule.ServiceProvider{},
-		//&event.ServiceProvider{},
-		&queue.ServiceProvider{},
-		//&grpc.ServiceProvider{},
-		//&mail.ServiceProvider{},
-		&auth.ServiceProvider{},
-		&hash.ServiceProvider{},
-		//&crypt.ServiceProvider{},
-		//&filesystem.ServiceProvider{},
-		&validation.ServiceProvider{},
-		//&session.ServiceProvider{},
-		//&translation.ServiceProvider{},
-		//&testing.ServiceProvider{},
-		// &providers.AppServiceProvider{},
-		// &providers.AuthServiceProvider{},
-		&providers.RouteServiceProvider{},
-		&providers.QueueServiceProvider{},
-		//&providers.EventServiceProvider{},
-		&providers.ValidationServiceProvider{},
-		&providers.DatabaseServiceProvider{},
-		&providers.CleanupServiceProvider{},
-		&providers.ScheduleServiceProvider{},
-		&gin.ServiceProvider{},
-	}
-
-	// 生产环境不加载 console provider，隐藏 artisan 命令
-	if !isProductionMode() {
-		serviceProviders = append([]foundation.ServiceProvider{&console.ServiceProvider{}}, serviceProviders...)
-		serviceProviders = append(serviceProviders, &providers.ConsoleServiceProvider{})
-	}
 
 	config.Add("app", map[string]any{
 		// Application Name
@@ -95,6 +30,20 @@ func init() {
 		// Application Debug Mode
 		"debug": config.Env("APP_DEBUG", false),
 
+		// Disabled Runners
+		//
+		// Runner 签名支持 glob 匹配。默认不禁用任何 Runner，以保持 HTTP、
+		// Schedule、Queue 与 CloudSentinel 后台服务的现有运行行为。
+		"disabled_runners": []string{},
+
+		// Maintenance Mode
+		//
+		// 单机部署默认使用文件驱动；多实例部署可切换为 cache 驱动。
+		"maintenance": map[string]any{
+			"driver": config.Env("APP_MAINTENANCE_DRIVER", "file"),
+			"store":  config.Env("APP_MAINTENANCE_STORE", ""),
+		},
+
 		// Application Timezone
 		//
 		// Here you may specify the default timezone for your application.
@@ -112,12 +61,5 @@ func init() {
 		// 32 character string, otherwise these encrypted strings
 		// will not be safe. Please do this before deploying an application!
 		"key": config.Env("APP_KEY", ""),
-
-		// Autoload service providers
-		//
-		// The service providers listed here will be automatically loaded on the
-		// request to your application. Feel free to add your own services to
-		// this array to grant expanded functionality to your applications.
-		"providers": serviceProviders,
 	})
 }
