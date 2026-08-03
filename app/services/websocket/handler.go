@@ -9,7 +9,7 @@ import (
 	"goravel/app/cryptoutil"
 	"goravel/app/repositories"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // AgentMessageHandler Agent 消息处理器接口
