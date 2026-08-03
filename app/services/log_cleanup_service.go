@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 var (
@@ -81,9 +81,10 @@ func CleanupStaleLogLocks() error {
 	return nil
 }
 
-// StartPeriodicLogLockCleanup 启动定期清理日志锁文件的任务
-// 每5秒清理一次
-func StartPeriodicLogLockCleanup() {
+// StartPeriodicLogLockCleanup 启动定期清理日志锁文件的任务，并返回停止函数。
+func StartPeriodicLogLockCleanup() func() {
+	stop := make(chan struct{})
+	var stopOnce sync.Once
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
@@ -91,10 +92,19 @@ func StartPeriodicLogLockCleanup() {
 		// 立即执行一次
 		CleanupStaleLogLocks()
 
-		for range ticker.C {
-			CleanupStaleLogLocks()
+		for {
+			select {
+			case <-ticker.C:
+				CleanupStaleLogLocks()
+			case <-stop:
+				return
+			}
 		}
 	}()
+
+	return func() {
+		stopOnce.Do(func() { close(stop) })
+	}
 }
 
 // ForceCleanupLogLocks 强制清理所有日志锁文件（用于紧急情况）

@@ -64,3 +64,17 @@ func TestServiceMonitorRoundsOnlyNewestRoundCanCommit(t *testing.T) {
 		t.Fatal("the newest monitoring round must be allowed to commit")
 	}
 }
+
+func TestServiceMonitorRoundsCancelAllRemovesEveryRound(t *testing.T) {
+	rounds := newServiceMonitorRounds()
+	rounds.Open(7, "round-a", "command-a", []string{"agent-a"}, 10, func() {})
+	rounds.Open(8, "round-b", "command-b", []string{"agent-b"}, 10, func() {})
+
+	rounds.CancelAll()
+	if rounds.Complete(7, "round-a") != nil || rounds.Complete(8, "round-b") != nil {
+		t.Fatal("应用关闭时必须取消全部监测轮次")
+	}
+	if rounds.IsLatest(7, "round-a") || rounds.IsLatest(8, "round-b") {
+		t.Fatal("应用关闭后不能保留最新轮次标记")
+	}
+}

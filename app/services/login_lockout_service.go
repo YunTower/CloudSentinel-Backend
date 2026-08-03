@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // LoginLockoutService IP锁定服务

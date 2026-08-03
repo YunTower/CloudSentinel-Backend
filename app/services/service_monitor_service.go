@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 var (
@@ -107,6 +107,17 @@ func (s *ServiceMonitorService) Stop(id uint) {
 		delete(s.stopChs, id)
 	}
 	s.rounds.CancelMonitor(id)
+}
+
+// StopAll 停止全部监测循环与尚未完成的多 Agent 检测轮次。
+func (s *ServiceMonitorService) StopAll() {
+	s.mu.Lock()
+	for id, ch := range s.stopChs {
+		close(ch)
+		delete(s.stopChs, id)
+	}
+	s.mu.Unlock()
+	s.rounds.CancelAll()
 }
 
 func (s *ServiceMonitorService) runCheck(m *models.ServiceMonitor) {

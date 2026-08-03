@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // AgentDataWorker 异步处理agent数据的worker池

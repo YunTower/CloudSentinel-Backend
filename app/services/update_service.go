@@ -2,11 +2,9 @@ package services
 
 import (
 	"archive/tar"
-	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -17,8 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goravel/framework/facades"
+	httpclient "github.com/goravel/framework/contracts/http/client"
 	"github.com/goravel/framework/support/path"
+	"goravel/app/facades"
 )
 
 // UpdateStatusCallback 更新状态回调接口
@@ -26,18 +25,39 @@ type UpdateStatusCallback func(step string, progress int, message string)
 
 // ReleaseInfo 存储从 GitHub API 获取的版本信息
 type ReleaseInfo struct {
-	TagName           string                 // 原始 tag 名称（如 "v1.0.0"）
-	NormalizedTagName string                 // 标准化后的版本号（移除 'v' 前缀）
-	VersionType       string                 // 版本类型（如 "release", "beta"）
-	Result            map[string]interface{} // 完整的 release 数据
+	TagName           string         // 原始 tag 名称（如 "v1.0.0"）
+	NormalizedTagName string         // 标准化后的版本号（移除 'v' 前缀）
+	VersionType       string         // 版本类型（如 "release", "beta"）
+	CreatedAt         string         // GitHub 发布时间（RFC3339）
+	Body              string         // 更新日志
+	Assets            []ReleaseAsset // 发布文件
+}
+
+// ReleaseAsset 描述更新所需的 GitHub Release 文件。
+type ReleaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+type githubRelease struct {
+	TagName   string         `json:"tag_name"`
+	CreatedAt string         `json:"created_at"`
+	Body      string         `json:"body"`
+	Assets    []ReleaseAsset `json:"assets"`
 }
 
 // UpdateService 更新服务
-type UpdateService struct{}
+type UpdateService struct {
+	http httpclient.Factory
+}
 
 // NewUpdateService 创建新的更新服务实例
 func NewUpdateService() *UpdateService {
-	return &UpdateService{}
+	return &UpdateService{http: facades.Http()}
+}
+
+func newUpdateService(httpFactory httpclient.Factory) *UpdateService {
+	return &UpdateService{http: httpFactory}
 }
 
 // UpdateOptions 更新选项
@@ -165,8 +185,8 @@ func (s *UpdateService) ExecuteUpdate(options UpdateOptions) error {
 	setStatus("connecting", 15, fmt.Sprintf("检测到系统: %s-%s", osType, arch))
 
 	// 查找匹配的二进制包
-	assets, ok := releaseInfo.Result["assets"].([]interface{})
-	if !ok {
+	assets := releaseInfo.Assets
+	if len(assets) == 0 {
 		setStatus("error", 0, "未找到发布文件列表")
 		s.CleanupTempFiles()
 		needRestore = true
@@ -677,70 +697,49 @@ func (s *UpdateService) ParseVersion(version string) (string, string, int) {
 
 // FetchLatestRelease 从 GitHub API 获取最新版本信息
 func (s *UpdateService) FetchLatestRelease(releaseUrl string) (*ReleaseInfo, error) {
-	response, requestErr := facades.Http().Get(releaseUrl)
+	response, requestErr := s.http.Client("github").AcceptJSON().Get(releaseUrl)
 	if requestErr != nil {
-		return nil, fmt.Errorf("请求最新版本信息失败: %v", requestErr)
+		return nil, fmt.Errorf("请求最新版本信息失败: %w", requestErr)
 	}
 
-	responseBody, responseErr := response.Body()
-	if responseErr != nil {
-		return nil, fmt.Errorf("读取最新版本信息失败: %v", responseErr)
-	}
-
-	if response.Status() == 404 {
+	if response.NotFound() {
 		return nil, fmt.Errorf("未找到最新的版本信息")
 	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal([]byte(responseBody), &result); err != nil {
-		return nil, fmt.Errorf("解析版本信息失败: %v", err)
+	if response.Failed() {
+		return nil, fmt.Errorf("请求最新版本信息失败: HTTP %d", response.Status())
 	}
 
-	tagName, ok := result["tag_name"].(string)
-	if !ok {
+	var release githubRelease
+	if err := response.Bind(&release); err != nil {
+		return nil, fmt.Errorf("解析版本信息失败: %w", err)
+	}
+
+	if release.TagName == "" {
 		return nil, fmt.Errorf("版本信息格式错误: tag_name 字段缺失或类型不正确")
 	}
 
-	// 格式化版本号（移除 'v' 前缀）
-	normalizedTagName := tagName
-	if len(tagName) > 0 && tagName[0] == 'v' {
-		normalizedTagName = tagName[1:]
-	}
-
-	// 使用 ParseVersion 提取版本类型
-	_, versionType, _ := s.ParseVersion(normalizedTagName)
-
-	return &ReleaseInfo{
-		TagName:           tagName,
-		NormalizedTagName: normalizedTagName,
-		VersionType:       versionType,
-		Result:            result,
-	}, nil
+	return s.newReleaseInfo(release), nil
 }
 
 // FetchLatestReleaseByChannel 按更新渠道获取最新版本（release=正式版，beta=测试版，dev=开发版）
 // 正式版：从列表取第一个 tag 不含 -beta、-dev 的 release，避免依赖 GitHub 的 prerelease 标记
 func (s *UpdateService) FetchLatestReleaseByChannel(releasesBaseURL string, channel string) (*ReleaseInfo, error) {
-	response, requestErr := facades.Http().Get(releasesBaseURL)
+	response, requestErr := s.http.Client("github").AcceptJSON().Get(releasesBaseURL)
 	if requestErr != nil {
-		return nil, fmt.Errorf("请求版本列表失败: %v", requestErr)
+		return nil, fmt.Errorf("请求版本列表失败: %w", requestErr)
 	}
-	body, bodyErr := response.Body()
-	if bodyErr != nil {
-		return nil, fmt.Errorf("读取版本列表失败: %v", bodyErr)
-	}
-	if response.Status() != 200 {
+	if !response.Successful() {
 		return nil, fmt.Errorf("未找到版本列表")
 	}
-	var list []map[string]interface{}
-	if err := json.Unmarshal([]byte(body), &list); err != nil {
-		return nil, fmt.Errorf("解析版本列表失败: %v", err)
+	var list []githubRelease
+	if err := response.Bind(&list); err != nil {
+		return nil, fmt.Errorf("解析版本列表失败: %w", err)
 	}
 
 	switch channel {
 	case "release":
 		for _, item := range list {
-			tagName, _ := item["tag_name"].(string)
+			tagName := item.TagName
 			if tagName == "" {
 				continue
 			}
@@ -749,20 +748,14 @@ func (s *UpdateService) FetchLatestReleaseByChannel(releasesBaseURL string, chan
 				n = n[1:]
 			}
 			if !strings.Contains(n, "-beta") && !strings.Contains(n, "-dev") {
-				_, versionType, _ := s.ParseVersion(n)
-				return &ReleaseInfo{
-					TagName:           tagName,
-					NormalizedTagName: n,
-					VersionType:       versionType,
-					Result:            item,
-				}, nil
+				return s.newReleaseInfo(item), nil
 			}
 		}
 		return nil, fmt.Errorf("未找到正式版渠道的最新版本")
 	case "beta", "dev":
 		suffix := "-" + channel
 		for _, item := range list {
-			tagName, _ := item["tag_name"].(string)
+			tagName := item.TagName
 			if tagName == "" {
 				continue
 			}
@@ -771,19 +764,27 @@ func (s *UpdateService) FetchLatestReleaseByChannel(releasesBaseURL string, chan
 				n = n[1:]
 			}
 			if strings.Contains(n, suffix) {
-				_, versionType, _ := s.ParseVersion(n)
-				return &ReleaseInfo{
-					TagName:           tagName,
-					NormalizedTagName: n,
-					VersionType:       versionType,
-					Result:            item,
-				}, nil
+				return s.newReleaseInfo(item), nil
 			}
 		}
 		return nil, fmt.Errorf("未找到%s渠道的最新版本", map[string]string{"beta": "测试", "dev": "开发"}[channel])
 	default:
 		latestURL := strings.TrimSuffix(releasesBaseURL, "/") + "/latest"
 		return s.FetchLatestRelease(latestURL)
+	}
+}
+
+func (s *UpdateService) newReleaseInfo(release githubRelease) *ReleaseInfo {
+	normalizedTagName := strings.TrimPrefix(release.TagName, "v")
+	_, versionType, _ := s.ParseVersion(normalizedTagName)
+
+	return &ReleaseInfo{
+		TagName:           release.TagName,
+		NormalizedTagName: normalizedTagName,
+		VersionType:       versionType,
+		CreatedAt:         release.CreatedAt,
+		Body:              release.Body,
+		Assets:            release.Assets,
 	}
 }
 
@@ -807,30 +808,12 @@ func (s *UpdateService) GetSystemInfo() (osType, arch string) {
 }
 
 // FindAssetByArchitecture 在 assets 中查找匹配的二进制包
-func (s *UpdateService) FindAssetByArchitecture(assets []interface{}, osType, arch string) (string, string) {
+func (s *UpdateService) FindAssetByArchitecture(assets []ReleaseAsset, osType, arch string) (string, string) {
 	expectedName := fmt.Sprintf("dashboard-%s-%s.tar.gz", osType, arch)
 
 	for _, asset := range assets {
-		assetMap, ok := asset.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		name, ok := assetMap["name"].(string)
-		if !ok {
-			continue
-		}
-
-		if name == expectedName {
-			var downloadUrl string
-
-			if url, ok := assetMap["browser_download_url"].(string); ok {
-				downloadUrl = url
-			}
-
-			if downloadUrl != "" {
-				return name, downloadUrl
-			}
+		if asset.Name == expectedName && asset.BrowserDownloadURL != "" {
+			return asset.Name, asset.BrowserDownloadURL
 		}
 	}
 
@@ -838,29 +821,12 @@ func (s *UpdateService) FindAssetByArchitecture(assets []interface{}, osType, ar
 }
 
 // FindSHA256Asset 在 assets 中查找匹配的 SHA256 文件
-func (s *UpdateService) FindSHA256Asset(assets []interface{}, osType, arch string) (string, string) {
+func (s *UpdateService) FindSHA256Asset(assets []ReleaseAsset, osType, arch string) (string, string) {
 	expectedName := fmt.Sprintf("dashboard-%s-%s.sha256", osType, arch)
 
 	for _, asset := range assets {
-		assetMap, ok := asset.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		name, ok := assetMap["name"].(string)
-		if !ok {
-			continue
-		}
-
-		if name == expectedName {
-			var downloadUrl string
-			if url, ok := assetMap["browser_download_url"].(string); ok {
-				downloadUrl = url
-			}
-
-			if downloadUrl != "" {
-				return name, downloadUrl
-			}
+		if asset.Name == expectedName && asset.BrowserDownloadURL != "" {
+			return asset.Name, asset.BrowserDownloadURL
 		}
 	}
 
@@ -868,19 +834,11 @@ func (s *UpdateService) FindSHA256Asset(assets []interface{}, osType, arch strin
 }
 
 // FindSignatureAsset finds the detached armored signature for a release asset.
-func (s *UpdateService) FindSignatureAsset(assets []interface{}, signedAssetName string) (string, string) {
+func (s *UpdateService) FindSignatureAsset(assets []ReleaseAsset, signedAssetName string) (string, string) {
 	expectedName := signedAssetName + ".asc"
 	for _, asset := range assets {
-		assetMap, ok := asset.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		name, ok := assetMap["name"].(string)
-		if !ok || name != expectedName {
-			continue
-		}
-		if downloadURL, ok := assetMap["browser_download_url"].(string); ok && downloadURL != "" {
-			return name, downloadURL
+		if asset.Name == expectedName && asset.BrowserDownloadURL != "" {
+			return asset.Name, asset.BrowserDownloadURL
 		}
 	}
 
@@ -889,26 +847,24 @@ func (s *UpdateService) FindSignatureAsset(assets []interface{}, signedAssetName
 
 // DownloadFile 下载文件
 func (s *UpdateService) DownloadFile(url, filePath string, progressCallback func(int)) error {
-	response, err := facades.Http().Get(url)
+	response, err := s.http.Client("download").Get(url)
 	if err != nil {
-		return fmt.Errorf("下载请求失败: %v", err)
+		return fmt.Errorf("下载请求失败: %w", err)
 	}
-
-	body, err := response.Body()
-	if err != nil {
-		return fmt.Errorf("读取响应失败: %v", err)
+	if response.Failed() {
+		return fmt.Errorf("下载请求失败: HTTP %d", response.Status())
 	}
 
 	// 创建目录
 	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("创建目录失败: %v", err)
+		return fmt.Errorf("创建目录失败: %w", err)
 	}
 
 	// 创建文件
 	out, err := os.Create(filePath)
 	if err != nil {
-		return fmt.Errorf("创建文件失败: %v", err)
+		return fmt.Errorf("创建文件失败: %w", err)
 	}
 	defer func() {
 		if closeErr := out.Close(); closeErr != nil {
@@ -916,33 +872,58 @@ func (s *UpdateService) DownloadFile(url, filePath string, progressCallback func
 		}
 	}()
 
-	// 流式写入并计算进度
-	bodyBytes := []byte(body)
-	totalSize := len(bodyBytes)
-	chunkSize := 8192 // 8KB chunks
-	written := 0
-
-	for written < totalSize {
-		end := written + chunkSize
-		if end > totalSize {
-			end = totalSize
+	stream, err := response.Stream()
+	if err != nil {
+		return fmt.Errorf("读取下载流失败: %w", err)
+	}
+	defer func() {
+		if closeErr := stream.Close(); closeErr != nil {
+			facades.Log().Warningf("关闭下载流失败: %v", closeErr)
 		}
+	}()
 
-		n, err := out.Write(bodyBytes[written:end])
-		if err != nil {
-			return fmt.Errorf("写入文件失败: %v", err)
+	writer := io.Writer(out)
+	if progressCallback != nil {
+		var totalSize int64
+		if origin := response.Origin(); origin != nil {
+			totalSize = origin.ContentLength
 		}
-
-		written += n
-
-		// 计算进度并回调
-		if progressCallback != nil {
-			progress := int(float64(written) / float64(totalSize) * 100)
-			progressCallback(progress)
+		writer = &downloadProgressWriter{
+			writer:   out,
+			total:    totalSize,
+			callback: progressCallback,
 		}
 	}
 
+	if _, err := io.CopyBuffer(writer, stream, make([]byte, 32*1024)); err != nil {
+		return fmt.Errorf("写入文件失败: %w", err)
+	}
+	if progressCallback != nil {
+		progressCallback(100)
+	}
+
 	return nil
+}
+
+type downloadProgressWriter struct {
+	writer       io.Writer
+	total        int64
+	written      int64
+	lastProgress int
+	callback     func(int)
+}
+
+func (w *downloadProgressWriter) Write(data []byte) (int, error) {
+	n, err := w.writer.Write(data)
+	w.written += int64(n)
+	if w.total > 0 {
+		progress := min(int(w.written*100/w.total), 100)
+		if progress > w.lastProgress {
+			w.lastProgress = progress
+			w.callback(progress)
+		}
+	}
+	return n, err
 }
 
 // hasPathPrefix 检查路径是否具有前缀
@@ -1263,29 +1244,15 @@ func (s *UpdateService) RunMigrations() error {
 	// 获取可执行文件所在目录
 	execDir := filepath.Dir(execPath)
 
-	cmd := exec.Command(execPath, "artisan", "migrate")
-
-	// 设置工作目录
-	cmd.Dir = execDir
-
-	// 设置环境变量
-	cmd.Env = os.Environ()
-
-	// 捕获输出
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
 	// 执行命令
 	facades.Log().Info("开始执行数据库迁移...")
-	if err := cmd.Run(); err != nil {
-		output := stdout.String()
-		errOutput := stderr.String()
-		facades.Log().Errorf("执行迁移命令失败: %v\n标准输出: %s\n错误输出: %s", err, output, errOutput)
-		return fmt.Errorf("执行迁移命令失败: %v\n输出: %s\n错误: %s", err, output, errOutput)
+	result := facades.Process().Path(execDir).Quietly().Run(execPath, "artisan", "migrate")
+	if result.Failed() {
+		facades.Log().Errorf("执行迁移命令失败: %v\n标准输出: %s\n错误输出: %s", result.Error(), result.Output(), result.ErrorOutput())
+		return fmt.Errorf("执行迁移命令失败: %w\n输出: %s\n错误: %s", result.Error(), result.Output(), result.ErrorOutput())
 	}
 
-	output := stdout.String()
+	output := result.Output()
 	if output != "" {
 		facades.Log().Infof("迁移执行输出: %s", output)
 	}

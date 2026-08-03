@@ -9,7 +9,7 @@ import (
 	"goravel/app/models"
 	"goravel/app/repositories"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // SaveSystemInfo 保存系统信息

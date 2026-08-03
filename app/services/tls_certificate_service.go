@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // 面板 HTTPS/WSS 自签证书管理（P2-03）。

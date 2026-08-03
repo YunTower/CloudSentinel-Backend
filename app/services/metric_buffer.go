@@ -7,7 +7,7 @@ import (
 	"goravel/app/models"
 	"goravel/app/repositories"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // MetricBuffer 性能指标缓冲区管理器

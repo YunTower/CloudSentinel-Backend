@@ -118,6 +118,18 @@ func (r *serviceMonitorRounds) CancelMonitor(monitorID uint) {
 	delete(r.latest, monitorID)
 }
 
+func (r *serviceMonitorRounds) CancelAll() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, pending := range r.pending {
+		if pending.timer != nil {
+			pending.timer.Stop()
+		}
+		delete(r.pending, key)
+	}
+	clear(r.latest)
+}
+
 func pendingCheckKey(monitorID uint, checkID string) string {
 	return fmt.Sprintf("%d:%s", monitorID, checkID)
 }

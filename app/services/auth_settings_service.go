@@ -6,13 +6,13 @@ import (
 
 	"goravel/app/repositories"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // 认证配置在 system_settings 中的键名。
 const (
 	authSettingJWTSecret  = "jwt_secret"
-	authSettingJWTExpiry  = "jwt_expiration" // 秒
+	authSettingJWTExpiry  = "jwt_expiration"  // 秒
 	authSettingSessionTTL = "session_timeout" // 秒
 )
 

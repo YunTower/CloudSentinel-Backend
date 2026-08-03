@@ -4,7 +4,7 @@ import (
 	"goravel/app/models"
 	"goravel/app/services/websocket"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // agentAuthValidator 实现 websocket.AgentAuthValidator 接口
