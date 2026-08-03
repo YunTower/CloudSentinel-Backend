@@ -2,16 +2,12 @@ package main
 
 import (
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
-	"github.com/goravel/framework/facades"
-
 	"goravel/app/console/commands"
-	"goravel/app/services"
+	"goravel/app/facades"
 	"goravel/bootstrap"
 )
 
@@ -32,7 +28,6 @@ func applyStartDelay() {
 	if msRaw == "" {
 		return
 	}
-	// 仅对本进程生效，避免影响后续子进程（例如 artisan migrate）。
 	_ = os.Unsetenv("CLOUDSENTINEL_START_DELAY_MS")
 
 	ms, err := strconv.Atoi(msRaw)
@@ -47,9 +42,9 @@ func applyStartDelay() {
 
 func main() {
 	applyStartDelay()
-	bootstrap.Boot()
+	app := bootstrap.Boot()
 
-	// 检查是否应该启动服务器（守护进程模式通过环境变量标记）
+	// 检查是否应该启动服务器
 	shouldStartServer := os.Getenv("CLOUDSENTINEL_SERVER_MODE") == "1"
 
 	// 检查命令行参数
@@ -84,7 +79,7 @@ func main() {
 
 		commandName := args[0]
 		if commandName == "start" {
-			// start --daemon/-d: 仅启动后台进程，当前进程直接退出（避免阻塞安装脚本等场景）
+			// start --daemon/-d: 仅启动后台进程，当前进程直接退出
 			if hasDaemonFlag(args) {
 				return
 			}
@@ -98,69 +93,5 @@ func main() {
 		return
 	}
 
-	// 初始化服务
-	_ = services.CleanupStaleLogLocks()
-	services.StartPeriodicLogLockCleanup()
-
-	// 认证配置动态化：启动时从 system_settings 同步 JWT 密钥/有效期（DB 优先）
-	services.SyncAuthSettingsFromDB()
-
-	services.EnsureTLSCertificates()
-	services.CheckTLSCertificateExpiry()
-
-	// 初始化Agent数据Worker池
-	_ = services.GetGlobalDataWorker()
-
-	// 初始化日志写入队列
-	_ = services.GetLogWriter()
-
-	// 初始化性能指标批量写入缓冲区
-	_ = services.GetMetricBuffer()
-
-	// 启动服务监测
-	go services.GetServiceMonitorService().StartAll()
-
-	// Create a channel to listen for OS signals
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
-	// Start http server by facades.Route().
-	// 配置了 TLS 证书（TLS_CERT_FILE/TLS_KEY_FILE）时以 HTTPS/WSS 监听，
-	// 否则保持 HTTP 监听。Agent 侧默认拒绝 ws://，强制 wss://。
-	go func() {
-		var runErr error
-		if facades.Config().GetString("http.tls.ssl.cert") != "" && facades.Config().GetString("http.tls.ssl.key") != "" {
-			runErr = facades.Route().RunTLS()
-		} else {
-			runErr = facades.Route().Run()
-		}
-		if runErr != nil {
-			facades.Log().Errorf("Route Run error: %v", runErr)
-		}
-	}()
-
-	// Start schedule by facades.Schedule
-	go facades.Schedule().Run()
-
-	// Listen for the OS signal
-	go func() {
-		<-quit
-		facades.Log().Info("接收到退出信号，开始优雅关闭...")
-
-		// 停止性能指标批量写入缓冲区
-		services.GetMetricBuffer().Stop()
-		// 停止 Agent 数据 Worker 池，等待队列中的任务处理完毕
-		services.GetGlobalDataWorker().Stop()
-
-		if err := facades.Route().Shutdown(); err != nil {
-			facades.Log().Errorf("Route Shutdown error: %v", err)
-		}
-		if err := facades.Schedule().Shutdown(); err != nil {
-			facades.Log().Errorf("Schedule Shutdown error: %v", err)
-		}
-
-		os.Exit(0)
-	}()
-
-	select {}
+	app.Start()
 }

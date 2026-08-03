@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/goravel/framework/contracts/route"
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 
 	"goravel/app/http/controllers"
 )
