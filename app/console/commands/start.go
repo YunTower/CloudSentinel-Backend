@@ -2,8 +2,6 @@ package commands
 
 import (
 	"fmt"
-	"os"
-	"strings"
 
 	"github.com/goravel/framework/contracts/console"
 	"github.com/goravel/framework/contracts/console/command"
@@ -56,23 +54,7 @@ func (c *StartCommand) Handle(ctx console.Context) error {
 		return nil
 	}
 
-	// 检查 daemon 选项
-	daemonOpt := ctx.Option("daemon")
-	daemonShortOpt := ctx.Option("d")
-
-	// 检查命令行参数中是否包含 --daemon 或 -d
-	hasDaemonArg := false
-	for _, arg := range os.Args {
-		if arg == "--daemon" || arg == "-d" || strings.HasPrefix(arg, "--daemon=") || strings.HasPrefix(arg, "-d=") {
-			hasDaemonArg = true
-			break
-		}
-	}
-
-	// 如果选项值为 "true" 或 "1"，或者命令行参数中包含 daemon 标志，则启用守护进程模式
-	daemonFlag := daemonOpt == "true" || daemonOpt == "1" || daemonShortOpt == "true" || daemonShortOpt == "1" || hasDaemonArg
-
-	if daemonFlag {
+	if ctx.OptionBool("daemon") {
 		// 守护进程模式：使用统一的启动函数
 		if err := startDaemonService(c.pidFile); err != nil {
 			return err

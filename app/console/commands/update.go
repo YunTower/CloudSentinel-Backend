@@ -11,7 +11,7 @@ import (
 
 	"github.com/goravel/framework/contracts/console"
 	"github.com/goravel/framework/contracts/console/command"
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 type UpdateCommand struct {
@@ -58,9 +58,9 @@ func (c *UpdateCommand) Extend() command.Extend {
 
 // Handle Execute the console command.
 func (c *UpdateCommand) Handle(ctx console.Context) error {
-	forceFlag := ctx.Option("force") == "true" || ctx.Option("force") == "1"
-	skipMigrationFlag := ctx.Option("skip-migration") == "true" || ctx.Option("skip-migration") == "1"
-	yesFlag := ctx.Option("yes") == "true" || ctx.Option("yes") == "1" || ctx.Option("y") == "true" || ctx.Option("y") == "1"
+	forceFlag := ctx.OptionBool("force")
+	skipMigrationFlag := ctx.OptionBool("skip-migration")
+	yesFlag := ctx.OptionBool("yes")
 
 	// 检查是否有更新在进行中
 	if !forceFlag {

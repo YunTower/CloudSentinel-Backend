@@ -6,7 +6,7 @@ import (
 
 	"github.com/goravel/framework/contracts/console"
 	"github.com/goravel/framework/contracts/console/command"
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 type GenerateAdminCommand struct{}

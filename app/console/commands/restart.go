@@ -70,10 +70,7 @@ func (c *RestartCommand) Handle(ctx console.Context) error {
 	}
 
 	// 再启动服务
-	daemonOpt := ctx.Option("daemon")
-	daemonFlag := daemonOpt == "true" || daemonOpt == "1"
-
-	if daemonFlag {
+	if ctx.OptionBool("daemon") {
 		// 守护进程模式：使用统一的启动函数
 		PrintInfo("正在以守护进程模式启动服务...")
 		if err := startDaemonService(c.pidFile); err != nil {

@@ -3,10 +3,14 @@ package commands
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"goravel/app/facades"
 )
+
+const systemctlTimeout = 30 * time.Second
 
 // GetServiceFilePath 获取 systemd 服务文件路径
 func GetServiceFilePath() string {
@@ -22,67 +26,54 @@ func ServiceExists() bool {
 
 // ReloadDaemon 重新加载 systemd daemon
 func ReloadDaemon() error {
-	cmd := exec.Command("systemctl", "daemon-reload")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("重新加载systemd daemon失败: %w", err)
-	}
-	return nil
+	return runSystemctl("重新加载 systemd daemon", "daemon-reload")
 }
 
 // EnableService 启用 systemd 服务（开机自启）
 func EnableService() error {
-	cmd := exec.Command("systemctl", "enable", "cloudsentinel.service")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("启用服务失败: %w", err)
-	}
-	return nil
+	return runSystemctl("启用服务", "enable", "cloudsentinel.service")
 }
 
 // DisableService 禁用 systemd 服务
 func DisableService() error {
-	cmd := exec.Command("systemctl", "disable", "cloudsentinel.service")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("禁用服务失败: %w", err)
-	}
-	return nil
+	return runSystemctl("禁用服务", "disable", "cloudsentinel.service")
 }
 
 // StartService 启动 systemd 服务
 func StartService() error {
-	cmd := exec.Command("systemctl", "start", "cloudsentinel.service")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("启动服务失败: %w, 输出: %s", err, string(output))
-	}
-	return nil
+	return runSystemctl("启动服务", "start", "cloudsentinel.service")
 }
 
 // StopService 停止 systemd 服务
 func StopService() error {
-	cmd := exec.Command("systemctl", "stop", "cloudsentinel.service")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("停止服务失败: %w", err)
-	}
-	return nil
+	return runSystemctl("停止服务", "stop", "cloudsentinel.service")
 }
 
 // RestartService 重启 systemd 服务
 func RestartService() error {
-	cmd := exec.Command("systemctl", "restart", "cloudsentinel.service")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("重启服务失败: %w", err)
-	}
-	return nil
+	return runSystemctl("重启服务", "restart", "cloudsentinel.service")
 }
 
 // GetServiceStatus 获取服务状态
 func GetServiceStatus() (string, error) {
-	cmd := exec.Command("systemctl", "is-active", "cloudsentinel.service")
-	output, err := cmd.Output()
-	if err != nil {
+	result := facades.Process().Timeout(systemctlTimeout).Quietly().Run("systemctl", "is-active", "cloudsentinel.service")
+	if result.Failed() {
 		return "inactive", nil
 	}
-	return strings.TrimSpace(string(output)), nil
+	return strings.TrimSpace(result.Output()), nil
+}
+
+func runSystemctl(operation string, args ...string) error {
+	result := facades.Process().Timeout(systemctlTimeout).Quietly().Run("systemctl", args...)
+	if result.Successful() {
+		return nil
+	}
+
+	output := strings.TrimSpace(strings.Join([]string{result.Output(), result.ErrorOutput()}, "\n"))
+	if output == "" {
+		return fmt.Errorf("%s失败: %w", operation, result.Error())
+	}
+	return fmt.Errorf("%s失败: %w, 输出: %s", operation, result.Error(), output)
 }
 
 // IsServiceActive 检查服务是否处于活动状态

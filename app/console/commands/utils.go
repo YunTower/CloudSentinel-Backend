@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // GenerateRandomString 生成随机字符串（公共函数）
@@ -71,4 +71,3 @@ func generateAdminCredentials() (*AdminCredentials, error) {
 		PasswordHash: passwordHash,
 	}, nil
 }
-
