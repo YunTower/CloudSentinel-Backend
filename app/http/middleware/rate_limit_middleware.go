@@ -1,11 +1,12 @@
 package middleware
 
 import (
+	"fmt"
 	"sync/atomic"
 	"time"
 
 	"github.com/goravel/framework/contracts/http"
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 const rateLimitGlobalKey = "__global__"
@@ -50,6 +51,48 @@ func pruneRateLimitBuckets(now time.Time, window time.Duration) {
 	)
 }
 
+type rateLimitMiddleware struct {
+	scope       string
+	maxRequests int
+	window      time.Duration
+}
+
+func (m *rateLimitMiddleware) Signature() string {
+	return fmt.Sprintf("cloudsentinel:rate_limit:%s", m.scope)
+}
+
+func (m *rateLimitMiddleware) Handle(ctx http.Context) {
+	clientKey := ctx.Request().Ip()
+	if clientKey == "" {
+		clientKey = "unknown"
+	}
+	now := time.Now()
+
+	// Limit a single source first, then the whole route scope. The scope
+	// ceiling prevents a distributed flood from bypassing per-IP limits.
+	allowed, err := consumeRateLimit(m.scope, clientKey, m.maxRequests, m.window, now)
+	if err == nil && allowed {
+		allowed, err = consumeRateLimit(m.scope, rateLimitGlobalKey, m.maxRequests*12, m.window, now)
+	}
+	if err != nil {
+		facades.Log().Warningf("限流计数失败，拒绝请求: %v", err)
+		ctx.Response().Json(503, map[string]interface{}{
+			"status": false, "message": "服务繁忙，请稍后再试",
+		})
+		return
+	}
+
+	pruneRateLimitBuckets(now, m.window)
+
+	if !allowed {
+		ctx.Response().Json(429, map[string]interface{}{
+			"status": false, "message": "请求过于频繁，请稍后再试",
+		})
+		return
+	}
+	ctx.Request().Next()
+}
+
 func RateLimit(scope string, maxRequests int, window time.Duration) http.Middleware {
 	if maxRequests <= 0 {
 		maxRequests = 120
@@ -58,37 +101,7 @@ func RateLimit(scope string, maxRequests int, window time.Duration) http.Middlew
 		window = time.Minute
 	}
 
-	return func(ctx http.Context) {
-		clientKey := ctx.Request().Ip()
-		if clientKey == "" {
-			clientKey = "unknown"
-		}
-		now := time.Now()
-
-		// Limit a single source first, then the whole route scope. The scope
-		// ceiling prevents a distributed flood from bypassing per-IP limits.
-		allowed, err := consumeRateLimit(scope, clientKey, maxRequests, window, now)
-		if err == nil && allowed {
-			allowed, err = consumeRateLimit(scope, rateLimitGlobalKey, maxRequests*12, window, now)
-		}
-		if err != nil {
-			facades.Log().Warningf("限流计数失败，拒绝请求: %v", err)
-			ctx.Response().Json(503, map[string]interface{}{
-				"status": false, "message": "服务繁忙，请稍后再试",
-			})
-			return
-		}
-
-		pruneRateLimitBuckets(now, window)
-
-		if !allowed {
-			ctx.Response().Json(429, map[string]interface{}{
-				"status": false, "message": "请求过于频繁，请稍后再试",
-			})
-			return
-		}
-		ctx.Request().Next()
-	}
+	return &rateLimitMiddleware{scope: scope, maxRequests: maxRequests, window: window}
 }
 
 func PublicRateLimit(maxRequests int, window time.Duration) http.Middleware {

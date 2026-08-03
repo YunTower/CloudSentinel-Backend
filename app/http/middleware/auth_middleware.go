@@ -7,7 +7,7 @@ import (
 	"goravel/app/utils"
 
 	"github.com/goravel/framework/contracts/http"
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 const AuthTokenCookieName = "cloudsentinel_auth"
@@ -96,38 +96,44 @@ func authenticate(ctx http.Context, requireAdmin bool) bool {
 	return true
 }
 
-// Auth 统一认证中间件
-func Auth() http.Middleware {
-	return func(ctx http.Context) {
-		if authenticate(ctx, false) {
-			ctx.Request().Next()
-		}
+type authMiddleware struct {
+	requireAdmin bool
+	signature    string
+}
+
+func (m *authMiddleware) Signature() string {
+	return m.signature
+}
+
+func (m *authMiddleware) Handle(ctx http.Context) {
+	if authenticate(ctx, m.requireAdmin) {
+		ctx.Request().Next()
 	}
 }
 
-// SimpleAuth 简单认证检查
-func SimpleAuth() http.Middleware {
-	return func(ctx http.Context) {
-		if authenticate(ctx, false) {
-			ctx.Request().Next()
-		}
-	}
+// Auth 统一认证中间件。
+func Auth() http.Middleware {
+	return &authMiddleware{signature: "cloudsentinel:auth"}
 }
 
 // AdminAuth 管理员权限检查
 func AdminAuth() http.Middleware {
-	return func(ctx http.Context) {
-		if authenticate(ctx, true) {
-			ctx.Request().Next()
-		}
-	}
+	return &authMiddleware{requireAdmin: true, signature: "cloudsentinel:admin_auth"}
+}
+
+type publicMiddleware struct{}
+
+func (m *publicMiddleware) Signature() string {
+	return "cloudsentinel:public"
 }
 
 // Public 显式为公开端点建立访客上下文。公开路由不得从 Cookie 推导管理员身份。
+func (m *publicMiddleware) Handle(ctx http.Context) {
+	ctx.WithValue("user_type", "guest")
+	ctx.WithValue("is_authenticated", false)
+	ctx.Request().Next()
+}
+
 func Public() http.Middleware {
-	return func(ctx http.Context) {
-		ctx.WithValue("user_type", "guest")
-		ctx.WithValue("is_authenticated", false)
-		ctx.Request().Next()
-	}
+	return &publicMiddleware{}
 }

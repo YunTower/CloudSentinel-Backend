@@ -5,49 +5,60 @@ import (
 	"strings"
 
 	contracts "github.com/goravel/framework/contracts/http"
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // CORS 使用两份白名单：公开站只可读取公开接口，管理站才可携带会话凭据访问管理接口。
 // 空白名单是安全默认值：同源请求仍可用，任何跨域浏览器请求都会被拒绝。
-func CORS() contracts.Middleware {
-	adminOrigins := originSet(facades.Config().GetString("cors.admin_origins"))
-	publicOrigins := originSet(facades.Config().GetString("cors.public_origins"))
+type corsMiddleware struct {
+	adminOrigins  map[string]struct{}
+	publicOrigins map[string]struct{}
+}
 
-	return func(ctx contracts.Context) {
-		origin := strings.TrimSpace(ctx.Request().Header("Origin"))
-		if origin == "" {
-			ctx.Request().Next()
-			return
-		}
+func (m *corsMiddleware) Signature() string {
+	return "cloudsentinel:cors"
+}
 
-		isPublicRoute := isPublicAPIPath(ctx.Request().Path())
-		_, isAdminOrigin := adminOrigins[origin]
-		_, isPublicOrigin := publicOrigins[origin]
-		allowed := isAdminOrigin || (isPublicRoute && isPublicOrigin)
-		if !allowed {
-			_ = ctx.Response().Status(http.StatusForbidden).Json(contracts.Json{
-				"status":  false,
-				"message": "不受信任的请求来源",
-			}).Abort()
-			return
-		}
-
-		response := ctx.Response().Header("Access-Control-Allow-Origin", origin).
-			Header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS").
-			Header("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token").
-			Header("Access-Control-Max-Age", "600").
-			Header("Vary", "Origin")
-		if isAdminOrigin {
-			response.Header("Access-Control-Allow-Credentials", "true")
-		}
-
-		if ctx.Request().Method() == http.MethodOptions {
-			_ = response.NoContent(http.StatusNoContent).Abort()
-			return
-		}
-
+func (m *corsMiddleware) Handle(ctx contracts.Context) {
+	origin := strings.TrimSpace(ctx.Request().Header("Origin"))
+	if origin == "" {
 		ctx.Request().Next()
+		return
+	}
+
+	isPublicRoute := isPublicAPIPath(ctx.Request().Path())
+	_, isAdminOrigin := m.adminOrigins[origin]
+	_, isPublicOrigin := m.publicOrigins[origin]
+	allowed := isAdminOrigin || (isPublicRoute && isPublicOrigin)
+	if !allowed {
+		_ = ctx.Response().Status(http.StatusForbidden).Json(contracts.Json{
+			"status":  false,
+			"message": "不受信任的请求来源",
+		}).Abort()
+		return
+	}
+
+	response := ctx.Response().Header("Access-Control-Allow-Origin", origin).
+		Header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS").
+		Header("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token").
+		Header("Access-Control-Max-Age", "600").
+		Header("Vary", "Origin")
+	if isAdminOrigin {
+		response.Header("Access-Control-Allow-Credentials", "true")
+	}
+
+	if ctx.Request().Method() == http.MethodOptions {
+		_ = response.NoContent(http.StatusNoContent).Abort()
+		return
+	}
+
+	ctx.Request().Next()
+}
+
+func CORS() contracts.Middleware {
+	return &corsMiddleware{
+		adminOrigins:  originSet(facades.Config().GetString("cors.admin_origins")),
+		publicOrigins: originSet(facades.Config().GetString("cors.public_origins")),
 	}
 }
 

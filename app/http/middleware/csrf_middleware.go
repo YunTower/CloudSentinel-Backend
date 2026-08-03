@@ -19,22 +19,30 @@ func NewCSRFToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
+type csrfMiddleware struct{}
+
+func (m *csrfMiddleware) Signature() string {
+	return "cloudsentinel:verify_csrf"
+}
+
+func (m *csrfMiddleware) Handle(ctx http.Context) {
+	method := ctx.Request().Method()
+	if method == "GET" || method == "HEAD" || method == "OPTIONS" {
+		ctx.Request().Next()
+		return
+	}
+	cookie := ctx.Request().Cookie(CSRFTokenCookieName)
+	header := ctx.Request().Header("X-CSRF-Token")
+	if cookie == "" || header == "" || subtle.ConstantTimeCompare([]byte(cookie), []byte(header)) != 1 {
+		_ = ctx.Response().Status(403).Json(http.Json{"status": false, "message": "CSRF 校验失败"})
+		return
+	}
+	ctx.Request().Next()
+}
+
 // VerifyCSRF protects state-changing browser requests authenticated by cookies.
 func VerifyCSRF() http.Middleware {
-	return func(ctx http.Context) {
-		method := ctx.Request().Method()
-		if method == "GET" || method == "HEAD" || method == "OPTIONS" {
-			ctx.Request().Next()
-			return
-		}
-		cookie := ctx.Request().Cookie(CSRFTokenCookieName)
-		header := ctx.Request().Header("X-CSRF-Token")
-		if cookie == "" || header == "" || subtle.ConstantTimeCompare([]byte(cookie), []byte(header)) != 1 {
-			_ = ctx.Response().Status(403).Json(http.Json{"status": false, "message": "CSRF 校验失败"})
-			return
-		}
-		ctx.Request().Next()
-	}
+	return &csrfMiddleware{}
 }
 
 func RequireCSRFToken() (string, error) {
