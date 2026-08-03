@@ -14,8 +14,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/goravel/framework/contracts/http"
-	"github.com/goravel/framework/facades"
 	"github.com/gorilla/websocket"
+	"goravel/app/facades"
 )
 
 const maxWebSocketConnectionsPerIP = 8

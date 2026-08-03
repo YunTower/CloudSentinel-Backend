@@ -8,7 +8,7 @@ import (
 	"goravel/app/utils"
 
 	"github.com/goravel/framework/contracts/http"
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 type UpdateController struct {
@@ -95,12 +95,12 @@ func (r *UpdateController) GetSystemInfo() (osType, arch string) {
 }
 
 // FindAssetByArchitecture 在 assets 中查找匹配的二进制包
-func (r *UpdateController) FindAssetByArchitecture(assets []interface{}, osType, arch string) (string, string) {
+func (r *UpdateController) FindAssetByArchitecture(assets []services.ReleaseAsset, osType, arch string) (string, string) {
 	return r.updateService.FindAssetByArchitecture(assets, osType, arch)
 }
 
 // FindSHA256Asset 在 assets 中查找匹配的 SHA256 文件
-func (r *UpdateController) FindSHA256Asset(assets []interface{}, osType, arch string) (string, string) {
+func (r *UpdateController) FindSHA256Asset(assets []services.ReleaseAsset, osType, arch string) (string, string) {
 	return r.updateService.FindSHA256Asset(assets, osType, arch)
 }
 
@@ -254,7 +254,7 @@ func (r *UpdateController) UpdatePanel(ctx http.Context) http.Response {
 // checkVersionWithInfo 根据已获取的 release 信息返回检查结果
 func (r *UpdateController) checkVersionWithInfo(ctx http.Context, releaseInfo *services.ReleaseInfo, includeCurrentVersion bool) http.Response {
 	var publishTime string
-	if createdAt, ok := releaseInfo.Result["created_at"].(string); ok && createdAt != "" {
+	if createdAt := releaseInfo.CreatedAt; createdAt != "" {
 		parsedTime, parseErr := time.Parse(time.RFC3339, createdAt)
 		if parseErr == nil {
 			shanghaiLocation, err := time.LoadLocation("Asia/Shanghai")
@@ -272,7 +272,7 @@ func (r *UpdateController) checkVersionWithInfo(ctx http.Context, releaseInfo *s
 		"latest_version":      releaseInfo.NormalizedTagName,
 		"latest_version_type": releaseInfo.VersionType,
 		"publish_time":        publishTime,
-		"change_log":          releaseInfo.Result["body"],
+		"change_log":          releaseInfo.Body,
 	}
 
 	if includeCurrentVersion {

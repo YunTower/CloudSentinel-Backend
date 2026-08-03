@@ -7,7 +7,7 @@ import (
 
 	"goravel/app/repositories"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 const publicDisplaySettingKeyV1 = "public_display_v1"
@@ -78,8 +78,8 @@ func defaultPublicDisplayConfigV1() PublicDisplayConfigV1 {
 			ShowCores:        true,
 			ShowNetworkIO:    true,
 			// 计费/流量属经营敏感数据，默认不对外展示
-			ShowBilling:      false,
-			ShowTraffic:      false,
+			ShowBilling: false,
+			ShowTraffic: false,
 		},
 		Announcement: PublicDisplayAnnouncementV1{
 			Enabled:   false,

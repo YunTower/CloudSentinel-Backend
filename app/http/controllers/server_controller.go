@@ -14,7 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/goravel/framework/contracts/http"
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // calculateUptime 计算运行时间
