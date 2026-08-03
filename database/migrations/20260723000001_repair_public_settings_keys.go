@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/goravel/framework/contracts/database/schema"
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // M20260723000001RepairPublicSettingsKeys 修复 setting_key 为空的公开配置行，并补唯一索引。

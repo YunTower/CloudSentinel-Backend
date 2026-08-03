@@ -2,7 +2,7 @@ package migrations
 
 import (
 	"github.com/goravel/framework/contracts/database/schema"
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 type M20260619000002AddGroupNameToServiceMonitorsTable struct{}

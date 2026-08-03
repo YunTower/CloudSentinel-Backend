@@ -3,7 +3,7 @@ package migrations
 import (
 	"goravel/app/models"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 type AddLogRetentionSetting struct {

@@ -2,7 +2,7 @@ package migrations
 
 import (
 	"github.com/goravel/framework/contracts/database/schema"
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // M20260721000002CreateRateLimitBuckets stores short-lived counters in the
