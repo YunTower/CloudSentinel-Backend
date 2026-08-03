@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // LogWriter 日志写入器

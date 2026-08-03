@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"goravel/app/cryptoutil"
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 func appKeyBytes() []byte {

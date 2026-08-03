@@ -2,7 +2,7 @@ package utils
 
 import (
 	"github.com/goravel/framework/contracts/http"
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // ErrorResponse 返回错误响应
