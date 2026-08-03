@@ -7,7 +7,7 @@ import (
 	"goravel/app/models"
 	"goravel/app/utils/secret"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // AlertNotificationRepository 告警通知

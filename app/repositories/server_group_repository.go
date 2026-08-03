@@ -3,7 +3,7 @@ package repositories
 import (
 	"goravel/app/models"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // ServerGroupRepository 服务器分组仓库

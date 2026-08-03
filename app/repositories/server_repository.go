@@ -3,7 +3,7 @@ package repositories
 import (
 	"goravel/app/models"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // ServerRepository 服务器

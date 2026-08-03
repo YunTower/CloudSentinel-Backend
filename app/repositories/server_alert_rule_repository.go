@@ -6,7 +6,7 @@ import (
 
 	"goravel/app/models"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // ServerAlertRuleRepository 服务器告警规则

@@ -7,7 +7,7 @@ import (
 
 	"goravel/app/models"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // SystemSettingRepository 系统设置

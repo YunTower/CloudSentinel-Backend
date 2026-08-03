@@ -6,7 +6,7 @@ import (
 
 	"goravel/app/models"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 // ServerMetricRepository 服务器指标

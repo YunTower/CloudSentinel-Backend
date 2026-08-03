@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 var (

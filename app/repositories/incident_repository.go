@@ -4,7 +4,7 @@ import (
 	"goravel/app/models"
 	"time"
 
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 type IncidentRepository struct{}

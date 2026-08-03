@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/goravel/framework/facades"
+	"goravel/app/facades"
 )
 
 const agentTaskLeaseDuration = 10 * time.Minute
