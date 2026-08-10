@@ -51,5 +51,6 @@ func Migrations() []schema.Migration {
 		&migrations.M20260723000002AddCertExpiryToServiceMonitors{},
 		&migrations.M20260723000003AddPageIDsToIncidents{},
 		&migrations.M20260730000001AddCpuNameToServersTable{},
+		&migrations.M20260809000001AddProtocolMonitorFields{},
 	}
 }

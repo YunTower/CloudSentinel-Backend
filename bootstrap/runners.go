@@ -1,9 +1,14 @@
 package bootstrap
 
 import (
+	"context"
+	"fmt"
+	"net"
 	"sync"
+	"time"
 
 	"github.com/goravel/framework/contracts/foundation"
+	"github.com/goravel/framework/contracts/route"
 
 	"goravel/app/facades"
 	"goravel/app/services"
@@ -13,7 +18,73 @@ import (
 func Runners() []foundation.Runner {
 	return []foundation.Runner{
 		NewApplicationServicesRunner(),
+		NewPublicHTTPRunner(publicHTTPRoute),
 	}
+}
+
+// PublicHTTPRunner 将公开站点作为第二个 HTTP 监听器纳入应用统一生命周期。
+type PublicHTTPRunner struct {
+	route  route.Route
+	config publicHTTPConfig
+}
+
+func NewPublicHTTPRunner(publicRoute route.Route) *PublicHTTPRunner {
+	certFile := facades.Config().GetString("http.public.tls.cert")
+	keyFile := facades.Config().GetString("http.public.tls.key")
+	if certFile == "" && keyFile == "" {
+		// 默认复用管理监听器证书；需要不同域名证书时再通过 PUBLIC_TLS_* 覆盖。
+		certFile = facades.Config().GetString("http.tls.ssl.cert")
+		keyFile = facades.Config().GetString("http.tls.ssl.key")
+	}
+
+	return newPublicHTTPRunner(publicRoute, publicHTTPConfig{
+		enabled:  facades.Config().GetBool("http.public.enabled"),
+		host:     facades.Config().GetString("http.public.host"),
+		port:     facades.Config().GetString("http.public.port"),
+		certFile: certFile,
+		keyFile:  keyFile,
+	})
+}
+
+type publicHTTPConfig struct {
+	enabled  bool
+	host     string
+	port     string
+	certFile string
+	keyFile  string
+}
+
+func newPublicHTTPRunner(publicRoute route.Route, config publicHTTPConfig) *PublicHTTPRunner {
+	return &PublicHTTPRunner{route: publicRoute, config: config}
+}
+
+func (r *PublicHTTPRunner) Signature() string {
+	return "cloudsentinel:http-public"
+}
+
+func (r *PublicHTTPRunner) ShouldRun() bool {
+	return r.route != nil && r.config.enabled
+}
+
+func (r *PublicHTTPRunner) Run() error {
+	if r.config.host == "" || r.config.port == "" {
+		return fmt.Errorf("PUBLIC_HOST and PUBLIC_PORT must be configured when public HTTP is enabled")
+	}
+
+	address := net.JoinHostPort(r.config.host, r.config.port)
+	if (r.config.certFile == "") != (r.config.keyFile == "") {
+		return fmt.Errorf("PUBLIC_TLS_CERT_FILE and PUBLIC_TLS_KEY_FILE must be configured together")
+	}
+	if r.config.certFile != "" {
+		return r.route.RunTLSWithCert(address, r.config.certFile, r.config.keyFile)
+	}
+	return r.route.Run(address)
+}
+
+func (r *PublicHTTPRunner) Shutdown() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return r.route.Shutdown(ctx)
 }
 
 // ApplicationServicesRunner 统一管理 CloudSentinel 常驻后台服务的启动与优雅关闭。
