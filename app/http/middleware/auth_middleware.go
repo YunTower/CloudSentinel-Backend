@@ -11,6 +11,7 @@ import (
 )
 
 const AuthTokenCookieName = "cloudsentinel_auth"
+const AdminGuardName = "admin"
 
 // parseToken 从 HttpOnly Cookie 读取会话令牌，避免令牌暴露给浏览器脚本。
 func parseToken(ctx http.Context) (string, error) {
@@ -79,7 +80,14 @@ func authenticate(ctx http.Context, requireAdmin bool) bool {
 		return false
 	}
 
-	payload, err := facades.Auth(ctx).Parse(token)
+	var payload interface{}
+	if requireAdmin {
+		// 管理员 Token 的 Subject 是 admin，必须使用同一 guard 解析。
+		// 不能依赖默认 user guard，否则登录成功后的管理员会话会被错误拒绝。
+		payload, err = facades.Auth(ctx).Guard(AdminGuardName).Parse(token)
+	} else {
+		payload, err = facades.Auth(ctx).Parse(token)
+	}
 	if err != nil {
 		return !handleAuthError(ctx, err)
 	}

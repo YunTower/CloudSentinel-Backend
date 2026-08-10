@@ -267,7 +267,7 @@ func (r *AuthController) Refresh(ctx http.Context) http.Response {
 	}
 
 	// 解析 Token
-	payload, err := facades.Auth(ctx).Parse(token)
+	payload, err := facades.Auth(ctx).Guard(middleware.AdminGuardName).Parse(token)
 	if err != nil {
 		// 检查是否是 Token 过期错误
 		if err.Error() == "token has expired" || err.Error() == "token expired" {
@@ -288,7 +288,7 @@ func (r *AuthController) Refresh(ctx http.Context) http.Response {
 	}
 
 	// 刷新 Token
-	newToken, refreshErr := facades.Auth(ctx).Refresh()
+	newToken, refreshErr := facades.Auth(ctx).Guard(middleware.AdminGuardName).Refresh()
 	if refreshErr != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  false,
