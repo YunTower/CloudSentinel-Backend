@@ -5,10 +5,18 @@ import (
 	"time"
 
 	"github.com/goravel/framework/contracts/route"
+	ginfacades "github.com/goravel/gin/facades"
 	"goravel/app/facades"
 
 	"goravel/app/http/controllers"
 )
+
+type publicReadControllers struct {
+	settings       *controllers.SettingsController
+	servers        *controllers.ServerController
+	incidents      *controllers.IncidentController
+	serviceMonitor *controllers.ServiceMonitorController
+}
 
 func Api() {
 	// 初始化控制器
@@ -23,20 +31,23 @@ func Api() {
 	serverAlertController := controllers.NewServerAlertController()
 	serviceMonitorController := controllers.NewServiceMonitorController()
 	incidentController := controllers.NewIncidentController()
-	staticController := controllers.NewStaticController()
+	staticController := controllers.NewStaticController(controllers.AdminFiles, controllers.AdminAssetsRoot)
 	certsController := controllers.NewCertsController()
 
 	facades.Route().Prefix("api").Group(func(router route.Router) {
-		// 公开接口：始终以访客权限执行，绝不读取或提升管理员会话。
-		router.Middleware(middleware.Public(), middleware.PublicRateLimit(120, 1*time.Minute)).Group(func(publicRouter route.Router) {
-			publicRouter.Get("/settings/public", settingsController.GetPublicSettings)
-			publicRouter.Get("/public/servers", serverController.GetServers)
-			publicRouter.Get("/public/incidents", incidentController.GetPublic)
-			publicRouter.Get("/public/service-monitors", serviceMonitorController.GetPublic)
+		registerPublicReadRoutes(router, publicReadControllers{
+			settings:       settingsController,
+			servers:        serverController,
+			incidents:      incidentController,
+			serviceMonitor: serviceMonitorController,
+		})
+
+		// Agent 引导接口虽无需登录，但不属于公开站点的只读接口集合。
+		router.Middleware(middleware.Public(), middleware.PublicRateLimit(120, 1*time.Minute)).Group(func(agentBootstrapRouter route.Router) {
 			// 自签 CA 公钥下载：Agent 安装时自动获取并信任（仅 PEM 文本，无敏感信息）
-			publicRouter.Get("/certs/ca", certsController.GetCA)
+			agentBootstrapRouter.Get("/certs/ca", certsController.GetCA)
 			// Agent 首次启动统一引导：一次请求返回 CA 等全部引导配置
-			publicRouter.Get("/agent/bootstrap", certsController.Bootstrap)
+			agentBootstrapRouter.Get("/agent/bootstrap", certsController.Bootstrap)
 		})
 
 		// 管理认证入口仅供管理端来源调用；后续管理 API 必须经过 AdminAuth 与 CSRF 校验。
@@ -53,8 +64,8 @@ func Api() {
 			wsRouter.Get("/ws/frontend", wsController.HandleFrontendConnection)
 		})
 
-		// 通用登录用户接口
-		router.Middleware(middleware.Auth()).Group(func(authRouter route.Router) {
+		// 当前面板仅提供管理员登录态；认证辅助接口必须与登录 Token 使用同一 guard。
+		router.Middleware(middleware.AdminAuth()).Group(func(authRouter route.Router) {
 			// 认证相关
 			authRouter.Prefix("/auth").Group(func(authRoute route.Router) {
 				authRoute.Get("/csrf", authController.CSRFToken)
@@ -79,6 +90,7 @@ func Api() {
 				settingsRoute.Patch("/public-display", settingsController.UpdatePublicDisplaySettings)
 				settingsRoute.Patch("/public-pages", settingsController.UpdatePublicPagesSettings)
 				settingsRoute.Post("/alerts/test", settingsController.TestAlertSettings)
+				settingsRoute.Post("/alerts/templates/preview", settingsController.PreviewAlertTemplates)
 			})
 
 			// 更新相关
@@ -118,6 +130,7 @@ func Api() {
 			adminRouter.Prefix("/service-monitors").Group(func(smRoute route.Router) {
 				smRoute.Get("", serviceMonitorController.GetAll)
 				smRoute.Post("", serviceMonitorController.Create)
+				smRoute.Post("/ai-models", serviceMonitorController.CreateAIModels)
 				smRoute.Get("/:id/results", serviceMonitorController.GetResults)
 				smRoute.Patch("/:id", serviceMonitorController.Update)
 				smRoute.Delete("/:id", serviceMonitorController.Delete)
@@ -142,17 +155,39 @@ func Api() {
 	})
 
 	// 静态文件服务
-	if hasEmbeddedFiles() {
+	if staticController.Available() {
 		facades.Route().Fallback(staticController.ServeStatic)
 	}
 }
 
-// hasEmbeddedFiles 检查是否嵌入了前端文件
-func hasEmbeddedFiles() bool {
-	// 检查 PublicFiles 是否已初始化且有内容
-	entries, err := controllers.PublicFiles.ReadDir("public")
-	if err != nil {
-		return false
-	}
-	return len(entries) > 0
+// Public 创建与管理端完全独立的公开监听路由，仅注册公开站点所需的只读接口。
+func Public() route.Route {
+	publicRoute := ginfacades.Route("public")
+	publicRoute.SetGlobalMiddleware(append(publicRoute.GetGlobalMiddleware(), middleware.CORS()))
+
+	publicRoute.Prefix("api").Group(func(router route.Router) {
+		registerPublicReadRoutes(router, publicReadControllers{
+			settings:       controllers.NewSettingsController(),
+			servers:        controllers.NewServerController(),
+			incidents:      controllers.NewIncidentController(),
+			serviceMonitor: controllers.NewServiceMonitorController(),
+		})
+	})
+
+	staticController := controllers.NewStaticController(controllers.PublicFiles, controllers.PublicAssetsRoot)
+	// 即使开发构建未嵌入前端，也必须由显式 fallback 拒绝未注册的后端路径，
+	// 避免 Gin 默认 NoRoute 在不同响应适配器下产生不一致状态码。
+	publicRoute.Fallback(staticController.ServeStatic)
+
+	return publicRoute
+}
+
+func registerPublicReadRoutes(router route.Router, handlers publicReadControllers) {
+	// 公开接口始终以访客权限执行，绝不读取或提升管理员会话。
+	router.Middleware(middleware.Public(), middleware.PublicRateLimit(120, 1*time.Minute)).Group(func(publicRouter route.Router) {
+		publicRouter.Get("/settings/public", handlers.settings.GetPublicSettings)
+		publicRouter.Get("/public/servers", handlers.servers.GetServers)
+		publicRouter.Get("/public/incidents", handlers.incidents.GetPublic)
+		publicRouter.Get("/public/service-monitors", handlers.serviceMonitor.GetPublic)
+	})
 }
