@@ -22,6 +22,11 @@ func appKeyBytes() []byte {
 	return h[:]
 }
 
+// HasAppKey 表示当前实例已配置可用于持久化敏感信息的密钥。
+func HasAppKey() bool {
+	return strings.TrimSpace(facades.Config().GetString("app.key")) != ""
+}
+
 func EncryptStringWithAppKey(plain string) (string, error) {
 	key := appKeyBytes()
 	ct, err := cryptoutil.EncryptMessage([]byte(plain), key)
