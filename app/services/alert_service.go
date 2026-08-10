@@ -1,8 +1,6 @@
 package services
 
 import (
-	"bytes"
-	"embed"
 	"encoding/json"
 	"fmt"
 	"goravel/app/jobs"
@@ -10,14 +8,9 @@ import (
 	"goravel/app/repositories"
 	"goravel/app/utils"
 	"goravel/app/utils/notification"
-	"html/template"
 	"time"
 
 	"goravel/app/facades"
-)
-
-var (
-	ResourceFiles embed.FS
 )
 
 // AlertService 告警服务
@@ -269,7 +262,7 @@ func (s *AlertService) sendNotification(serverID, metricName string, value float
 	}[metricName]
 
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	var title, message, webhookMessage string
+	var title string
 	var threshold float64
 	if severity == "警告" {
 		threshold = rule.Warning
@@ -279,12 +272,8 @@ func (s *AlertService) sendNotification(serverID, metricName string, value float
 
 	if isRecovery {
 		title = fmt.Sprintf("[恢复] %s - %s", serverName, metricLabel)
-		webhookMessage = fmt.Sprintf("✅ 告警恢复\n\n服务器: %s (%s)\n指标: %s\n当前值: %.2f%%\n恢复时间: %s",
-			serverName, serverIP, metricLabel, value, timestamp)
 	} else {
 		title = fmt.Sprintf("[%s] %s - %s", severity, serverName, metricLabel)
-		webhookMessage = fmt.Sprintf("🚨 发生告警 (%s)\n\n服务器: %s (%s)\n指标: %s\n当前值: %.2f%%\n阈值: %.2f%%\n触发时间: %s",
-			severity, serverName, serverIP, metricLabel, value, threshold, timestamp)
 	}
 
 	color := "#ff4d4f" // 红色
@@ -295,87 +284,44 @@ func (s *AlertService) sendNotification(serverID, metricName string, value float
 		color = "#52c41a" // 绿色
 	}
 
-	statusText := severity
+	status, statusText, summary := "alert", severity, fmt.Sprintf("%s已超过配置的告警阈值。", metricLabel)
 	if isRecovery {
+		status = "recovery"
 		statusText = "恢复正常"
+		summary = fmt.Sprintf("%s已恢复到正常范围。", metricLabel)
 	}
-
-	templateData := map[string]interface{}{
-		"Title":        title,
-		"Timestamp":    timestamp,
-		"ServerName":   serverName,
-		"ServerIP":     serverIP,
-		"MetricLabel":  metricLabel,
-		"StatusText":   statusText,
-		"Color":        color,
-		"CurrentValue": value,
-		"Threshold":    threshold,
+	fields := []notification.AlertTemplateField{
+		{Label: "指标", Value: metricLabel},
+		{Label: "状态", Value: statusText},
+		{Label: "当前值", Value: fmt.Sprintf("%.2f%%", value)},
 	}
-
-	var tmpl *template.Template
-	var templateErr error
-
-	templateContent, err := ResourceFiles.ReadFile("resources/views/emails/alert.tmpl")
-	if err == nil {
-		tmpl, templateErr = template.New("emails/alert.tmpl").Parse(string(templateContent))
-	} else {
-		templateErr = err
+	if !isRecovery {
+		fields = append(fields, notification.AlertTemplateField{Label: "触发阈值", Value: fmt.Sprintf("%.2f%%", threshold)})
 	}
-	if templateErr != nil {
-		facades.Log().Warningf("解析邮件模板失败: %v", templateErr)
-		if isRecovery {
-			message = fmt.Sprintf("告警恢复通知\n\n服务器: %s (%s)\n指标: %s\n当前值: %.2f%%\n恢复时间: %s\n\n此邮件由云哨监控系统自动发送，请勿回复。",
-				serverName, serverIP, metricLabel, value, timestamp)
-		} else {
-			message = fmt.Sprintf("告警通知 (%s)\n\n服务器: %s (%s)\n指标: %s\n当前状态: %s\n当前值: %.2f%%\n触发阈值: %.2f%%\n触发时间: %s\n\n此邮件由云哨监控系统自动发送，请勿回复。",
-				severity, serverName, serverIP, metricLabel, statusText, value, threshold, timestamp)
-		}
-	} else {
-		var buf bytes.Buffer
-		templateName := "emails/alert.tmpl"
-		if execErr := tmpl.ExecuteTemplate(&buf, templateName, templateData); execErr != nil {
-			facades.Log().Errorf("渲染邮件模板失败: %v", execErr)
-			if isRecovery {
-				message = fmt.Sprintf("告警恢复通知\n\n服务器: %s (%s)\n指标: %s\n当前值: %.2f%%\n恢复时间: %s\n\n此邮件由云哨监控系统自动发送，请勿回复。",
-					serverName, serverIP, metricLabel, value, timestamp)
-			} else {
-				message = fmt.Sprintf("告警通知 (%s)\n\n服务器: %s (%s)\n指标: %s\n当前状态: %s\n当前值: %.2f%%\n触发阈值: %.2f%%\n触发时间: %s\n\n此邮件由云哨监控系统自动发送，请勿回复。",
-					severity, serverName, serverIP, metricLabel, statusText, value, threshold, timestamp)
-			}
-		} else {
-			message = buf.String()
-		}
-	}
+	s.dispatchAlert(serverID, notification.AlertTemplateData{
+		Event: metricName, Status: status, Severity: severity, Title: title, Summary: summary,
+		ResourceName: serverName, ResourceType: "server", ResourceAddress: serverIP,
+		OccurredAt: timestamp, Color: color, Fields: fields,
+	})
+}
 
-	// 获取通知配置并发送（优先使用服务器特定配置）
+// dispatchAlert 统一完成模板渲染与渠道任务分发，业务方法只负责构造告警语义。
+func (s *AlertService) dispatchAlert(serverID string, data notification.AlertTemplateData) {
+	rendered := notification.RenderConfiguredAlert(data)
 	emailConfig, webhookConfig, err := s.getNotificationConfigs(serverID)
 	if err != nil {
 		facades.Log().Warningf("获取通知配置失败: %v", err)
 		return
 	}
-
-	// 发送邮件
 	if emailConfig.Enabled {
-		configJson, _ := json.Marshal(emailConfig)
-		if err := facades.Queue().Job(&jobs.SendAlertJob{
-			Channel: "email",
-			Config:  string(configJson),
-			Subject: title,
-			Content: message,
-		}).Dispatch(); err != nil {
+		configJSON, _ := json.Marshal(emailConfig)
+		if err := facades.Queue().Job(&jobs.SendAlertJob{Channel: "email", Config: string(configJSON), Subject: rendered.EmailSubject, Content: rendered.EmailHTML}).Dispatch(); err != nil {
 			facades.Log().Errorf("分发邮件发送任务失败: %v", err)
 		}
 	}
-
-	// 发送Webhook
 	if webhookConfig.Enabled {
-		configJson, _ := json.Marshal(webhookConfig)
-		if err := facades.Queue().Job(&jobs.SendAlertJob{
-			Channel: "webhook",
-			Config:  string(configJson),
-			Subject: title,
-			Content: webhookMessage,
-		}).Dispatch(); err != nil {
+		configJSON, _ := json.Marshal(webhookConfig)
+		if err := facades.Queue().Job(&jobs.SendAlertJob{Channel: "webhook", Config: string(configJSON), Subject: rendered.EmailSubject, Content: rendered.WebhookText}).Dispatch(); err != nil {
 			facades.Log().Errorf("分发Webhook发送任务失败: %v", err)
 		}
 	}
@@ -506,8 +452,6 @@ func (s *AlertService) CheckBandwidth(serverID string, currentMbps float64) erro
 		}
 
 		title := fmt.Sprintf("[告警] %s - 带宽峰值", serverName)
-		webhookMessage := fmt.Sprintf("🚨 带宽峰值告警\n\n服务器: %s (%s)\n当前带宽: %.2f Mbps\n阈值: %.2f Mbps\n触发时间: %s",
-			serverName, serverIP, currentMbps, threshold, time.Now().Format("2006-01-02 15:04:05"))
 
 		// 检查冷却期
 		cacheKey := fmt.Sprintf("alert_cooldown:%s:bandwidth", serverID)
@@ -516,26 +460,12 @@ func (s *AlertService) CheckBandwidth(serverID string, currentMbps float64) erro
 		}
 		facades.Cache().Put(cacheKey, true, 2*time.Minute)
 
-		// 发送通知
-		emailConfig, webhookConfig, _ := s.getNotificationConfigs(serverID)
-		if emailConfig.Enabled {
-			configJson, _ := json.Marshal(emailConfig)
-			_ = facades.Queue().Job(&jobs.SendAlertJob{
-				Channel: "email",
-				Config:  string(configJson),
-				Subject: title,
-				Content: webhookMessage,
-			}).Dispatch()
-		}
-		if webhookConfig.Enabled {
-			configJson, _ := json.Marshal(webhookConfig)
-			_ = facades.Queue().Job(&jobs.SendAlertJob{
-				Channel: "webhook",
-				Config:  string(configJson),
-				Subject: title,
-				Content: webhookMessage,
-			}).Dispatch()
-		}
+		s.dispatchAlert(serverID, notification.AlertTemplateData{
+			Event: "bandwidth", Status: "alert", Severity: "warning", Title: title,
+			Summary: "当前带宽已达到配置的峰值阈值。", ResourceName: serverName, ResourceType: "server", ResourceAddress: serverIP,
+			OccurredAt: time.Now().Format("2006-01-02 15:04:05"), Color: "#faad14",
+			Fields: []notification.AlertTemplateField{{Label: "当前带宽", Value: fmt.Sprintf("%.2f Mbps", currentMbps)}, {Label: "触发阈值", Value: fmt.Sprintf("%.2f Mbps", threshold)}},
+		})
 	}
 
 	return nil
@@ -589,8 +519,6 @@ func (s *AlertService) CheckTraffic(serverID string, usedBytes int64, limitBytes
 		limitGB := float64(limitBytes) / (1024 * 1024 * 1024)
 
 		title := fmt.Sprintf("[告警] %s - 流量耗尽", serverName)
-		webhookMessage := fmt.Sprintf("🚨 流量耗尽告警\n\n服务器: %s (%s)\n已用流量: %.2f GB / %.2f GB (%.2f%%)\n阈值: %.2f%%\n触发时间: %s",
-			serverName, serverIP, usedGB, limitGB, usedPercent, thresholdPercent, time.Now().Format("2006-01-02 15:04:05"))
 
 		// 检查冷却期
 		cacheKey := fmt.Sprintf("alert_cooldown:%s:traffic", serverID)
@@ -599,26 +527,12 @@ func (s *AlertService) CheckTraffic(serverID string, usedBytes int64, limitBytes
 		}
 		facades.Cache().Put(cacheKey, true, 2*time.Minute)
 
-		// 发送通知
-		emailConfig, webhookConfig, _ := s.getNotificationConfigs(serverID)
-		if emailConfig.Enabled {
-			configJson, _ := json.Marshal(emailConfig)
-			_ = facades.Queue().Job(&jobs.SendAlertJob{
-				Channel: "email",
-				Config:  string(configJson),
-				Subject: title,
-				Content: webhookMessage,
-			}).Dispatch()
-		}
-		if webhookConfig.Enabled {
-			configJson, _ := json.Marshal(webhookConfig)
-			_ = facades.Queue().Job(&jobs.SendAlertJob{
-				Channel: "webhook",
-				Config:  string(configJson),
-				Subject: title,
-				Content: webhookMessage,
-			}).Dispatch()
-		}
+		s.dispatchAlert(serverID, notification.AlertTemplateData{
+			Event: "traffic", Status: "alert", Severity: "warning", Title: title,
+			Summary: "流量使用率已达到配置的告警阈值。", ResourceName: serverName, ResourceType: "server", ResourceAddress: serverIP,
+			OccurredAt: time.Now().Format("2006-01-02 15:04:05"), Color: "#faad14",
+			Fields: []notification.AlertTemplateField{{Label: "已用流量", Value: fmt.Sprintf("%.2f GB / %.2f GB (%.2f%%)", usedGB, limitGB, usedPercent)}, {Label: "触发阈值", Value: fmt.Sprintf("%.2f%%", thresholdPercent)}},
+		})
 	}
 
 	return nil
@@ -669,8 +583,6 @@ func (s *AlertService) CheckExpiration(serverID string) error {
 	if daysUntilExpire <= alertDays && daysUntilExpire >= 0 {
 		// 触发告警
 		title := fmt.Sprintf("[告警] %s - 即将到期", server.Name)
-		webhookMessage := fmt.Sprintf("🚨 服务器到期提醒\n\n服务器: %s (%s)\n到期时间: %s\n剩余天数: %.0f 天\n触发时间: %s",
-			server.Name, server.IP, expireTime.Format("2006-01-02 15:04:05"), daysUntilExpire, now.Format("2006-01-02 15:04:05"))
 
 		// 检查冷却期（每天只发送一次）
 		cacheKey := fmt.Sprintf("alert_cooldown:%s:expiration", serverID)
@@ -679,26 +591,12 @@ func (s *AlertService) CheckExpiration(serverID string) error {
 		}
 		facades.Cache().Put(cacheKey, true, 24*time.Hour)
 
-		// 发送通知
-		emailConfig, webhookConfig, _ := s.getNotificationConfigs(serverID)
-		if emailConfig.Enabled {
-			configJson, _ := json.Marshal(emailConfig)
-			_ = facades.Queue().Job(&jobs.SendAlertJob{
-				Channel: "email",
-				Config:  string(configJson),
-				Subject: title,
-				Content: webhookMessage,
-			}).Dispatch()
-		}
-		if webhookConfig.Enabled {
-			configJson, _ := json.Marshal(webhookConfig)
-			_ = facades.Queue().Job(&jobs.SendAlertJob{
-				Channel: "webhook",
-				Config:  string(configJson),
-				Subject: title,
-				Content: webhookMessage,
-			}).Dispatch()
-		}
+		s.dispatchAlert(serverID, notification.AlertTemplateData{
+			Event: "expiration", Status: "alert", Severity: "warning", Title: title,
+			Summary: "服务器即将到期，请及时续期。", ResourceName: server.Name, ResourceType: "server", ResourceAddress: server.IP,
+			OccurredAt: now.Format("2006-01-02 15:04:05"), Color: "#faad14",
+			Fields: []notification.AlertTemplateField{{Label: "到期时间", Value: expireTime.Format("2006-01-02 15:04:05")}, {Label: "剩余天数", Value: fmt.Sprintf("%.0f 天", daysUntilExpire)}},
+		})
 	}
 
 	return nil
@@ -715,11 +613,6 @@ func (s *AlertService) NotifyServerOffline(serverID string) {
 	}
 	_ = facades.Cache().Put(cacheKey, true, 5*time.Minute)
 
-	emailConfig, webhookConfig, err := s.getNotificationConfigs(serverID)
-	if err != nil || (!emailConfig.Enabled && !webhookConfig.Enabled) {
-		return
-	}
-
 	serverRepo := repositories.GetServerRepository()
 	server, _ := serverRepo.GetByID(serverID)
 	serverName, serverIP := serverID, "未知"
@@ -728,27 +621,11 @@ func (s *AlertService) NotifyServerOffline(serverID string) {
 	}
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	title := fmt.Sprintf("[告警] %s - 服务器离线", serverName)
-	content := fmt.Sprintf("🚨 服务器离线告警\n\n服务器: %s (%s)\n离线时间: %s\n\n请检查该服务器或 Agent 状态。",
-		serverName, serverIP, timestamp)
-
-	if emailConfig.Enabled {
-		configJson, _ := json.Marshal(emailConfig)
-		_ = facades.Queue().Job(&jobs.SendAlertJob{
-			Channel: "email",
-			Config:  string(configJson),
-			Subject: title,
-			Content: content,
-		}).Dispatch()
-	}
-	if webhookConfig.Enabled {
-		configJson, _ := json.Marshal(webhookConfig)
-		_ = facades.Queue().Job(&jobs.SendAlertJob{
-			Channel: "webhook",
-			Config:  string(configJson),
-			Subject: title,
-			Content: content,
-		}).Dispatch()
-	}
+	s.dispatchAlert(serverID, notification.AlertTemplateData{
+		Event: "server.offline", Status: "alert", Severity: "critical", Title: title,
+		Summary: "服务器 Agent 已断开连接，请检查服务器或 Agent 状态。", ResourceName: serverName, ResourceType: "server", ResourceAddress: serverIP,
+		OccurredAt: timestamp, Color: "#d03050", Fields: []notification.AlertTemplateField{{Label: "状态", Value: "离线"}},
+	})
 }
 
 // NotifyServerOnline 发送服务器上线告警（由连接管理器在服务器从离线恢复上线时调用）
@@ -762,11 +639,6 @@ func (s *AlertService) NotifyServerOnline(serverID string) {
 	}
 	_ = facades.Cache().Put(cacheKey, true, 2*time.Minute)
 
-	emailConfig, webhookConfig, err := s.getNotificationConfigs(serverID)
-	if err != nil || (!emailConfig.Enabled && !webhookConfig.Enabled) {
-		return
-	}
-
 	serverRepo := repositories.GetServerRepository()
 	server, _ := serverRepo.GetByID(serverID)
 	serverName, serverIP := serverID, "未知"
@@ -775,27 +647,11 @@ func (s *AlertService) NotifyServerOnline(serverID string) {
 	}
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	title := fmt.Sprintf("[恢复] %s - 服务器已上线", serverName)
-	content := fmt.Sprintf("✅ 服务器已上线\n\n服务器: %s (%s)\n上线时间: %s",
-		serverName, serverIP, timestamp)
-
-	if emailConfig.Enabled {
-		configJson, _ := json.Marshal(emailConfig)
-		_ = facades.Queue().Job(&jobs.SendAlertJob{
-			Channel: "email",
-			Config:  string(configJson),
-			Subject: title,
-			Content: content,
-		}).Dispatch()
-	}
-	if webhookConfig.Enabled {
-		configJson, _ := json.Marshal(webhookConfig)
-		_ = facades.Queue().Job(&jobs.SendAlertJob{
-			Channel: "webhook",
-			Config:  string(configJson),
-			Subject: title,
-			Content: content,
-		}).Dispatch()
-	}
+	s.dispatchAlert(serverID, notification.AlertTemplateData{
+		Event: "server.online", Status: "recovery", Severity: "info", Title: title,
+		Summary: "服务器 Agent 已恢复连接。", ResourceName: serverName, ResourceType: "server", ResourceAddress: serverIP,
+		OccurredAt: timestamp, Color: "#18a058", Fields: []notification.AlertTemplateField{{Label: "状态", Value: "在线"}},
+	})
 }
 
 // NotifyServiceMonitorProblem sends a notification when a service monitor enters a non-up state.
@@ -811,11 +667,6 @@ func (s *AlertService) NotifyServiceMonitorProblem(monitorID uint, status string
 		return
 	}
 
-	emailConfig, webhookConfig, err := s.getNotificationConfigs("")
-	if err != nil || (!emailConfig.Enabled && !webhookConfig.Enabled) {
-		return
-	}
-
 	statusText := map[string]string{
 		"down": "故障",
 		"slow": "响应慢",
@@ -824,33 +675,18 @@ func (s *AlertService) NotifyServiceMonitorProblem(monitorID uint, status string
 		statusText = status
 	}
 
-	reason := ""
+	reason := "未知"
 	if cause != nil {
-		reason = fmt.Sprintf("\n原因: %v", cause)
+		reason = cause.Error()
 	}
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	title := fmt.Sprintf("[告警] %s - 服务%s", monitor.Name, statusText)
-	content := fmt.Sprintf("服务监测告警\n\n服务: %s\n类型: %s\n目标: %s\n状态: %s\n响应时间: %dms\n触发时间: %s%s",
-		monitor.Name, monitor.Type, monitor.Target, statusText, responseTime, timestamp, reason)
-
-	if emailConfig.Enabled {
-		configJson, _ := json.Marshal(emailConfig)
-		_ = facades.Queue().Job(&jobs.SendAlertJob{
-			Channel: "email",
-			Config:  string(configJson),
-			Subject: title,
-			Content: content,
-		}).Dispatch()
-	}
-	if webhookConfig.Enabled {
-		configJson, _ := json.Marshal(webhookConfig)
-		_ = facades.Queue().Job(&jobs.SendAlertJob{
-			Channel: "webhook",
-			Config:  string(configJson),
-			Subject: title,
-			Content: content,
-		}).Dispatch()
-	}
+	s.dispatchAlert("", notification.AlertTemplateData{
+		Event: "service_monitor.problem", Status: "alert", Severity: status, Title: title,
+		Summary: "服务监测发现异常。", ResourceName: monitor.Name, ResourceType: "service_monitor", ResourceAddress: monitor.Target,
+		OccurredAt: timestamp, Color: "#d03050",
+		Fields: []notification.AlertTemplateField{{Label: "类型", Value: monitor.Type}, {Label: "状态", Value: statusText}, {Label: "响应时间", Value: fmt.Sprintf("%dms", responseTime)}, {Label: "原因", Value: reason}},
+	})
 }
 
 // NotifyServiceMonitorRecovery sends a notification when a service monitor returns to up.
@@ -866,32 +702,12 @@ func (s *AlertService) NotifyServiceMonitorRecovery(monitorID uint, previousStat
 		return
 	}
 
-	emailConfig, webhookConfig, err := s.getNotificationConfigs("")
-	if err != nil || (!emailConfig.Enabled && !webhookConfig.Enabled) {
-		return
-	}
-
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	title := fmt.Sprintf("[恢复] %s - 服务已恢复", monitor.Name)
-	content := fmt.Sprintf("服务监测恢复\n\n服务: %s\n类型: %s\n目标: %s\n上一状态: %s\n当前状态: 正常\n响应时间: %dms\n恢复时间: %s",
-		monitor.Name, monitor.Type, monitor.Target, previousStatus, responseTime, timestamp)
-
-	if emailConfig.Enabled {
-		configJson, _ := json.Marshal(emailConfig)
-		_ = facades.Queue().Job(&jobs.SendAlertJob{
-			Channel: "email",
-			Config:  string(configJson),
-			Subject: title,
-			Content: content,
-		}).Dispatch()
-	}
-	if webhookConfig.Enabled {
-		configJson, _ := json.Marshal(webhookConfig)
-		_ = facades.Queue().Job(&jobs.SendAlertJob{
-			Channel: "webhook",
-			Config:  string(configJson),
-			Subject: title,
-			Content: content,
-		}).Dispatch()
-	}
+	s.dispatchAlert("", notification.AlertTemplateData{
+		Event: "service_monitor.recovery", Status: "recovery", Severity: "info", Title: title,
+		Summary: "服务监测已恢复正常。", ResourceName: monitor.Name, ResourceType: "service_monitor", ResourceAddress: monitor.Target,
+		OccurredAt: timestamp, Color: "#18a058",
+		Fields: []notification.AlertTemplateField{{Label: "类型", Value: monitor.Type}, {Label: "上一状态", Value: previousStatus}, {Label: "当前状态", Value: "正常"}, {Label: "响应时间", Value: fmt.Sprintf("%dms", responseTime)}},
+	})
 }

@@ -11,7 +11,6 @@ import (
 	"goravel/app/utils/security"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/goravel/framework/contracts/http"
 	"goravel/app/facades"
@@ -231,6 +230,8 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 				"email":   emailData,
 				"webhook": webhookData,
 			},
+			"templates":                 notification.LoadAlertTemplates(),
+			"defaultTemplates":          notification.DefaultAlertTemplates(),
 			"hasNotificationChannel":    hasNotificationChannel,
 			"alertServerOfflineEnabled": alertServerOfflineEnabled,
 			"alertServerOnlineEnabled":  alertServerOnlineEnabled,
@@ -476,13 +477,19 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 			Email   alertsEmailReq   `json:"email"`
 			Webhook alertsWebhookReq `json:"webhook"`
 		} `json:"notifications"`
-		AlertServerOfflineEnabled bool `json:"alertServerOfflineEnabled"`
-		AlertServerOnlineEnabled  bool `json:"alertServerOnlineEnabled"`
+		Templates                 *notification.AlertTemplates `json:"templates"`
+		AlertServerOfflineEnabled bool                         `json:"alertServerOfflineEnabled"`
+		AlertServerOnlineEnabled  bool                         `json:"alertServerOnlineEnabled"`
 	}
 
 	var req UpdateAlertsRequest
 	if err := ctx.Request().Bind(&req); err != nil {
 		return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
+	}
+	if req.Templates != nil {
+		if err := notification.ValidateAlertTemplates(*req.Templates); err != nil {
+			return utils.ErrorResponse(ctx, 422, err.Error())
+		}
 	}
 
 	emailEnabled := req.Notifications.Email.Enabled
@@ -576,8 +583,34 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 	if err := settingRepo.SetValue("alert_server_online_enabled", map[bool]string{true: "true", false: "false"}[alertServerOnlineEnabled]); err != nil {
 		return utils.ErrorResponseWithError(ctx, 500, "更新服务器上线告警设置失败", err)
 	}
+	if req.Templates != nil {
+		if err := notification.SaveAlertTemplates(*req.Templates); err != nil {
+			return utils.ErrorResponseWithError(ctx, 500, "保存告警模板失败", err)
+		}
+	}
 
 	return utils.SuccessResponse(ctx, "success")
+}
+
+// PreviewAlertTemplates 使用固定的无敏感示例数据预览未保存的模板。
+func (r *SettingsController) PreviewAlertTemplates(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+	var req struct {
+		Templates notification.AlertTemplates `json:"templates"`
+	}
+	if err := ctx.Request().Bind(&req); err != nil {
+		return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
+	}
+	if err := notification.ValidateAlertTemplates(req.Templates); err != nil {
+		return utils.ErrorResponse(ctx, 422, err.Error())
+	}
+	rendered, err := notification.RenderAlertTemplates(req.Templates, notification.SampleAlertTemplateData())
+	if err != nil {
+		return utils.ErrorResponse(ctx, 422, err.Error())
+	}
+	return utils.SuccessResponse(ctx, "success", rendered)
 }
 
 // GetPublicDisplaySettings 管理员读取公开展示配置（V1）
@@ -681,6 +714,20 @@ func (r *SettingsController) TestAlertSettings(ctx http.Context) http.Response {
 	if !ok {
 		return utils.ErrorResponse(ctx, 422, "无效的配置数据")
 	}
+	templates := notification.LoadAlertTemplates()
+	if rawTemplates, ok := configJson["templates"]; ok && rawTemplates != nil {
+		templateBytes, err := json.Marshal(rawTemplates)
+		if err != nil || json.Unmarshal(templateBytes, &templates) != nil {
+			return utils.ErrorResponse(ctx, 422, "无效的告警模板")
+		}
+		if err := notification.ValidateAlertTemplates(templates); err != nil {
+			return utils.ErrorResponse(ctx, 422, err.Error())
+		}
+	}
+	rendered, err := notification.RenderAlertTemplates(templates, notification.SampleAlertTemplateData())
+	if err != nil {
+		return utils.ErrorResponse(ctx, 422, err.Error())
+	}
 
 	// 序列化配置以便绑定到结构体
 	configBytes, err := json.Marshal(configData)
@@ -710,11 +757,7 @@ func (r *SettingsController) TestAlertSettings(ctx http.Context) http.Response {
 			}
 		}
 
-		// 发送测试邮件
-		subject := "CloudSentinel 告警通知测试"
-		content := fmt.Sprintf("这是一条测试邮件，用于验证您的邮件通知配置是否正确。\n发送时间：%s", time.Now().Format("2006-01-02 15:04:05"))
-
-		if err := notification.SendEmail(emailCfg, subject, content); err != nil {
+		if err := notification.SendEmailHTML(emailCfg, rendered.EmailSubject, rendered.EmailHTML); err != nil {
 			return utils.ErrorResponseWithError(ctx, 500, "发送测试邮件失败", err)
 		}
 
@@ -738,10 +781,7 @@ func (r *SettingsController) TestAlertSettings(ctx http.Context) http.Response {
 			facades.Log().Infof("alert test webhook target: user_id=%s host=%s", userID, u.Hostname())
 		}
 
-		// 发送测试消息
-		content := fmt.Sprintf("CloudSentinel 告警通知测试\n这是一条测试消息，用于验证您的Webhook通知配置是否正确。\n发送时间：%s", time.Now().Format("2006-01-02 15:04:05"))
-
-		if err := notification.SendWebhook(webhookCfg, content); err != nil {
+		if err := notification.SendWebhook(webhookCfg, rendered.WebhookText); err != nil {
 			return utils.ErrorResponseWithError(ctx, 500, "发送测试消息失败", err)
 		}
 

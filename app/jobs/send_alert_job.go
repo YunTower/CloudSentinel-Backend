@@ -37,7 +37,7 @@ func (receiver *SendAlertJob) Handle(args ...any) error {
 				config.Password = dec
 			}
 		}
-		return notification.SendEmail(config, receiver.Subject, receiver.Content)
+		return notification.SendEmailHTML(config, receiver.Subject, receiver.Content)
 	case "webhook":
 		var config notification.WebhookConfig
 		if err := json.Unmarshal([]byte(receiver.Config), &config); err != nil {
