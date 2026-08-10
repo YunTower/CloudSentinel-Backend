@@ -49,6 +49,13 @@ func (s *IncidentService) OpenOrUpdateServiceMonitorIncident(monitorID uint, sta
 			facades.Log().Warningf("创建服务监测事件失败: monitor_id=%d, error=%v", monitorID, err)
 			return
 		}
+		// 当前 ORM 的 Create 不保证回填主键。重新读取后再写事件，避免
+		// incident_id=0 导致外键失败而只留下不可见的事件记录。
+		incident, err = s.repo.GetOpenBySource("service_monitor", sourceID)
+		if err != nil || incident == nil {
+			facades.Log().Warningf("读取新建服务监测事件失败: monitor_id=%d, error=%v", monitorID, err)
+			return
+		}
 		s.addServiceMonitorEvent(incident.ID, "opened", status, monitor, responseTime, cause, now)
 		return
 	}
@@ -106,6 +113,11 @@ func (s *IncidentService) OpenServerOfflineIncident(serverID string) {
 		}
 		if err := s.repo.Create(incident); err != nil {
 			facades.Log().Warningf("创建服务器离线事件失败: server_id=%s, error=%v", serverID, err)
+			return
+		}
+		incident, err = s.repo.GetOpenBySource("server", serverID)
+		if err != nil || incident == nil {
+			facades.Log().Warningf("读取新建服务器离线事件失败: server_id=%s, error=%v", serverID, err)
 			return
 		}
 		s.addServerEvent(incident.ID, "opened", "offline", server, now)
