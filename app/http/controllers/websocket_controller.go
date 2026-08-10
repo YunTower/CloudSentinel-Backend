@@ -442,7 +442,7 @@ func (c *WebSocketController) authenticateFrontendConnection(ctx http.Context, f
 		return "", "", fmt.Errorf("缺少认证token")
 	}
 
-	payload, err := facades.Auth(ctx).Parse(token)
+	payload, err := facades.Auth(ctx).Guard(middleware.AdminGuardName).Parse(token)
 	if err != nil {
 		return "", "", fmt.Errorf("Token无效或已过期")
 	}
