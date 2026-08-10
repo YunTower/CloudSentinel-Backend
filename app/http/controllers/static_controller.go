@@ -1,9 +1,10 @@
 package controllers
 
 import (
-	"embed"
+	"errors"
+	"io/fs"
 	"net/http"
-	"path/filepath"
+	"path"
 	"strings"
 
 	"goravel/app/utils"
@@ -12,77 +13,97 @@ import (
 )
 
 var (
-	PublicFiles embed.FS
+	AdminFiles  fs.FS
+	PublicFiles fs.FS
+)
+
+const (
+	AdminAssetsRoot  = "public/admin"
+	PublicAssetsRoot = "public/public"
+)
+
+var (
+	errStaticFilesUnavailable = errors.New("static files unavailable")
+	errStaticFileNotFound     = errors.New("static file not found")
 )
 
 type StaticController struct {
+	files fs.FS
+	root  string
 }
 
-func NewStaticController() *StaticController {
-	return &StaticController{}
+func NewStaticController(files fs.FS, root string) *StaticController {
+	return &StaticController{files: files, root: strings.Trim(root, "/")}
+}
+
+func (r *StaticController) Available() bool {
+	if r.files == nil || r.root == "" {
+		return false
+	}
+	entries, err := fs.ReadDir(r.files, r.root)
+	return err == nil && len(entries) > 0
 }
 
 // ServeStatic 提供静态文件服务
 func (r *StaticController) ServeStatic(ctx goravelhttp.Context) goravelhttp.Response {
 	path := ctx.Request().Path()
 
-	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/ws/") {
+	if isBackendPath(path) {
 		return utils.ErrorResponse(ctx, http.StatusNotFound, "Not found")
 	}
 
-	// 移除前导斜杠
-	path = strings.TrimPrefix(path, "/")
-
-	// 如果路径为空，默认为 index.html
-	if path == "" {
-		path = "index.html"
+	data, contentType, err := r.resolve(path)
+	if errors.Is(err, errStaticFileNotFound) {
+		return utils.ErrorResponse(ctx, http.StatusNotFound, "File not found")
 	}
-
-	// 检查 PublicFiles 是否已初始化并包含文件
-	entries, listErr := PublicFiles.ReadDir("public")
-	if listErr != nil {
-		return utils.ErrorResponse(ctx, http.StatusInternalServerError, "Static files not embedded. PublicFiles not initialized. Please rebuild the application.")
-	}
-	if len(entries) == 0 {
-		return utils.ErrorResponse(ctx, http.StatusInternalServerError, "Static files not embedded. Public directory was empty during compilation. Please build frontend first (pnpm run build) and rebuild the backend.")
-	}
-
-	fsPath := "public/" + strings.ReplaceAll(path, "\\", "/")
-
-	// 尝试读取文件
-	data, err := PublicFiles.ReadFile(fsPath)
 	if err != nil {
-		// 如果文件不存在，检查路径是否有文件扩展名
-		ext := strings.ToLower(filepath.Ext(path))
-
-		if ext != "" && ext != ".html" {
-			return utils.ErrorResponse(ctx, http.StatusNotFound, "File not found")
-		}
-
-		indexData, indexErr := PublicFiles.ReadFile("public/index.html")
-		if indexErr != nil {
-			entries, listErr := PublicFiles.ReadDir("public")
-			if listErr != nil {
-				return utils.ErrorResponse(ctx, http.StatusInternalServerError, "Embedded files not available. Please ensure frontend is built and rebuild the backend.")
-			}
-			if len(entries) == 0 {
-				return utils.ErrorResponse(ctx, http.StatusInternalServerError, "Public directory is empty. Please build frontend first.")
-			}
-			return utils.ErrorResponse(ctx, http.StatusNotFound, "index.html not found in embedded files")
-		}
-
-		return ctx.Response().Header("Content-Type", "text/html; charset=utf-8").String(http.StatusOK, string(indexData))
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, "Static files not embedded. Please build both frontends and rebuild the backend.")
 	}
 
-	// 根据文件扩展名设置 Content-Type
-	contentType := getContentType(path)
+	return ctx.Response().Data(http.StatusOK, contentType, data)
+}
 
-	return ctx.Response().Header("Content-Type", contentType).String(http.StatusOK, string(data))
+func (r *StaticController) resolve(requestPath string) ([]byte, string, error) {
+	if !r.Available() {
+		return nil, "", errStaticFilesUnavailable
+	}
+
+	assetPath := cleanAssetPath(requestPath)
+	data, err := fs.ReadFile(r.files, path.Join(r.root, assetPath))
+	if err == nil {
+		return data, getContentType(assetPath), nil
+	}
+
+	ext := strings.ToLower(path.Ext(assetPath))
+	if ext != "" && ext != ".html" {
+		return nil, "", errStaticFileNotFound
+	}
+
+	data, err = fs.ReadFile(r.files, path.Join(r.root, "index.html"))
+	if err != nil {
+		return nil, "", errStaticFilesUnavailable
+	}
+	return data, "text/html; charset=utf-8", nil
+}
+
+func cleanAssetPath(requestPath string) string {
+	cleaned := path.Clean("/" + strings.ReplaceAll(requestPath, "\\", "/"))
+	cleaned = strings.TrimPrefix(cleaned, "/")
+	if cleaned == "" || cleaned == "." {
+		return "index.html"
+	}
+	return cleaned
+}
+
+func isBackendPath(requestPath string) bool {
+	cleaned := "/" + strings.Trim(strings.ReplaceAll(requestPath, "\\", "/"), "/")
+	return cleaned == "/api" || strings.HasPrefix(cleaned, "/api/") ||
+		cleaned == "/ws" || strings.HasPrefix(cleaned, "/ws/")
 }
 
 // getContentType 根据文件扩展名返回 Content-Type
-func getContentType(path string) string {
-	ext := strings.ToLower(filepath.Ext(path))
+func getContentType(assetPath string) string {
+	ext := strings.ToLower(path.Ext(strings.ReplaceAll(assetPath, "\\", "/")))
 
 	switch ext {
 	case ".html":

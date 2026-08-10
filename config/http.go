@@ -27,6 +27,13 @@ func init() {
 					return gin.DefaultTemplate()
 				},
 			},
+			"public": map[string]any{
+				"body_limit":   4096,
+				"header_limit": 4096,
+				"template": func() (render.HTMLRender, error) {
+					return gin.DefaultTemplate()
+				},
+			},
 		},
 		// HTTP URL
 		"url": config.Env("APP_URL", "http://localhost"),
@@ -34,6 +41,16 @@ func init() {
 		"host": config.Env("APP_HOST", "127.0.0.1"),
 		// HTTP Port
 		"port": config.Env("APP_PORT", "3000"),
+		// Public HTTP Listener
+		"public": map[string]any{
+			"enabled": config.Env("PUBLIC_HTTP_ENABLED", false),
+			"host":    config.Env("PUBLIC_HOST", "0.0.0.0"),
+			"port":    config.Env("PUBLIC_PORT", "3001"),
+			"tls": map[string]any{
+				"cert": config.Env("PUBLIC_TLS_CERT_FILE", ""),
+				"key":  config.Env("PUBLIC_TLS_KEY_FILE", ""),
+			},
+		},
 		// HTTP Timeout, default is 3 seconds
 		"request_timeout": 3,
 		// HTTPS Configuration
