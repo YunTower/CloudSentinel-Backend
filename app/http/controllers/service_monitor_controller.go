@@ -44,6 +44,7 @@ func (c *ServiceMonitorController) GetAll(ctx http.Context) http.Response {
 		uptime7d, _ := resultRepo.BatchUptimeStats(ids, time.Now().Add(-7*24*time.Hour))
 		uptime30d, _ := resultRepo.BatchUptimeStats(ids, time.Now().Add(-30*24*time.Hour))
 		for _, m := range monitors {
+			m.HasAIAPIKey = m.AIAPIKeyEncrypted != ""
 			if entries, ok := histMap[m.ID]; ok {
 				m.History = entries
 			} else {
@@ -96,18 +97,22 @@ func (c *ServiceMonitorController) GetResults(ctx http.Context) http.Response {
 }
 
 type publicServiceMonitor struct {
-	ID              uint                            `json:"id"`
-	Name            string                          `json:"name"`
-	GroupName       string                          `json:"group_name"`
-	Type            string                          `json:"type"`
-	Status          string                          `json:"status"`
-	ResponseTime    int                             `json:"response_time"`
-	LastCheckAt     *time.Time                      `json:"last_check_at"`
-	CheckCertExpiry bool                            `json:"check_cert_expiry"`
-	CertExpiresAt   *time.Time                      `json:"cert_expires_at"`
-	CertDaysLeft    *int                            `json:"cert_days_left"`
-	History         []*models.ServiceMonitorHistory `json:"history"`
-	Uptime          map[string]models.UptimeStat    `json:"uptime,omitempty"`
+	ID                uint                            `json:"id"`
+	Name              string                          `json:"name"`
+	GroupName         string                          `json:"group_name"`
+	Type              string                          `json:"type"`
+	Status            string                          `json:"status"`
+	ResponseTime      int                             `json:"response_time"`
+	LastCheckAt       *time.Time                      `json:"last_check_at"`
+	CheckCertExpiry   bool                            `json:"check_cert_expiry"`
+	CertExpiresAt     *time.Time                      `json:"cert_expires_at"`
+	CertDaysLeft      *int                            `json:"cert_days_left"`
+	History           []*models.ServiceMonitorHistory `json:"history"`
+	Uptime            map[string]models.UptimeStat    `json:"uptime,omitempty"`
+	AIAPIFormat       string                          `json:"ai_api_format,omitempty"`
+	AIModel           string                          `json:"ai_model,omitempty"`
+	LastMetadata      map[string]any                  `json:"last_metadata,omitempty"`
+	MetadataCheckedAt *time.Time                      `json:"metadata_checked_at,omitempty"`
 }
 
 func (c *ServiceMonitorController) GetPublic(ctx http.Context) http.Response {
@@ -162,17 +167,21 @@ func (c *ServiceMonitorController) GetPublic(ctx http.Context) http.Response {
 				}
 			}
 			data = append(data, publicServiceMonitor{
-				ID:              monitor.ID,
-				Name:            monitor.Name,
-				GroupName:       monitor.GroupName,
-				Type:            monitor.Type,
-				Status:          monitor.Status,
-				ResponseTime:    monitor.ResponseTime,
-				LastCheckAt:     monitor.LastCheckAt,
-				CheckCertExpiry: monitor.CheckCertExpiry,
-				CertExpiresAt:   monitor.CertExpiresAt,
-				CertDaysLeft:    monitor.CertDaysLeft,
-				History:         history,
+				ID:                monitor.ID,
+				Name:              monitor.Name,
+				GroupName:         monitor.GroupName,
+				Type:              monitor.Type,
+				Status:            monitor.Status,
+				ResponseTime:      monitor.ResponseTime,
+				LastCheckAt:       monitor.LastCheckAt,
+				CheckCertExpiry:   monitor.CheckCertExpiry,
+				CertExpiresAt:     monitor.CertExpiresAt,
+				CertDaysLeft:      monitor.CertDaysLeft,
+				AIAPIFormat:       monitor.AIAPIFormat,
+				AIModel:           monitor.AIModel,
+				LastMetadata:      monitor.LastMetadata,
+				MetadataCheckedAt: monitor.MetadataCheckedAt,
+				History:           history,
 				Uptime: map[string]models.UptimeStat{
 					"24h": uptime24h[monitor.ID],
 					"7d":  uptime7d[monitor.ID],
@@ -222,6 +231,9 @@ func (c *ServiceMonitorController) Create(ctx http.Context) http.Response {
 		FailureThreshold  int      `json:"failure_threshold"`
 		RecoveryThreshold int      `json:"recovery_threshold"`
 		CheckCertExpiry   bool     `json:"check_cert_expiry"`
+		AIAPIFormat       string   `json:"ai_api_format"`
+		AIModel           string   `json:"ai_model"`
+		AIAPIKey          string   `json:"ai_api_key"`
 	}
 	if err := ctx.Request().Bind(&req); err != nil {
 		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
@@ -265,6 +277,13 @@ func (c *ServiceMonitorController) Create(ctx http.Context) http.Response {
 		FailureThreshold:  req.FailureThreshold,
 		RecoveryThreshold: req.RecoveryThreshold,
 		CheckCertExpiry:   req.Type == "https" && req.CheckCertExpiry,
+		AIAPIFormat:       strings.TrimSpace(req.AIAPIFormat),
+		AIModel:           strings.TrimSpace(req.AIModel),
+	}
+	if err := prepareProtocolMonitor(m, req.AIAPIKey); err != nil {
+		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
+			"status": false, "message": err.Error(),
+		})
 	}
 
 	repo := repositories.GetServiceMonitorRepository()
@@ -277,6 +296,7 @@ func (c *ServiceMonitorController) Create(ctx http.Context) http.Response {
 	if m.Enabled {
 		services.GetServiceMonitorService().Start(m)
 	}
+	m.HasAIAPIKey = m.AIAPIKeyEncrypted != ""
 
 	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
 		"status": true, "data": m,
@@ -314,6 +334,10 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 		FailureThreshold  *int     `json:"failure_threshold"`
 		RecoveryThreshold *int     `json:"recovery_threshold"`
 		CheckCertExpiry   *bool    `json:"check_cert_expiry"`
+		AIAPIFormat       *string  `json:"ai_api_format"`
+		AIModel           *string  `json:"ai_model"`
+		AIAPIKey          *string  `json:"ai_api_key"`
+		ClearAIAPIKey     *bool    `json:"clear_ai_api_key"`
 	}
 	if err := ctx.Request().Bind(&req); err != nil {
 		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
@@ -322,6 +346,16 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 	}
 
 	repo := repositories.GetServiceMonitorRepository()
+	existing, existingErr := repo.GetByID(uint(id))
+	if existingErr != nil || existing == nil {
+		return ctx.Response().Json(http.StatusNotFound, map[string]interface{}{
+			"status": false, "message": "监测任务不存在",
+		})
+	}
+	monitorType := req.Type
+	if monitorType == "" {
+		monitorType = existing.Type
+	}
 	data := map[string]interface{}{
 		"updated_at": time.Now(),
 	}
@@ -330,9 +364,20 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 	}
 	if req.Type != "" {
 		data["type"] = req.Type
+		data["last_metadata"] = nil
+		data["metadata_checked_at"] = nil
+		if req.Type != "ai_model" {
+			data["ai_api_format"] = ""
+			data["ai_model"] = ""
+			data["ai_api_key_encrypted"] = ""
+		}
 	}
 	if req.Target != "" {
-		data["target"] = req.Target
+		target := req.Target
+		if isPanelOnlyMonitorType(monitorType) {
+			target = strings.TrimSpace(target)
+		}
+		data["target"] = target
 	}
 	if req.GroupName != nil {
 		data["group_name"] = strings.TrimSpace(*req.GroupName)
@@ -350,7 +395,15 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 		data["enabled"] = *req.Enabled
 	}
 	if req.ServerIDs != nil {
+		if isPanelOnlyMonitorType(monitorType) && len(req.ServerIDs) > 0 {
+			return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
+				"status": false, "message": "Minecraft 与 AI 模型监测当前仅支持面板直接检测",
+			})
+		}
 		data["server_ids"] = req.ServerIDs
+	}
+	if isPanelOnlyMonitorType(monitorType) {
+		data["server_ids"] = []string{}
 	}
 	if req.ExpectStatus != nil {
 		data["expect_status"] = *req.ExpectStatus
@@ -373,11 +426,31 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 	if req.RecoveryThreshold != nil && *req.RecoveryThreshold > 0 {
 		data["recovery_threshold"] = *req.RecoveryThreshold
 	}
-	monitorType := req.Type
-	if monitorType == "" {
-		if existing, getErr := repo.GetByID(uint(id)); getErr == nil && existing != nil {
-			monitorType = existing.Type
+	if err := validateProtocolMonitorUpdate(existing, req.Type, req.Target, req.AIAPIFormat, req.AIModel, req.AIAPIKey, req.ClearAIAPIKey); err != nil {
+		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": err.Error()})
+	}
+	if req.AIAPIFormat != nil {
+		format := strings.TrimSpace(*req.AIAPIFormat)
+		if monitorType == "ai_model" && !isSupportedAIAPIFormat(format) {
+			return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "不支持的 AI 接口格式"})
 		}
+		data["ai_api_format"] = format
+	}
+	if req.AIModel != nil {
+		model := strings.TrimSpace(*req.AIModel)
+		if monitorType == "ai_model" && model == "" {
+			return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "AI 模型不能为空"})
+		}
+		data["ai_model"] = model
+	}
+	if req.ClearAIAPIKey != nil && *req.ClearAIAPIKey {
+		data["ai_api_key_encrypted"] = ""
+	} else if req.AIAPIKey != nil && strings.TrimSpace(*req.AIAPIKey) != "" {
+		encrypted, encryptErr := encryptAIAPIKey(*req.AIAPIKey)
+		if encryptErr != nil {
+			return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": encryptErr.Error()})
+		}
+		data["ai_api_key_encrypted"] = encrypted
 	}
 	if req.CheckCertExpiry != nil {
 		data["check_cert_expiry"] = monitorType == "https" && *req.CheckCertExpiry
@@ -401,6 +474,9 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 	svc := services.GetServiceMonitorService()
 	svc.Stop(uint(id))
 	m, err := repo.GetByID(uint(id))
+	if m != nil {
+		m.HasAIAPIKey = m.AIAPIKeyEncrypted != ""
+	}
 	if err == nil && m.Enabled {
 		svc.Start(m)
 	}

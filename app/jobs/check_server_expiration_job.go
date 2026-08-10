@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"goravel/app/repositories"
+	"goravel/app/utils/notification"
 	"time"
 
 	"goravel/app/facades"
@@ -82,8 +83,12 @@ func (receiver *CheckServerExpirationJob) Handle(args ...any) error {
 
 			// 触发告警
 			title := fmt.Sprintf("[告警] %s - 即将到期", server.Name)
-			webhookMessage := fmt.Sprintf("🚨 服务器到期提醒\n\n服务器: %s (%s)\n到期时间: %s\n剩余天数: %.0f 天\n触发时间: %s",
-				server.Name, server.IP, expireTime.Format("2006-01-02 15:04:05"), daysUntilExpire, now.Format("2006-01-02 15:04:05"))
+			rendered := notification.RenderConfiguredAlert(notification.AlertTemplateData{
+				Event: "expiration", Status: "alert", Severity: "warning", Title: title,
+				Summary: "服务器即将到期，请及时续期。", ResourceName: server.Name, ResourceType: "server", ResourceAddress: server.IP,
+				OccurredAt: now.Format("2006-01-02 15:04:05"), Color: "#faad14",
+				Fields: []notification.AlertTemplateField{{Label: "到期时间", Value: expireTime.Format("2006-01-02 15:04:05")}, {Label: "剩余天数", Value: fmt.Sprintf("%.0f 天", daysUntilExpire)}},
+			})
 
 			// 发送通知
 			if enabled, ok := emailConfig["enabled"].(bool); ok && enabled {
@@ -91,8 +96,8 @@ func (receiver *CheckServerExpirationJob) Handle(args ...any) error {
 				_ = facades.Queue().Job(&SendAlertJob{
 					Channel: "email",
 					Config:  string(configJson),
-					Subject: title,
-					Content: webhookMessage,
+					Subject: rendered.EmailSubject,
+					Content: rendered.EmailHTML,
 				}).Dispatch()
 			}
 			if enabled, ok := webhookConfig["enabled"].(bool); ok && enabled {
@@ -100,8 +105,8 @@ func (receiver *CheckServerExpirationJob) Handle(args ...any) error {
 				_ = facades.Queue().Job(&SendAlertJob{
 					Channel: "webhook",
 					Config:  string(configJson),
-					Subject: title,
-					Content: webhookMessage,
+					Subject: rendered.EmailSubject,
+					Content: rendered.WebhookText,
 				}).Dispatch()
 			}
 		}

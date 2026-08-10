@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"goravel/app/models"
+	"goravel/app/monitorprobe"
 	"goravel/app/repositories"
+	"goravel/app/utils/secret"
 	"io"
 	"net"
 	"net/http"
@@ -121,6 +123,10 @@ func (s *ServiceMonitorService) StopAll() {
 }
 
 func (s *ServiceMonitorService) runCheck(m *models.ServiceMonitor) {
+	if isProtocolMonitorType(m.Type) {
+		s.doProtocolCheck(m)
+		return
+	}
 	// 如果配置了 server_ids，则分发到 Agent；所有目标 Agent 都不可用时立即记录失败。
 	if len(m.ServerIDs) > 0 {
 		wsService := GetWebSocketService()
@@ -176,6 +182,34 @@ func (s *ServiceMonitorService) runCheck(m *models.ServiceMonitor) {
 	s.doCheck(m.ID, m.Type, m.Target, m.Port, m.Timeout, m.ExpectStatus, m.ExpectBody, m.HTTPMethod, m.HTTPHeaders, m.HTTPBody, m.CheckCertExpiry)
 }
 
+func isProtocolMonitorType(monitorType string) bool {
+	switch monitorType {
+	case monitorprobe.TypeAIModel, monitorprobe.TypeMinecraftJava, monitorprobe.TypeMinecraftBedrock:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *ServiceMonitorService) doProtocolCheck(m *models.ServiceMonitor) {
+	apiKey := ""
+	if m.Type == monitorprobe.TypeAIModel {
+		var err error
+		apiKey, err = secret.DecryptStringWithAppKey(m.AIAPIKeyEncrypted)
+		if err != nil {
+			s.recordResult(m.ID, "panel", "", monitorprobe.StatusUnknown, 0,
+				fmt.Errorf("AI API Key 解密失败: %w", err), nil, "credential_unavailable", nil)
+			return
+		}
+	}
+	result := monitorprobe.Check(context.Background(), monitorprobe.Request{
+		Type: m.Type, Target: m.Target, Port: m.Port,
+		Timeout:  time.Duration(m.Timeout) * time.Second,
+		AIFormat: m.AIAPIFormat, AIModel: m.AIModel, AIAPIKey: apiKey,
+	})
+	s.recordResult(m.ID, "panel", "", result.Status, result.ResponseTime, result.Error, nil, result.ErrorCode, result.Metadata)
+}
+
 // 执行检查
 func (s *ServiceMonitorService) doCheck(id uint, typ, target string, port, timeout, expectStatus int, expectBody, httpMethod, httpHeaders, httpBody string, checkCertExpiry bool) {
 	start := time.Now()
@@ -218,16 +252,16 @@ func (s *ServiceMonitorService) doCheck(id uint, typ, target string, port, timeo
 		}
 	}
 
-	s.recordResult(id, "panel", "", status, elapsed, checkErr, certInfo)
+	s.recordResult(id, "panel", "", status, elapsed, checkErr, certInfo, "", nil)
 }
 
-func (s *ServiceMonitorService) recordResult(id uint, probeType, probeID, status string, elapsed int, checkErr error, certInfo *certCheckInfo) {
+func (s *ServiceMonitorService) recordResult(id uint, probeType, probeID, status string, elapsed int, checkErr error, certInfo *certCheckInfo, errorCode string, metadata map[string]any) {
 	now := time.Now()
-	s.saveProbeResult(id, probeType, probeID, status, elapsed, checkErr, now)
-	s.commitMonitorStatus(id, status, elapsed, checkErr, now, certInfo)
+	s.saveProbeResult(id, probeType, probeID, status, elapsed, checkErr, now, errorCode, metadata)
+	s.commitMonitorStatus(id, status, elapsed, checkErr, now, certInfo, metadata)
 }
 
-func (s *ServiceMonitorService) saveProbeResult(id uint, probeType, probeID, status string, elapsed int, checkErr error, checkedAt time.Time) {
+func (s *ServiceMonitorService) saveProbeResult(id uint, probeType, probeID, status string, elapsed int, checkErr error, checkedAt time.Time, errorCode string, metadata map[string]any) {
 	errorText := ""
 	if checkErr != nil {
 		errorText = checkErr.Error()
@@ -243,6 +277,8 @@ func (s *ServiceMonitorService) saveProbeResult(id uint, probeType, probeID, sta
 		Status:        status,
 		ResponseTime:  elapsed,
 		Error:         errorText,
+		ErrorCode:     errorCode,
+		Metadata:      metadata,
 		CheckedAt:     checkedAt,
 		CreatedAt:     checkedAt,
 		UpdatedAt:     checkedAt,
@@ -259,7 +295,7 @@ type certCheckInfo struct {
 	DaysLeft  int
 }
 
-func (s *ServiceMonitorService) commitMonitorStatus(id uint, status string, elapsed int, checkErr error, now time.Time, certInfo *certCheckInfo) {
+func (s *ServiceMonitorService) commitMonitorStatus(id uint, status string, elapsed int, checkErr error, now time.Time, certInfo *certCheckInfo, metadata map[string]any) {
 	if status == "unknown" {
 		s.commitUnknownMonitorStatus(id, elapsed, checkErr, now)
 		return
@@ -284,7 +320,24 @@ func (s *ServiceMonitorService) commitMonitorStatus(id uint, status string, elap
 		update["cert_expires_at"] = certInfo.ExpiresAt
 		update["cert_days_left"] = certInfo.DaysLeft
 	}
-	_ = repo.Update(id, update)
+	if len(metadata) > 0 {
+		// 映射更新不会走模型字段的 serializer。直接写 map 会让 SQLite
+		// 报 unsupported type，进而连同 status 一起无法持久化。
+		encodedMetadata, err := json.Marshal(metadata)
+		if err != nil {
+			facades.Log().Warningf("序列化服务监测元数据失败: monitor_id=%d, error=%v", id, err)
+			return
+		}
+		update["last_metadata"] = string(encodedMetadata)
+		update["metadata_checked_at"] = now
+	} else if isProtocolMonitor(previous) {
+		update["last_metadata"] = nil
+		update["metadata_checked_at"] = nil
+	}
+	if err := repo.Update(id, update); err != nil {
+		facades.Log().Warningf("更新服务监测状态失败: monitor_id=%d, error=%v", id, err)
+		return
+	}
 
 	// 保存历史记录，按时间保留，列表接口只读取最近若干条用于展示。
 	histRepo := repositories.GetServiceMonitorHistoryRepository()
@@ -301,10 +354,12 @@ func (s *ServiceMonitorService) commitMonitorStatus(id uint, status string, elap
 	GetWebSocketService().GetManager().BroadcastToFrontend(map[string]interface{}{
 		"type": "service_monitor_update",
 		"data": map[string]interface{}{
-			"id":            id,
-			"status":        effectiveStatus,
-			"response_time": elapsed,
-			"last_check_at": now.Format(time.RFC3339),
+			"id":                  id,
+			"status":              effectiveStatus,
+			"response_time":       elapsed,
+			"last_check_at":       now.Format(time.RFC3339),
+			"last_metadata":       metadata,
+			"metadata_checked_at": now.Format(time.RFC3339),
 			"history_entry": map[string]interface{}{
 				"status":        effectiveStatus,
 				"response_time": elapsed,
@@ -328,15 +383,21 @@ func (s *ServiceMonitorService) commitMonitorStatus(id uint, status string, elap
 	}
 }
 
+func isProtocolMonitor(monitor *models.ServiceMonitor) bool {
+	return monitor != nil && isProtocolMonitorType(monitor.Type)
+}
+
 // commitUnknownMonitorStatus records that no monitoring point produced a
 // trustworthy result. It deliberately skips incidents and alerts because probe
 // availability is not evidence that the monitored target is unavailable.
 func (s *ServiceMonitorService) commitUnknownMonitorStatus(id uint, elapsed int, checkErr error, now time.Time) {
 	repo := repositories.GetServiceMonitorRepository()
 	_ = repo.Update(id, map[string]interface{}{
-		"status":        "unknown",
-		"response_time": elapsed,
-		"last_check_at": now,
+		"status":              "unknown",
+		"response_time":       elapsed,
+		"last_check_at":       now,
+		"last_metadata":       nil,
+		"metadata_checked_at": nil,
 	})
 
 	histRepo := repositories.GetServiceMonitorHistoryRepository()
@@ -421,7 +482,7 @@ func (s *ServiceMonitorService) HandleAgentResult(data map[string]interface{}, s
 		s.addPendingAgentResult(id, checkID, serverID, status, elapsed, checkErr)
 		return
 	}
-	s.recordResult(id, "agent", serverID, status, elapsed, checkErr, nil)
+	s.recordResult(id, "agent", serverID, status, elapsed, checkErr, nil, "", nil)
 }
 
 func (s *ServiceMonitorService) createPendingCheck(monitorID uint, checkID, commandID string, serverIDs []string, timeoutSec int) {
@@ -435,7 +496,7 @@ func (s *ServiceMonitorService) addPendingAgentResult(monitorID uint, checkID, s
 		serverID = "unknown"
 	}
 	now := time.Now()
-	s.saveProbeResult(monitorID, "agent", serverID, status, elapsed, checkErr, now)
+	s.saveProbeResult(monitorID, "agent", serverID, status, elapsed, checkErr, now, "", nil)
 
 	if s.rounds.AddResult(monitorID, checkID, probeCheckResult{
 		probeID:      serverID,
@@ -476,7 +537,7 @@ func (s *ServiceMonitorService) finalizePendingCheck(monitorID uint, checkID str
 				})
 			}
 			_ = NewAgentTaskService().CancelByCommandID(serverID, pending.commandID, "监测轮次已截止")
-			s.saveProbeResult(monitorID, "agent", serverID, "unknown", 0, err, time.Now())
+			s.saveProbeResult(monitorID, "agent", serverID, "unknown", 0, err, time.Now(), "probe_unavailable", nil)
 		}
 	}
 
@@ -486,13 +547,13 @@ func (s *ServiceMonitorService) finalizePendingCheck(monitorID uint, checkID str
 
 	if len(results) == 0 {
 		err := errors.New("all monitoring points unavailable")
-		s.commitMonitorStatus(monitorID, "unknown", 0, err, time.Now(), nil)
+		s.commitMonitorStatus(monitorID, "unknown", 0, err, time.Now(), nil, nil)
 		return
 	}
 
 	now := time.Now()
 	status, elapsed, err := aggregateProbeResults(results)
-	s.commitMonitorStatus(monitorID, status, elapsed, err, now, nil)
+	s.commitMonitorStatus(monitorID, status, elapsed, err, now, nil, nil)
 }
 
 func aggregateProbeResults(results []probeCheckResult) (string, int, error) {

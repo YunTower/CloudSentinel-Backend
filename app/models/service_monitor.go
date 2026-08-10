@@ -35,6 +35,14 @@ type ServiceMonitor struct {
 	CertExpiresAt   *time.Time `gorm:"column:cert_expires_at" json:"cert_expires_at"`
 	CertDaysLeft    *int       `gorm:"column:cert_days_left" json:"cert_days_left"`
 
+	// 协议监测配置。API 密钥只保存密文，永不通过 JSON 返回。
+	AIAPIFormat       string         `gorm:"column:ai_api_format" json:"ai_api_format,omitempty"`
+	AIModel           string         `gorm:"column:ai_model" json:"ai_model,omitempty"`
+	AIAPIKeyEncrypted string         `gorm:"column:ai_api_key_encrypted" json:"-"`
+	LastMetadata      map[string]any `gorm:"column:last_metadata;serializer:json" json:"last_metadata,omitempty"`
+	MetadataCheckedAt *time.Time     `gorm:"column:metadata_checked_at" json:"metadata_checked_at,omitempty"`
+	HasAIAPIKey       bool           `gorm:"-" json:"has_ai_api_key"`
+
 	// Virtual field – not stored in DB, populated by GetAll
 	History []*ServiceMonitorHistory `gorm:"-" json:"history"`
 	Uptime  map[string]UptimeStat    `gorm:"-" json:"uptime,omitempty"`
