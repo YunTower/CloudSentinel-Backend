@@ -36,21 +36,25 @@ type WebhookConfig struct {
 }
 
 func SendEmail(config EmailConfig, subject, content string) error {
+	return sendEmail(config, subject, content, "text/plain; charset=UTF-8")
+}
+
+// SendEmailHTML 显式发送 HTML 邮件，避免通过正文首字符猜测内容类型。
+func SendEmailHTML(config EmailConfig, subject, content string) error {
+	return sendEmail(config, subject, content, "text/html; charset=UTF-8")
+}
+
+func sendEmail(config EmailConfig, subject, content, contentType string) error {
 	if config.SMTP == "" || config.From == "" || config.To == "" {
 		return fmt.Errorf("邮件配置不完整")
 	}
 
 	msg := bytes.Buffer{}
+	subject = strings.NewReplacer("\r", " ", "\n", " ").Replace(subject)
 	msg.WriteString(fmt.Sprintf("From: %s\r\n", config.From))
 	msg.WriteString(fmt.Sprintf("To: %s\r\n", config.To))
 	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
-
-	// 根据内容自动判断是 HTML 还是纯文本
-	contentType := "text/plain; charset=UTF-8"
-	if strings.HasPrefix(strings.TrimSpace(content), "<") {
-		// 如果内容以 HTML 标签开头，则认为是 HTML
-		contentType = "text/html; charset=UTF-8"
-	}
+	msg.WriteString("MIME-Version: 1.0\r\n")
 
 	msg.WriteString(fmt.Sprintf("Content-Type: %s\r\n", contentType))
 	msg.WriteString("\r\n")
