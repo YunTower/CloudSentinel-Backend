@@ -3,6 +3,7 @@ package controllers
 import (
 	"encoding/json"
 	"fmt"
+	"goravel/app/http/middleware"
 	"goravel/app/repositories"
 	"goravel/app/services"
 	"goravel/app/utils"
@@ -89,11 +90,12 @@ func (r *SettingsController) GetPanelSettings(ctx http.Context) http.Response {
 	}
 
 	return utils.SuccessResponse(ctx, "success", map[string]any{
-		"panel_title":          panelTitle,
-		"log_retention_days":   logRetentionDays,
-		"update_channel":       updateChannel,
-		"current_version":      currentVersion,
-		"current_version_type": currentVersionType,
+		"panel_title":                   panelTitle,
+		"log_retention_days":            logRetentionDays,
+		"update_channel":                updateChannel,
+		"current_version":               currentVersion,
+		"current_version_type":          currentVersionType,
+		"monitor_allow_private_targets": utils.GetSettingBool("monitor_allow_private_targets", false),
 	})
 }
 
@@ -245,9 +247,10 @@ func (r *SettingsController) UpdatePanelSettings(ctx http.Context) http.Response
 	}
 
 	var req struct {
-		Title            string `json:"title" form:"title"`
-		LogRetentionDays *int   `json:"log_retention_days" form:"log_retention_days"`
-		UpdateChannel    string `json:"update_channel" form:"update_channel"`
+		Title                      string `json:"title" form:"title"`
+		LogRetentionDays           *int   `json:"log_retention_days" form:"log_retention_days"`
+		UpdateChannel              string `json:"update_channel" form:"update_channel"`
+		MonitorAllowPrivateTargets *bool  `json:"monitor_allow_private_targets" form:"monitor_allow_private_targets"`
 	}
 	if err := ctx.Request().Bind(&req); err != nil {
 		return utils.ErrorResponseWithError(ctx, 422, "请求参数错误", err)
@@ -289,6 +292,13 @@ func (r *SettingsController) UpdatePanelSettings(ctx http.Context) http.Response
 	}
 	if err := settingRepo.SetValue("update_channel", updateChannel); err != nil {
 		return utils.ErrorResponseWithError(ctx, 500, "更新渠道保存失败", err)
+	}
+
+	// 服务监测是否允许探测内网目标（默认禁止，防 SSRF）
+	if req.MonitorAllowPrivateTargets != nil {
+		if err := settingRepo.SetValue("monitor_allow_private_targets", strconv.FormatBool(*req.MonitorAllowPrivateTargets)); err != nil {
+			return utils.ErrorResponseWithError(ctx, 500, "更新内网探测开关失败", err)
+		}
 	}
 
 	return utils.SuccessResponse(ctx, "success")
@@ -443,6 +453,10 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 		if err := write("admin_password_hash", newPasswordHash); err != nil {
 			return utils.ErrorResponseWithError(ctx, 500, "更新密码失败", err)
 		}
+		// 改密后吊销当前令牌，旧会话立即失效
+		if token := ctx.Request().Cookie(middleware.AuthTokenCookieName); token != "" {
+			middleware.BlacklistToken(token)
+		}
 	}
 
 	return utils.SuccessResponse(ctx, "success")
@@ -541,15 +555,20 @@ func (r *SettingsController) UpdateAlertsSettings(ctx http.Context) http.Respons
 		// 如果是邮件配置，处理密码逻辑
 		if nType == "email" {
 			password, _ := cfg["password"].(string)
-			// 如果密码为空，尝试读取旧配置中的密码
+			// 如果密码为空，沿用旧配置中的密码；读取旧配置失败时显式报错，
+			// 不能静默用空密码覆盖原密码（否则保存一次设置就会弄丢 SMTP 凭据）。
 			if password == "" {
 				oldNotification, err := notificationRepo.GetByType("email")
-				if err == nil && oldNotification != nil && oldNotification.ConfigJson != "" {
+				if err != nil {
+					return fmt.Errorf("读取原有邮件配置失败，无法保留 SMTP 密码: %w", err)
+				}
+				if oldNotification != nil && oldNotification.ConfigJson != "" {
 					var oldCfg map[string]any
-					if err := json.Unmarshal([]byte(oldNotification.ConfigJson), &oldCfg); err == nil {
-						if oldPwd, ok := oldCfg["password"].(string); ok {
-							cfg["password"] = oldPwd
-						}
+					if err := json.Unmarshal([]byte(oldNotification.ConfigJson), &oldCfg); err != nil {
+						return fmt.Errorf("解析原有邮件配置失败，无法保留 SMTP 密码: %w", err)
+					}
+					if oldPwd, ok := oldCfg["password"].(string); ok {
+						cfg["password"] = oldPwd
 					}
 				}
 			}
