@@ -1,6 +1,9 @@
 package services
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+
 	"goravel/app/models"
 	"goravel/app/services/websocket"
 
@@ -20,13 +23,26 @@ func GetAgentAuthValidator() websocket.AgentAuthValidator {
 	return NewAgentAuthValidator()
 }
 
+// HashAgentKey 计算 agent_key 的 SHA-256（认证查询走哈希索引）。
+func HashAgentKey(agentKey string) string {
+	sum := sha256.Sum256([]byte(agentKey))
+	return hex.EncodeToString(sum[:])
+}
+
 func (v *agentAuthValidator) ValidateAgentAuth(agentKey string, clientIP string) (string, error) {
 	var server models.Server
-	if err := facades.Orm().Query().Where("agent_key = ?", agentKey).First(&server); err != nil {
-		return "", err
+	// 优先按哈希查询；存量数据哈希为空时回退明文匹配并惰性回填。
+	err := facades.Orm().Query().Where("agent_key_hash = ?", HashAgentKey(agentKey)).First(&server)
+	if err != nil {
+		if legacyErr := facades.Orm().Query().Where("agent_key = ?", agentKey).First(&server); legacyErr != nil {
+			return "", legacyErr
+		}
+		facades.Orm().Query().Model(&models.Server{}).Where("id", server.ID).
+			Update("agent_key_hash", HashAgentKey(server.AgentKey))
 	}
-	// 可选：更新 IP
-	if server.IP != clientIP {
+	// 不再用连接 IP 无条件覆盖资产 IP：反代环境下该值可被 XFF 伪造，
+	// 会污染服务器记录。仅当记录为空时写入一次。
+	if server.IP == "" && clientIP != "" {
 		server.IP = clientIP
 		facades.Orm().Query().Save(&server)
 	}

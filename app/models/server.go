@@ -17,6 +17,7 @@ type Server struct {
 	Kernel         string     `gorm:"column:kernel" json:"kernel"`
 	Hostname       string     `gorm:"column:hostname" json:"hostname"`
 	AgentKey       string     `gorm:"column:agent_key" json:"agent_key"`
+	AgentKeyHash   string     `gorm:"column:agent_key_hash" json:"-"` // SHA-256，认证查询专用
 	AgentVersion   string     `gorm:"column:agent_version" json:"agent_version"`
 	SystemName     string     `gorm:"column:system_name" json:"system_name"`
 	CpuName        string     `gorm:"column:cpu_name" json:"cpu_name"`
