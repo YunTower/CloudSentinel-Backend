@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"goravel/app/facades"
 	"goravel/app/repositories"
 	"goravel/app/services"
 
@@ -42,9 +43,31 @@ func (c *AgentTaskController) Pull(ctx http.Context) http.Response {
 			"status": false, "message": err.Error(),
 		})
 	}
+
+	// HTTP 任务通道没有 WS 加密保护，任务载荷附带面板签名供 Agent 验签；
+	// 签名失败的任务跳过（留在队列等待密钥恢复后重试），
+	// 发送未签名任务对 Agent 端只会被拒绝
+	taskPayloads := make([]map[string]interface{}, 0, len(tasks))
+	for _, task := range tasks {
+		sig, ts, sigErr := services.SignAgentCommand(task.Payload, task.CommandID)
+		if sigErr != nil {
+			facades.Log().Errorf("Agent 任务签名失败，跳过下发: task_id=%s, error=%v", task.ID, sigErr)
+			continue
+		}
+		payload := map[string]interface{}{
+			"id":          task.ID,
+			"command":     task.Command,
+			"command_id":  task.CommandID,
+			"lease_token": task.LeaseToken,
+			"data":        task.Payload,
+			"sig":         sig,
+			"sig_ts":      ts,
+		}
+		taskPayloads = append(taskPayloads, payload)
+	}
 	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
 		"status": true,
-		"data":   tasks,
+		"data":   taskPayloads,
 	})
 }
 
