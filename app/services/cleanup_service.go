@@ -49,6 +49,11 @@ func (s *CleanupService) Stop() {
 func (s *CleanupService) CleanupOldData() {
 	facades.Log().Info("开始清理旧数据...")
 
+	// 无条件清理：agent_tasks 已终态任务与 agent_logs 不在用户可配置的
+	// 清理项里，长期运行会无限膨胀。
+	s.cleanupAgentTasks(7 * 24 * time.Hour)
+	s.cleanupAgentLogs()
+
 	// 从 system_settings 获取清理配置
 	settingRepo := repositories.GetSystemSettingRepository()
 	var configs []map[string]interface{}
@@ -136,6 +141,41 @@ func (s *CleanupService) CleanupOldData() {
 	}
 
 	facades.Log().Info("数据清理完成")
+}
+
+// cleanupAgentTasks 删除已终态（succeeded/failed/cancelled）且超过保留期的任务
+func (s *CleanupService) cleanupAgentTasks(retention time.Duration) {
+	cutoff := time.Now().Add(-retention)
+	result, err := facades.Orm().Query().Table("agent_tasks").
+		WhereIn("status", []any{"succeeded", "failed", "cancelled"}).
+		Where("updated_at", "<", cutoff).
+		Delete()
+	if err != nil {
+		facades.Log().Warningf("清理 agent_tasks 失败: %v", err)
+		return
+	}
+	if result.RowsAffected > 0 {
+		facades.Log().Infof("已清理 agent_tasks 中 %d 条已完成任务", result.RowsAffected)
+	}
+}
+
+// cleanupAgentLogs 按日志保留设置清理 agent_logs
+func (s *CleanupService) cleanupAgentLogs() {
+	keepDays := repositories.GetSystemSettingRepository().GetInt("log_retention_days", 30)
+	if keepDays <= 0 {
+		keepDays = 30
+	}
+	cutoff := time.Now().AddDate(0, 0, -keepDays)
+	result, err := facades.Orm().Query().Table("agent_logs").
+		Where("created_at", "<", cutoff).
+		Delete()
+	if err != nil {
+		facades.Log().Warningf("清理 agent_logs 失败: %v", err)
+		return
+	}
+	if result.RowsAffected > 0 {
+		facades.Log().Infof("已清理 agent_logs 中 %d 条日志", result.RowsAffected)
+	}
 }
 
 // CleanupTableData 清理指定表的数据
