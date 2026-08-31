@@ -150,6 +150,14 @@ type saveAgentLogsJob struct {
 	logs     []interface{}
 }
 
+// truncateString 截断超长字符串，防止已认证 Agent 用超大 payload 撑大数据库行。
+func truncateString(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
+}
+
 func (j *saveAgentLogsJob) Execute() error {
 	var logModels []models.AgentLog
 	for _, logItem := range j.logs {
@@ -178,9 +186,9 @@ func (j *saveAgentLogsJob) Execute() error {
 
 		logModels = append(logModels, models.AgentLog{
 			ServerID:  j.serverID,
-			Level:     level,
-			Message:   message,
-			Context:   contextStr,
+			Level:     truncateString(level, 16),
+			Message:   truncateString(message, 4096),
+			Context:   truncateString(contextStr, 8192),
 			CreatedAt: createdAt,
 		})
 	}
@@ -412,10 +420,18 @@ type saveProcessInfoJob struct {
 	data     map[string]interface{}
 }
 
+// agentPayloadMaxBytes 限制 Agent 上报的进程/GPU 负载序列化大小，
+// 防止已认证 Agent 用超大 payload 撑大 servers 行。
+const agentPayloadMaxBytes = 256 * 1024
+
 func (j *saveProcessInfoJob) Execute() error {
+	payload, err := limitAgentPayload(j.data)
+	if err != nil {
+		return err
+	}
 	// 更新 servers 表中的 service_status 字段
-	_, err := facades.Orm().Query().Model(&models.Server{}).Where("id = ?", j.serverID).Update(map[string]interface{}{
-		"service_status": j.data,
+	_, err = facades.Orm().Query().Model(&models.Server{}).Where("id = ?", j.serverID).Update(map[string]interface{}{
+		"service_status": payload,
 		"updated_at":     time.Now(),
 	})
 	return err
@@ -437,12 +453,28 @@ type saveGPUInfoJob struct {
 }
 
 func (j *saveGPUInfoJob) Execute() error {
+	payload, err := limitAgentPayload(j.data)
+	if err != nil {
+		return err
+	}
 	// 更新 servers 表中的 gpu_info 字段
-	_, err := facades.Orm().Query().Model(&models.Server{}).Where("id = ?", j.serverID).Update(map[string]interface{}{
-		"gpu_info":   j.data,
+	_, err = facades.Orm().Query().Model(&models.Server{}).Where("id = ?", j.serverID).Update(map[string]interface{}{
+		"gpu_info":   payload,
 		"updated_at": time.Now(),
 	})
 	return err
+}
+
+// limitAgentPayload 校验负载大小，超限时丢弃并告警（而非原样写库）。
+func limitAgentPayload(data map[string]interface{}) (map[string]interface{}, error) {
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	if len(encoded) > agentPayloadMaxBytes {
+		return nil, fmt.Errorf("agent payload too large: %d bytes", len(encoded))
+	}
+	return data, nil
 }
 
 // CalculateUptime 计算运行时间

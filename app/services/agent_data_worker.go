@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"goravel/app/facades"
 )
@@ -14,6 +15,7 @@ type AgentDataWorker struct {
 	wg          sync.WaitGroup
 	ctx         context.Context
 	cancel      context.CancelFunc
+	dropped     atomic.Int64
 }
 
 // DataJob 数据任务接口
@@ -56,8 +58,25 @@ func (w *AgentDataWorker) Enqueue(job DataJob) {
 	case <-w.ctx.Done():
 		// worker池已停止
 	default:
-		// 队列已满，记录警告但不阻塞
-		facades.Log().Channel("websocket").Warning("数据任务队列已满，丢弃任务")
+		// 队列已满：丢弃最旧任务腾位，保证最新监控数据优先入库，
+		// 并统计丢弃数量便于发现瓶颈（旧实现直接丢新任务，丢失的是最新数据）。
+	drainLoop:
+		for i := 0; i < 8; i++ {
+			select {
+			case <-w.jobQueue:
+				w.dropped.Add(1)
+			default:
+				break drainLoop
+			}
+		}
+		select {
+		case w.jobQueue <- job:
+		default:
+			w.dropped.Add(1)
+		}
+		if w.dropped.Load()%100 == 1 {
+			facades.Log().Channel("websocket").Warningf("数据任务队列已满，已累计丢弃任务 %d 个", w.dropped.Load())
+		}
 	}
 }
 
