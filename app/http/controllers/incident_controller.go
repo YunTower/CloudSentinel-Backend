@@ -280,6 +280,14 @@ func parseIncidentPageIDs(raw *string) []string {
 }
 
 func (c *IncidentController) GetPublic(ctx http.Context) http.Response {
+	// 公开展示总开关关闭时不暴露事件时间线（与 /api/public/servers 一致）
+	if !loadPublicDisplayConfigV1().Enabled {
+		return ctx.Response().Json(http.StatusOK, map[string]interface{}{
+			"status": true,
+			"data":   []publicIncident{},
+		})
+	}
+
 	path := strings.TrimSpace(ctx.Request().Query("path", ""))
 	if path == "" {
 		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{

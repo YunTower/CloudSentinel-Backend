@@ -68,6 +68,26 @@ func (s *IncidentService) OpenOrUpdateServiceMonitorIncident(monitorID uint, sta
 	s.addServiceMonitorEvent(incident.ID, "update", status, monitor, responseTime, cause, now)
 }
 
+// ResolveForDeletedMonitor 监测项被删除时关闭其未决事件。
+// ResolveServiceMonitorIncident 依赖 monitor 仍存在，删除场景下不可用；
+// 若不在此处显式 resolve，公开时间线会永久挂着一个已不存在服务的 active 事件。
+func (s *IncidentService) ResolveForDeletedMonitor(monitorID uint) {
+	sourceID := fmt.Sprintf("%d", monitorID)
+	incident, err := s.repo.GetOpenBySource("service_monitor", sourceID)
+	if err != nil || incident == nil {
+		return
+	}
+	now := time.Now()
+	_ = s.repo.Update(incident.ID, map[string]interface{}{
+		"status":        "resolved",
+		"resolved_at":   now,
+		"last_event_at": now,
+		"updated_at":    now,
+	})
+	s.addServiceMonitorEvent(incident.ID, "resolved", "up", nil, 0, fmt.Errorf("monitor deleted"), now)
+}
+
+// ResolveServiceMonitorIncident 在监测状态恢复为 up 时调用。
 func (s *IncidentService) ResolveServiceMonitorIncident(monitorID uint, previousStatus string, responseTime int) {
 	monitor, err := repositories.GetServiceMonitorRepository().GetByID(monitorID)
 	if err != nil || monitor == nil {
