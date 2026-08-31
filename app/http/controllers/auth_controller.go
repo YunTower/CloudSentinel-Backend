@@ -193,14 +193,14 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 		})
 	}
 
-	// 验证用户名
+	// 验证用户名（与密码错误返回相同响应，防止用户名枚举）
 	if loginPost.Username != userName {
 		if err := lockoutService.IncrementFailedAttempts(ip); err != nil {
 			facades.Log().Errorf("增加登录失败计数失败: %v", err)
 		}
 		return ctx.Response().Status(401).Json(http.Json{
 			"status":  false,
-			"message": "用户名错误",
+			"message": "用户名或密码错误",
 		})
 	}
 
@@ -211,7 +211,7 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 		}
 		return ctx.Response().Status(401).Json(http.Json{
 			"status":  false,
-			"message": "密码错误",
+			"message": "用户名或密码错误",
 		})
 	}
 
@@ -340,6 +340,10 @@ func (r *AuthController) CSRFToken(ctx http.Context) http.Response {
 }
 
 func (r *AuthController) Logout(ctx http.Context) http.Response {
+	// 吊销当前令牌：仅清 Cookie 的话，令牌在 TTL 内仍然可用
+	if token := ctx.Request().Cookie(middleware.AuthTokenCookieName); token != "" {
+		middleware.BlacklistToken(token)
+	}
 	clearAuthenticationCookies(ctx)
 	return utils.SuccessResponse(ctx, "已退出登录")
 }

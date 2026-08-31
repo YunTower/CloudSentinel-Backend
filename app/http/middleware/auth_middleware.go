@@ -80,6 +80,12 @@ func authenticate(ctx http.Context, requireAdmin bool) bool {
 		return false
 	}
 
+	// 已吊销令牌（登出/改密后）一律拒绝
+	if IsTokenBlacklisted(token) {
+		_ = utils.ErrorResponse(ctx, 401, "Token已失效", "TOKEN_REVOKED")
+		return false
+	}
+
 	var payload interface{}
 	if requireAdmin {
 		// 管理员 Token 的 Subject 是 admin，必须使用同一 guard 解析。
