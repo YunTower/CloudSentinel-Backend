@@ -11,6 +11,7 @@ import (
 	"goravel/app/monitorprobe"
 	"goravel/app/repositories"
 	"goravel/app/utils/secret"
+	"goravel/app/utils/security"
 	"io"
 	"net"
 	"net/http"
@@ -40,6 +41,29 @@ type ServiceMonitorService struct {
 	mu      sync.Mutex
 	stopChs map[uint]chan struct{}
 	rounds  *serviceMonitorRounds
+
+	// 状态推进的 per-monitor 互斥锁：commitMonitorStatus 是读-改-写流程，
+	// 多探测点并发 finalize / 迟到结果 / 面板直检同时写同一 monitor 时
+	// 会互相覆盖 consecutive_failures 等字段，必须串行化。
+	statusMu    sync.Mutex
+	statusLocks map[uint]*sync.Mutex
+}
+
+// lockMonitor 返回该 monitor 的互斥锁解锁函数。
+// 注意：多实例部署下此锁仅保护本进程，跨实例部署仍需外部互斥（见 README）。
+func (s *ServiceMonitorService) lockMonitor(id uint) func() {
+	s.statusMu.Lock()
+	if s.statusLocks == nil {
+		s.statusLocks = make(map[uint]*sync.Mutex)
+	}
+	lock, ok := s.statusLocks[id]
+	if !ok {
+		lock = &sync.Mutex{}
+		s.statusLocks[id] = lock
+	}
+	s.statusMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
 }
 
 type probeCheckResult struct {
@@ -52,8 +76,9 @@ type probeCheckResult struct {
 func GetServiceMonitorService() *ServiceMonitorService {
 	serviceMonitorOnce.Do(func() {
 		serviceMonitorInstance = &ServiceMonitorService{
-			stopChs: make(map[uint]chan struct{}),
-			rounds:  newServiceMonitorRounds(),
+			stopChs:     make(map[uint]chan struct{}),
+			rounds:      newServiceMonitorRounds(),
+			statusLocks: make(map[uint]*sync.Mutex),
 		}
 	})
 	return serviceMonitorInstance
@@ -139,24 +164,36 @@ func (s *ServiceMonitorService) runCheck(m *models.ServiceMonitor) {
 		}
 		deadlineAt := time.Now().Add(time.Duration(timeoutSec+2) * time.Second).UTC()
 		s.createPendingCheck(m.ID, checkID, commandID, m.ServerIDs, timeoutSec)
+		taskData := map[string]interface{}{
+			"monitor_id":    m.ID,
+			"check_id":      checkID,
+			"type":          m.Type,
+			"target":        m.Target,
+			"port":          m.Port,
+			"timeout":       m.Timeout,
+			"expect_status": m.ExpectStatus,
+			"expect_body":   m.ExpectBody,
+			"http_method":   m.HTTPMethod,
+			"http_headers":  m.HTTPHeaders,
+			"http_body":     m.HTTPBody,
+			"deadline_at":   deadlineAt.Format(time.RFC3339Nano),
+		}
 		payload := map[string]interface{}{
 			"command":    "service_check",
 			"command_id": commandID,
-			"data": map[string]interface{}{
-				"monitor_id":    m.ID,
-				"check_id":      checkID,
-				"type":          m.Type,
-				"target":        m.Target,
-				"port":          m.Port,
-				"timeout":       m.Timeout,
-				"expect_status": m.ExpectStatus,
-				"expect_body":   m.ExpectBody,
-				"http_method":   m.HTTPMethod,
-				"http_headers":  m.HTTPHeaders,
-				"http_body":     m.HTTPBody,
-				"deadline_at":   deadlineAt.Format(time.RFC3339Nano),
-			},
+			"data":       taskData,
 		}
+		// 命令签名：Agent 端使用面板公钥验签后才执行。
+		// 签名失败必须拒绝下发——发送未签名命令对旧版 Agent 是裸奔、
+		// 对新版 Agent 是必然失败，宁可本轮判 unknown 也不裸发。
+		sig, ts, sigErr := SignAgentCommand(taskData, commandID)
+		if sigErr != nil {
+			facades.Log().Errorf("服务监测命令签名失败，本轮不下发: monitor_id=%d, error=%v", m.ID, sigErr)
+			s.finalizePendingCheck(m.ID, checkID, true)
+			return
+		}
+		payload["sig"] = sig
+		payload["sig_ts"] = ts
 		sentCount := 0
 		queuedCount := 0
 		for _, sid := range m.ServerIDs {
@@ -202,10 +239,16 @@ func (s *ServiceMonitorService) doProtocolCheck(m *models.ServiceMonitor) {
 			return
 		}
 	}
+	allowPrivate := monitorAllowsPrivateTargets()
 	result := monitorprobe.Check(context.Background(), monitorprobe.Request{
-		Type: m.Type, Target: m.Target, Port: m.Port,
-		Timeout:  time.Duration(m.Timeout) * time.Second,
-		AIFormat: m.AIAPIFormat, AIModel: m.AIModel, AIAPIKey: apiKey,
+		Type:         m.Type,
+		Target:       m.Target,
+		Port:         m.Port,
+		Timeout:      time.Duration(m.Timeout) * time.Second,
+		AllowPrivate: allowPrivate,
+		AIFormat:     m.AIAPIFormat,
+		AIModel:      m.AIModel,
+		AIAPIKey:     apiKey,
 	})
 	s.recordResult(m.ID, "panel", "", result.Status, result.ResponseTime, result.Error, nil, result.ErrorCode, result.Metadata)
 }
@@ -220,6 +263,8 @@ func (s *ServiceMonitorService) doCheck(id uint, typ, target string, port, timeo
 		timeout = 10
 	}
 
+	allowPrivate := monitorAllowsPrivateTargets()
+
 	switch typ {
 	case "http", "https":
 		info, err := checkHTTP(target, timeout, expectStatus, expectBody, httpMethod, httpHeaders, httpBody, typ == "https" && checkCertExpiry)
@@ -228,15 +273,39 @@ func (s *ServiceMonitorService) doCheck(id uint, typ, target string, port, timeo
 			certInfo = &info
 		}
 	case "tcp":
-		checkErr = checkTCP(target, port, timeout)
+		host, defferedErr := probeTargetHost("tcp", target, 0, allowPrivate)
+		if defferedErr != nil {
+			checkErr = defferedErr
+		} else {
+			checkErr = checkTCP(host, port, timeout)
+		}
 	case "udp":
-		checkErr = checkUDP(target, port, timeout)
+		host, defferedErr := probeTargetHost("udp", target, 0, allowPrivate)
+		if defferedErr != nil {
+			checkErr = defferedErr
+		} else {
+			checkErr = checkUDP(host, port, timeout)
+		}
 	case "icmp", "ping":
-		checkErr = checkICMP(target, timeout)
+		host, defferedErr := probeTargetHost("icmp", target, 0, allowPrivate)
+		if defferedErr != nil {
+			checkErr = defferedErr
+		} else if host != "" {
+			checkErr = checkICMP(target, timeout)
+		}
 	case "dns":
-		checkErr = checkDNS(target, timeout)
+		host, defferedErr := probeTargetHost("dns", target, 0, allowPrivate)
+		if defferedErr != nil {
+			checkErr = defferedErr
+		} else if host != "" {
+			checkErr = checkDNS(target, timeout)
+		}
 	case "tls":
-		checkErr = checkTLS(target, port, timeout)
+		if _, defferedErr := probeTargetHost("tls", target, 443, allowPrivate); defferedErr != nil {
+			checkErr = defferedErr
+		} else {
+			checkErr = checkTLS(target, port, timeout)
+		}
 	default:
 		checkErr = fmt.Errorf("unknown type: %s", typ)
 	}
@@ -300,6 +369,9 @@ func (s *ServiceMonitorService) commitMonitorStatus(id uint, status string, elap
 		s.commitUnknownMonitorStatus(id, elapsed, checkErr, now)
 		return
 	}
+
+	unlock := s.lockMonitor(id)
+	defer unlock()
 
 	repo := repositories.GetServiceMonitorRepository()
 	previous, _ := repo.GetByID(id)
@@ -391,6 +463,9 @@ func isProtocolMonitor(monitor *models.ServiceMonitor) bool {
 // trustworthy result. It deliberately skips incidents and alerts because probe
 // availability is not evidence that the monitored target is unavailable.
 func (s *ServiceMonitorService) commitUnknownMonitorStatus(id uint, elapsed int, checkErr error, now time.Time) {
+	unlock := s.lockMonitor(id)
+	defer unlock()
+
 	repo := repositories.GetServiceMonitorRepository()
 	_ = repo.Update(id, map[string]interface{}{
 		"status":              "unknown",
@@ -462,7 +537,8 @@ func applyMonitorStability(previous *models.ServiceMonitor, oldStatus, nextStatu
 	return nextStatus, failures, successes
 }
 
-// 处理Agent结果
+// 处理Agent结果。Agent 只能为其被指派的监测点上报结果，且状态值必须在
+// up/down/slow 白名单内；否则拒绝，防止越权伪造监测状态。
 func (s *ServiceMonitorService) HandleAgentResult(data map[string]interface{}, serverID string) {
 	monitorID, _ := data["monitor_id"].(float64)
 	status, _ := data["status"].(string)
@@ -470,10 +546,27 @@ func (s *ServiceMonitorService) HandleAgentResult(data map[string]interface{}, s
 	if monitorID == 0 || status == "" {
 		return
 	}
+	switch status {
+	case "up", "down", "slow":
+	default:
+		facades.Log().Warningf("拒绝非法监测状态上报: monitor_id=%d, status=%q", uint(monitorID), status)
+		return
+	}
 	id := uint(monitorID)
+	if serverID == "" {
+		facades.Log().Warningf("拒绝未带身份的监测结果上报: monitor_id=%d", id)
+		return
+	}
+	if !s.agentAssignedToMonitor(id, serverID) {
+		facades.Log().Warningf("拒绝越权监测结果上报: monitor_id=%d, server_id=%s", id, serverID)
+		return
+	}
 	checkID, _ := data["check_id"].(string)
 	elapsed := int(responseTime)
 	errText, _ := data["error"].(string)
+	if len(errText) > maxAgentResultErrorLength {
+		errText = errText[:maxAgentResultErrorLength]
+	}
 	var checkErr error
 	if strings.TrimSpace(errText) != "" {
 		checkErr = errors.New(errText)
@@ -484,6 +577,22 @@ func (s *ServiceMonitorService) HandleAgentResult(data map[string]interface{}, s
 	}
 	s.recordResult(id, "agent", serverID, status, elapsed, checkErr, nil, "", nil)
 }
+
+// agentAssignedToMonitor 校验 serverID 是否在该监测点的探测点列表中。
+func (s *ServiceMonitorService) agentAssignedToMonitor(monitorID uint, serverID string) bool {
+	monitor, err := repositories.GetServiceMonitorRepository().GetByID(monitorID)
+	if err != nil || monitor == nil {
+		return false
+	}
+	for _, sid := range monitor.ServerIDs {
+		if sid == serverID {
+			return true
+		}
+	}
+	return false
+}
+
+const maxAgentResultErrorLength = 4096
 
 func (s *ServiceMonitorService) createPendingCheck(monitorID uint, checkID, commandID string, serverIDs []string, timeoutSec int) {
 	s.rounds.Open(monitorID, checkID, commandID, serverIDs, timeoutSec, func() {
@@ -524,18 +633,28 @@ func (s *ServiceMonitorService) finalizePendingCheck(monitorID uint, checkID str
 			if _, ok := pending.results[serverID]; ok {
 				continue
 			}
-			err := errors.New("monitoring point unavailable: agent offline")
-			if conn, online := manager.GetAgentConnection(serverID); online && !conn.IsClosed() {
-				err = errors.New("monitoring point unavailable: agent result timeout")
-				_ = manager.SendToAgent(serverID, map[string]interface{}{
-					"command":    "service_check_cancel",
-					"command_id": uuid.NewString(),
-					"data": map[string]interface{}{
+				err := errors.New("monitoring point unavailable: agent offline")
+				if conn, online := manager.GetAgentConnection(serverID); online && !conn.IsClosed() {
+					err = errors.New("monitoring point unavailable: agent result timeout")
+					cancelData := map[string]interface{}{
 						"monitor_id": monitorID,
 						"check_id":   checkID,
-					},
-				})
-			}
+					}
+					cancelPayload := map[string]interface{}{
+						"command":    "service_check_cancel",
+						"command_id": uuid.NewString(),
+						"data":       cancelData,
+					}
+					if sig, ts, sigErr := SignAgentCommand(cancelData, cancelPayload["command_id"].(string)); sigErr == nil {
+						cancelPayload["sig"] = sig
+						cancelPayload["sig_ts"] = ts
+						_ = manager.SendToAgent(serverID, cancelPayload)
+					} else {
+						// 取消命令签名失败时跳过发送：Agent 端会拒绝未签名命令，
+						// 发送只是徒劳；迟到的结果由 Agent 侧 deadline 兜底丢弃
+						facades.Log().Errorf("服务监测取消命令签名失败: monitor_id=%d, error=%v", monitorID, sigErr)
+					}
+				}
 			_ = NewAgentTaskService().CancelByCommandID(serverID, pending.commandID, "监测轮次已截止")
 			s.saveProbeResult(monitorID, "agent", serverID, "unknown", 0, err, time.Now(), "probe_unavailable", nil)
 		}
@@ -629,6 +748,27 @@ func resolveProbeMetadata(probeType, probeID string) (string, string) {
 	return name, strings.TrimSpace(server.Location)
 }
 
+// monitorAllowPrivateTargetsSetting 控制服务监测是否允许探测内网/保留地址。
+// 默认禁止：面板直连探测是受限 SSRF 面，管理员账号被盗或 CSRF 失效时
+// 可被用来探测内网。用户可在系统设置中显式开启。
+const monitorAllowPrivateTargetsSetting = "monitor_allow_private_targets"
+
+// monitorAllowPrivateTargetsOverride 仅供单元测试覆盖（httptest 监听 loopback）。
+var monitorAllowPrivateTargetsOverride *bool
+
+func monitorAllowsPrivateTargets() (allowed bool) {
+	if monitorAllowPrivateTargetsOverride != nil {
+		return *monitorAllowPrivateTargetsOverride
+	}
+	// 设置读取依赖 ORM；在无数据库的单元测试环境可能 panic，此时按默认（禁止）处理。
+	defer func() {
+		if r := recover(); r != nil {
+			allowed = false
+		}
+	}()
+	return repositories.NewSystemSettingRepository().GetBool(monitorAllowPrivateTargetsSetting, false)
+}
+
 // 检查HTTP服务；checkCert 为 true 时解析叶证书有效期（过期仍可读，便于展示剩余天数）
 func checkHTTP(target string, timeoutSec, expectStatus int, expectBody, method, headersJSON, requestBody string, checkCert bool) (certCheckInfo, error) {
 	var info certCheckInfo
@@ -637,10 +777,28 @@ func checkHTTP(target string, timeoutSec, expectStatus int, expectBody, method, 
 		// 允许过期证书完成握手，以便采集 NotAfter；过期判定由下方逻辑负责
 		tlsConfig.InsecureSkipVerify = true
 	}
+	allowPrivate := monitorAllowsPrivateTargets()
+	// SSRF 防护：默认禁止探测内网/保留地址；建连时二次校验防 DNS rebinding。
+	if err := security.ValidateHostForOutboundRequest(extractTargetHost(target), 2*time.Second, allowPrivate); err != nil {
+		return info, err
+	}
 	client := &http.Client{
 		Timeout: time.Duration(timeoutSec) * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: tlsConfig,
+			DialContext:     security.SafeDialContext(allowPrivate),
+		},
+		// 不跟随跨主机重定向，防止通过重定向绕过内网校验
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("停止重定向：次数过多")
+			}
+			if !allowPrivate {
+				if err := security.ValidateHostForOutboundRequest(req.URL.Hostname(), 2*time.Second, false); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	}
 	method = normalizeRequestMethod(method)
@@ -713,6 +871,21 @@ func extractLeafCertificate(resp *http.Response) *x509.Certificate {
 	return resp.TLS.PeerCertificates[0]
 }
 
+// extractTargetHost 提取监测目标 URL 的 host 部分，用于出站校验。
+func extractTargetHost(target string) string {
+	value := strings.TrimSpace(target)
+	if strings.Contains(value, "://") {
+		if u, err := url.Parse(value); err == nil {
+			return u.Hostname()
+		}
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		return host
+	}
+	return value
+}
+
 func normalizeRequestMethod(method string) string {
 	switch strings.ToUpper(strings.TrimSpace(method)) {
 	case "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
@@ -746,6 +919,24 @@ func parseHTTPHeaders(raw string) (map[string]string, error) {
 		}
 	}
 	return headers, nil
+}
+
+// probeTargetHost 从监测目标中提取 host 并执行 SSRF 出站校验。
+// 返回校验后的 host，供对应的探测函数使用。返回错误时调用方应放弃探测。
+func probeTargetHost(typ, target string, defaultPort int, allowPrivate bool) (string, error) {
+	if typ == "http" || typ == "https" {
+		// HTTP 探测内部已有完整 SSRF 防护（ValidateHostForOutboundRequest + SafeDialContext），
+		// 无需在此重复校验，避免重复 DNS 解析。
+		return extractTargetHost(target), nil
+	}
+	host, _, err := splitMonitorTarget(target, defaultPort)
+	if err != nil {
+		return "", err
+	}
+	if err := security.ValidateHostForOutboundRequest(host, 2*time.Second, allowPrivate); err != nil {
+		return "", err
+	}
+	return host, nil
 }
 
 // 检查TCP服务
@@ -890,6 +1081,11 @@ func splitMonitorTarget(target string, defaultPort int) (string, int, error) {
 	}
 	if host == "" {
 		return "", 0, fmt.Errorf("target host is empty")
+	}
+	// 拒绝以 "-" 开头的 host：host 会作为 ping 等命令的位置参数，
+	// 以 "-" 开头可注入命令选项（如 -f 洪泛）。合法主机名/IP 不会以 - 开头。
+	if strings.HasPrefix(host, "-") {
+		return "", 0, fmt.Errorf("invalid target host")
 	}
 	return host, port, nil
 }

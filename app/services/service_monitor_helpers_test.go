@@ -94,6 +94,7 @@ func TestHTTPMethodHeadersAndTargetParsing(t *testing.T) {
 }
 
 func TestCheckHTTPValidatesMethodBodyHeadersStatusAndExpectedBody(t *testing.T) {
+	withAllowedPrivateTargets(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.Header.Get("X-Test") != "yes" || r.Header.Get("Content-Type") != "application/json" {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -116,6 +117,7 @@ func TestCheckHTTPValidatesMethodBodyHeadersStatusAndExpectedBody(t *testing.T) 
 }
 
 func TestCheckHTTPRejectsServerErrorsByDefaultAndMissingTLSCertificate(t *testing.T) {
+	withAllowedPrivateTargets(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "boom", http.StatusServiceUnavailable) }))
 	defer server.Close()
 	if _, err := checkHTTP(server.URL, 2, 0, "", "GET", "", "", false); err == nil {
@@ -126,5 +128,58 @@ func TestCheckHTTPRejectsServerErrorsByDefaultAndMissingTLSCertificate(t *testin
 	}
 	if extractLeafCertificate(nil) != nil {
 		t.Fatal("nil response should have no certificate")
+	}
+}
+
+// withAllowedPrivateTargets 在测试期间允许 loopback 目标（httptest 监听 127.0.0.1）。
+func withAllowedPrivateTargets(t *testing.T) {
+	t.Helper()
+	prev := monitorAllowPrivateTargetsOverride
+	allow := true
+	monitorAllowPrivateTargetsOverride = &allow
+	t.Cleanup(func() { monitorAllowPrivateTargetsOverride = prev })
+}
+
+func TestProbeTargetHostRejectsPrivateTargets(t *testing.T) {
+	types := []string{"tcp", "udp", "icmp", "dns", "tls"}
+	privateTargets := []string{
+		"10.0.0.5",
+		"172.16.1.1",
+		"192.168.1.10",
+		"127.0.0.1",
+		"169.254.169.254",
+		"localhost",
+	}
+	for _, typ := range types {
+		for _, target := range privateTargets {
+			_, err := probeTargetHost(typ, target, 0, false)
+			if err == nil {
+				t.Fatalf("probeTargetHost(%s, %s) 应被安全策略拦截", typ, target)
+			}
+		}
+	}
+}
+
+func TestProbeTargetHostAllowsPrivateWhenEnabled(t *testing.T) {
+	for _, target := range []string{"127.0.0.1", "10.0.0.5", "192.168.1.10"} {
+		if _, err := probeTargetHost("tcp", target, 0, true); err != nil {
+			t.Fatalf("开启允许私网后 probeTargetHost(tcp, %s) 不应被拦截: %v", target, err)
+		}
+	}
+}
+
+func TestProbeTargetHostAcceptsPublicTarget(t *testing.T) {
+	host, err := probeTargetHost("tcp", "example.com:443", 0, false)
+	if err != nil {
+		t.Fatalf("公共目标不应被拦截: %v", err)
+	}
+	if host != "example.com" {
+		t.Fatalf("解析出的 host = %q", host)
+	}
+}
+
+func TestProbeTargetHostRejectsEmptyTarget(t *testing.T) {
+	if _, err := probeTargetHost("tcp", "", 0, false); err == nil {
+		t.Fatal("空目标应报错")
 	}
 }
