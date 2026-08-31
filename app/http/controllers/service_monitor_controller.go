@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"fmt"
+	"goravel/app/facades"
 	"goravel/app/models"
 	"goravel/app/repositories"
 	"goravel/app/services"
@@ -116,6 +118,15 @@ type publicServiceMonitor struct {
 }
 
 func (c *ServiceMonitorController) GetPublic(ctx http.Context) http.Response {
+	// 公开展示总开关关闭时与 /api/public/servers 行为一致：返回空列表，
+	// 避免开关关闭后监测名称/状态/90 天 uptime/错误信息仍全量暴露
+	if !loadPublicDisplayConfigV1().Enabled {
+		return ctx.Response().Json(http.StatusOK, map[string]interface{}{
+			"status": true,
+			"data":   []publicServiceMonitor{},
+		})
+	}
+
 	repo := repositories.GetServiceMonitorRepository()
 	monitors, err := repo.GetAll()
 	if err != nil {
@@ -506,6 +517,12 @@ func (c *ServiceMonitorController) Delete(ctx http.Context) http.Response {
 		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{
 			"status": false, "message": err.Error(),
 		})
+	}
+
+	// 关闭该监测项的未决事件并清理告警状态，避免孤儿数据
+	services.NewIncidentService().ResolveForDeletedMonitor(uint(id))
+	if err := repositories.NewAlertStateRepository().DeleteByMetricPrefix(fmt.Sprintf("service_monitor:%d:", uint(id))); err != nil {
+		facades.Log().Warningf("清理监测项告警状态失败: monitor_id=%d, error=%v", uint(id), err)
 	}
 
 	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
