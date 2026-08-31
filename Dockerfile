@@ -1,4 +1,4 @@
-FROM golang:alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 ENV GO111MODULE=on \
     CGO_ENABLED=0
@@ -6,7 +6,7 @@ ENV GO111MODULE=on \
 WORKDIR /build
 COPY . .
 RUN go mod tidy
-RUN go build --ldflags "-s -w -extldflags -static" -o main .
+RUN go build -tags production --ldflags "-s -w -extldflags -static" -trimpath -o main .
 
 FROM alpine:latest
 
