@@ -1,6 +1,7 @@
 package security
 
 import (
+	"context"
 	"net"
 	"strings"
 	"testing"
@@ -59,5 +60,77 @@ func TestResolveAndValidateWebhookURLForRequestReportsResolutionFailure(t *testi
 	_, _, err := ResolveAndValidateWebhookURLForRequest("https://this-host-must-not-exist.invalid/hook", 10*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "解析失败") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestSafeDialContextPinsValidatedResolution(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan struct{}, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			accepted <- struct{}{}
+			_ = conn.Close()
+		}
+	}()
+
+	previousLookup := lookupIPAddr
+	lookupIPAddr = func(_ context.Context, host string) ([]net.IPAddr, error) {
+		if host != "panel.example" {
+			t.Fatalf("unexpected lookup host %q", host)
+		}
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+	t.Cleanup(func() { lookupIPAddr = previousLookup })
+
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := SafeDialContext(true)(context.Background(), "tcp", net.JoinHostPort("panel.example", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("did not connect to the validated IP")
+	}
+}
+
+func TestSafeDialContextRejectsBlockedResolvedIP(t *testing.T) {
+	previousLookup := lookupIPAddr
+	lookupIPAddr = func(_ context.Context, _ string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+	t.Cleanup(func() { lookupIPAddr = previousLookup })
+
+	if _, err := SafeDialContext(false)(context.Background(), "tcp", "panel.example:443"); err == nil || !strings.Contains(err.Error(), "禁止访问内网") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestSafeDialContextRejectsReboundPrivateAddress(t *testing.T) {
+	previousLookup := lookupIPAddr
+	lookups := 0
+	lookupIPAddr = func(_ context.Context, _ string) ([]net.IPAddr, error) {
+		lookups++
+		if lookups == 1 {
+			return []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}, nil
+		}
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+	t.Cleanup(func() { lookupIPAddr = previousLookup })
+
+	if err := ValidateHostForOutboundRequest("panel.example", time.Second, false); err != nil {
+		t.Fatalf("initial public resolution should pass: %v", err)
+	}
+	if _, err := SafeDialContext(false)(context.Background(), "tcp", "panel.example:443"); err == nil || !strings.Contains(err.Error(), "禁止访问内网") {
+		t.Fatalf("rebound private resolution must be rejected, err=%v", err)
 	}
 }
