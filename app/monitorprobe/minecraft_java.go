@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"goravel/app/utils/security"
 )
 
 const maxMinecraftStatusPacket = 1 << 20
@@ -28,6 +30,10 @@ func checkMinecraftJava(ctx context.Context, request Request) Result {
 		timeout = 10 * time.Second
 	}
 	dialTarget, dialPort, usedSRV := resolveMinecraftJavaEndpoint(ctx, request.Target, port)
+	// SSRF 防护：校验目标主机是否属于内网/保留地址。
+	if err := security.ValidateHostForOutboundRequest(dialTarget, 2*time.Second, request.AllowPrivate); err != nil {
+		return failed("ssrf_blocked", err)
+	}
 	dialer := net.Dialer{Timeout: timeout}
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(dialTarget, strconv.Itoa(dialPort)))
 	if err != nil {

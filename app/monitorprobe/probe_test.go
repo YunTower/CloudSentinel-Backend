@@ -68,12 +68,13 @@ func TestCheckChatCompletions发送最小真实请求(t *testing.T) {
 	defer server.Close()
 
 	result := monitorprobe.Check(context.Background(), monitorprobe.Request{
-		Type:     monitorprobe.TypeAIModel,
-		Target:   server.URL,
-		Timeout:  2 * time.Second,
-		AIFormat: monitorprobe.AIFormatChatCompletions,
-		AIModel:  "model-a",
-		AIAPIKey: "test-key",
+		Type:         monitorprobe.TypeAIModel,
+		Target:       server.URL,
+		Timeout:      2 * time.Second,
+		AllowPrivate: true,
+		AIFormat:     monitorprobe.AIFormatChatCompletions,
+		AIModel:      "model-a",
+		AIAPIKey:     "test-key",
 	})
 
 	if result.Status != monitorprobe.StatusUp || result.Error != nil {
@@ -106,12 +107,13 @@ func TestCheckAnthropicMessages接受最小输出截断(t *testing.T) {
 	defer server.Close()
 
 	result := monitorprobe.Check(context.Background(), monitorprobe.Request{
-		Type:     monitorprobe.TypeAIModel,
-		Target:   server.URL,
-		Timeout:  2 * time.Second,
-		AIFormat: monitorprobe.AIFormatAnthropicMessages,
-		AIModel:  "claude-test",
-		AIAPIKey: "anthropic-key",
+		Type:         monitorprobe.TypeAIModel,
+		Target:       server.URL,
+		Timeout:      2 * time.Second,
+		AllowPrivate: true,
+		AIFormat:     monitorprobe.AIFormatAnthropicMessages,
+		AIModel:      "claude-test",
+		AIAPIKey:     "anthropic-key",
 	})
 
 	if result.Status != monitorprobe.StatusUp || result.Error != nil {
@@ -134,12 +136,13 @@ func TestCheckResponses接受最大输出限制导致的不完整响应(t *testi
 	defer server.Close()
 
 	result := monitorprobe.Check(context.Background(), monitorprobe.Request{
-		Type:     monitorprobe.TypeAIModel,
-		Target:   server.URL,
-		Timeout:  2 * time.Second,
-		AIFormat: monitorprobe.AIFormatResponses,
-		AIModel:  "model-r",
-		AIAPIKey: "response-key",
+		Type:         monitorprobe.TypeAIModel,
+		Target:       server.URL,
+		Timeout:      2 * time.Second,
+		AllowPrivate: true,
+		AIFormat:     monitorprobe.AIFormatResponses,
+		AIModel:      "model-r",
+		AIAPIKey:     "response-key",
 	})
 
 	if result.Status != monitorprobe.StatusUp || result.Error != nil {
@@ -191,10 +194,11 @@ func TestCheckMinecraftJava解析状态响应(t *testing.T) {
 	var port int
 	_, _ = fmt.Sscanf(portText, "%d", &port)
 	result := monitorprobe.Check(context.Background(), monitorprobe.Request{
-		Type:    monitorprobe.TypeMinecraftJava,
-		Target:  host,
-		Port:    port,
-		Timeout: 2 * time.Second,
+		Type:         monitorprobe.TypeMinecraftJava,
+		Target:       host,
+		Port:         port,
+		Timeout:      2 * time.Second,
+		AllowPrivate: true,
 	})
 
 	if err := <-serverErr; err != nil {
@@ -242,10 +246,11 @@ func TestCheckMinecraftBedrock解析UnconnectedPong(t *testing.T) {
 	var port int
 	_, _ = fmt.Sscanf(portText, "%d", &port)
 	result := monitorprobe.Check(context.Background(), monitorprobe.Request{
-		Type:    monitorprobe.TypeMinecraftBedrock,
-		Target:  host,
-		Port:    port,
-		Timeout: 2 * time.Second,
+		Type:         monitorprobe.TypeMinecraftBedrock,
+		Target:       host,
+		Port:         port,
+		Timeout:      2 * time.Second,
+		AllowPrivate: true,
 	})
 
 	if result.Status != monitorprobe.StatusUp || result.Error != nil {
@@ -282,12 +287,13 @@ func TestCheckAI按HTTP状态分类且不跟随重定向(t *testing.T) {
 			defer server.Close()
 
 			result := monitorprobe.Check(context.Background(), monitorprobe.Request{
-				Type:     monitorprobe.TypeAIModel,
-				Target:   server.URL,
-				Timeout:  2 * time.Second,
-				AIFormat: monitorprobe.AIFormatChatCompletions,
-				AIModel:  "model-a",
-				AIAPIKey: "must-not-leak",
+				Type:         monitorprobe.TypeAIModel,
+				Target:       server.URL,
+				Timeout:      2 * time.Second,
+				AllowPrivate: true,
+				AIFormat:     monitorprobe.AIFormatChatCompletions,
+				AIModel:      "model-a",
+				AIAPIKey:     "must-not-leak",
 			})
 
 			if result.Status != monitorprobe.StatusDown || result.ErrorCode != tc.errorCode {
@@ -305,14 +311,89 @@ func TestCheckAI超时标记为缓慢(t *testing.T) {
 	defer server.Close()
 
 	result := monitorprobe.Check(context.Background(), monitorprobe.Request{
-		Type:     monitorprobe.TypeAIModel,
-		Target:   server.URL,
-		Timeout:  20 * time.Millisecond,
-		AIFormat: monitorprobe.AIFormatChatCompletions,
-		AIModel:  "model-a",
+		Type:         monitorprobe.TypeAIModel,
+		Target:       server.URL,
+		Timeout:      20 * time.Millisecond,
+		AllowPrivate: true,
+		AIFormat:     monitorprobe.AIFormatChatCompletions,
+		AIModel:      "model-a",
 	})
 
 	if result.Status != monitorprobe.StatusSlow || result.ErrorCode != "timeout" {
 		t.Fatalf("探测结果 = %#v", result)
 	}
 }
+
+func TestCheckAI拒绝私网目标(t *testing.T) {
+	// 私网目标（RFC1918）应被安全策略拦截，绝不发送请求（防止 API Key 泄露到内网）。
+	var hit bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hit = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","object":"chat.completion","choices":[{}]}`))
+	}))
+	defer server.Close()
+
+	result := monitorprobe.Check(context.Background(), monitorprobe.Request{
+		Type:     monitorprobe.TypeAIModel,
+		Target:   "http://10.255.255.1/v1/chat/completions",
+		Timeout:  1 * time.Second,
+		AIFormat: monitorprobe.AIFormatChatCompletions,
+		AIModel:  "model-a",
+		AIAPIKey: "must-not-leak",
+	})
+
+	if result.Status != monitorprobe.StatusDown || result.ErrorCode != "ssrf_blocked" {
+		t.Fatalf("探测结果 = %#v", result)
+	}
+	if hit {
+		t.Fatalf("私网目标不应收到任何请求")
+	}
+}
+
+func TestCheckAI允许私网目标当AllowPrivate开启(t *testing.T) {
+	// 用户显式开启允许私网时，应能正常探测本地 AI 服务。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-x","object":"chat.completion","model":"m","choices":[{}]}`))
+	}))
+	defer server.Close()
+
+	result := monitorprobe.Check(context.Background(), monitorprobe.Request{
+		Type:         monitorprobe.TypeAIModel,
+		Target:       server.URL,
+		Timeout:      2 * time.Second,
+		AllowPrivate: true,
+		AIFormat:     monitorprobe.AIFormatChatCompletions,
+		AIModel:      "model-a",
+	})
+
+	if result.Status != monitorprobe.StatusUp || result.Error != nil {
+		t.Fatalf("探测结果 = %#v, error=%v", result, result.Error)
+	}
+}
+
+func TestCheckMinecraftJava拒绝私网目标(t *testing.T) {
+	result := monitorprobe.Check(context.Background(), monitorprobe.Request{
+		Type:    monitorprobe.TypeMinecraftJava,
+		Target:  "192.168.1.10",
+		Port:    25565,
+		Timeout: 1 * time.Second,
+	})
+	if result.Status != monitorprobe.StatusDown || result.ErrorCode != "ssrf_blocked" {
+		t.Fatalf("探测结果 = %#v", result)
+	}
+}
+
+func TestCheckMinecraftBedrock拒绝私网目标(t *testing.T) {
+	result := monitorprobe.Check(context.Background(), monitorprobe.Request{
+		Type:    monitorprobe.TypeMinecraftBedrock,
+		Target:  "192.168.1.10",
+		Port:    19132,
+		Timeout: 1 * time.Second,
+	})
+	if result.Status != monitorprobe.StatusDown || result.ErrorCode != "ssrf_blocked" {
+		t.Fatalf("探测结果 = %#v", result)
+	}
+}
+

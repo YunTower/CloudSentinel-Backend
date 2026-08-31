@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"goravel/app/utils/security"
 )
 
 var rakNetMagic = []byte{0x00, 0xff, 0xff, 0x00, 0xfe, 0xfe, 0xfe, 0xfe, 0xfd, 0xfd, 0xfd, 0xfd, 0x12, 0x34, 0x56, 0x78}
@@ -22,6 +24,10 @@ func checkMinecraftBedrock(ctx context.Context, request Request) Result {
 	timeout := request.Timeout
 	if timeout <= 0 {
 		timeout = 10 * time.Second
+	}
+	// SSRF 防护：校验目标主机是否属于内网/保留地址。
+	if err := security.ValidateHostForOutboundRequest(request.Target, 2*time.Second, request.AllowPrivate); err != nil {
+		return failed("ssrf_blocked", err)
 	}
 	dialer := net.Dialer{Timeout: timeout}
 	conn, err := dialer.DialContext(ctx, "udp", net.JoinHostPort(request.Target, strconv.Itoa(port)))

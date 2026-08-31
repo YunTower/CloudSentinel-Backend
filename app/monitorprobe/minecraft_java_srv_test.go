@@ -59,7 +59,7 @@ func TestCheckMinecraftJava默认端口使用SRV记录(t *testing.T) {
 	}()
 
 	result := Check(context.Background(), Request{
-		Type: TypeMinecraftJava, Target: "play.example.com", Port: 25565, Timeout: 2 * time.Second,
+		Type: TypeMinecraftJava, Target: "play.example.com", Port: 25565, Timeout: 2 * time.Second, AllowPrivate: true,
 	})
 	if result.Status != StatusUp || result.Error != nil {
 		t.Fatalf("探测结果 = %#v", result)

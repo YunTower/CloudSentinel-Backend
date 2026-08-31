@@ -9,7 +9,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
+
+	"goravel/app/utils/security"
 )
 
 const (
@@ -28,13 +32,14 @@ const (
 )
 
 type Request struct {
-	Type     string
-	Target   string
-	Port     int
-	Timeout  time.Duration
-	AIFormat string
-	AIModel  string
-	AIAPIKey string
+	Type        string
+	Target      string
+	Port        int
+	Timeout     time.Duration
+	AllowPrivate bool
+	AIFormat    string
+	AIModel     string
+	AIAPIKey    string
 }
 
 type Result struct {
@@ -74,6 +79,13 @@ func checkAI(ctx context.Context, request Request) Result {
 	if err != nil {
 		return failed("invalid_request", err)
 	}
+	host := extractProbeHost(request.Target)
+	if host == "" {
+		return failed("invalid_request", fmt.Errorf("无法解析 AI 目标主机"))
+	}
+	if err := security.ValidateHostForOutboundRequest(host, 2*time.Second, request.AllowPrivate); err != nil {
+		return failed("ssrf_blocked", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, request.Target, bytes.NewReader(body))
 	if err != nil {
 		return failed("invalid_request", err)
@@ -93,7 +105,18 @@ func checkAI(ctx context.Context, request Request) Result {
 	}
 	client := &http.Client{
 		Timeout: timeout,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+		Transport: &http.Transport{
+			DialContext: security.SafeDialContext(request.AllowPrivate),
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("停止重定向：次数过多")
+			}
+			if !request.AllowPrivate {
+				if err := security.ValidateHostForOutboundRequest(req.URL.Hostname(), 2*time.Second, false); err != nil {
+					return err
+				}
+			}
 			return http.ErrUseLastResponse
 		},
 	}
@@ -207,4 +230,22 @@ func networkFailed(err error) Result {
 		return Result{Status: StatusSlow, ErrorCode: "timeout", Error: err}
 	}
 	return failed("network_error", err)
+}
+
+// extractProbeHost 从监测目标中提取主机名，支持 URL 和 host:port 格式。
+func extractProbeHost(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	if strings.Contains(target, "://") {
+		if u, err := url.Parse(target); err == nil {
+			return u.Hostname()
+		}
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(target); err == nil {
+		return host
+	}
+	return target
 }
