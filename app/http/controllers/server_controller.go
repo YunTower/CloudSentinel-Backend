@@ -10,6 +10,7 @@ import (
 	"goravel/app/models"
 	"goravel/app/repositories"
 	"goravel/app/services"
+	"goravel/app/services/websocket/panelkey"
 	"goravel/app/utils"
 
 	"github.com/google/uuid"
@@ -20,6 +21,31 @@ import (
 // calculateUptime 计算运行时间
 func calculateUptime(bootTimeVal interface{}) string {
 	return services.CalculateUptime(bootTimeVal)
+}
+
+// GetPanelFingerprint 返回安装 Agent 时需要人工核对的面板公钥指纹。
+// 仅管理员会话可读取，避免把“面板提供”的人工校验材料混入未认证引导通道。
+func (c *ServerController) GetPanelFingerprint(ctx http.Context) http.Response {
+	if resp := requireAdmin(ctx); resp != nil {
+		return resp
+	}
+	_, publicKey, err := panelkey.GetOrGenerate()
+	if err != nil {
+		facades.Log().Errorf("获取面板公钥失败: %v", err)
+		return ctx.Response().Status(http.StatusInternalServerError).Json(http.Json{
+			"status": false, "message": "获取面板公钥指纹失败",
+		})
+	}
+	fingerprint, err := services.GetPublicKeyFingerprint(publicKey)
+	if err != nil {
+		facades.Log().Errorf("计算面板公钥指纹失败: %v", err)
+		return ctx.Response().Status(http.StatusInternalServerError).Json(http.Json{
+			"status": false, "message": "计算面板公钥指纹失败",
+		})
+	}
+	return ctx.Response().Json(http.StatusOK, http.Json{
+		"status": true, "message": "success", "data": map[string]string{"panel_fingerprint": fingerprint},
+	})
 }
 
 // parseExpireTime 解析到期时间字符串
@@ -183,6 +209,7 @@ func (c *ServerController) CreateServer(ctx http.Context) http.Response {
 		Status:                 "offline",
 		OS:                     req.OS,
 		AgentKey:               agentKey,
+		AgentKeyHash:           services.HashAgentKey(agentKey),
 		Cores:                  1,
 		GroupID:                req.GroupID,
 		BillingCycle:           req.Billing.BillingCycle,
@@ -600,6 +627,8 @@ func (c *ServerController) GetServerDetail(ctx http.Context) http.Response {
 		ctx.Request().Query("reveal_agent_key", "") == "1"
 	if isAdmin && revealAgentKey {
 		serverData["agent_key"] = server.AgentKey
+		// agent_key 是可控制服务器的凭据，明文回显必须留审计痕迹
+		facades.Log().Infof("Agent 密钥已明文回显: server_id=%s ip=%s", serverID, ctx.Request().Ip())
 	} else {
 		serverData["agent_key_masked"] = maskAgentKey(server.AgentKey)
 	}
@@ -1620,13 +1649,7 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 		req.AgentHeartbeatInterval != nil || req.AgentLogPath != nil
 
 	if agentConfigUpdated {
-		wsService := services.GetWebSocketService()
-		configMessage := map[string]interface{}{
-			"type":    "command",
-			"command": "update_config",
-			"data":    make(map[string]interface{}),
-		}
-		configData := configMessage["data"].(map[string]interface{})
+		configData := make(map[string]interface{})
 
 		// 获取更新后的配置值
 		serverRepo := repositories.GetServerRepository()
@@ -1651,8 +1674,9 @@ func (c *ServerController) UpdateServer(ctx http.Context) http.Response {
 				configData["log_path"] = updatedServer.AgentLogPath
 			}
 
-			// 发送配置更新消息
-			if err := wsService.SendMessage(serverID, configMessage); err != nil {
+			// 发送配置更新消息（签名 + 加密分派统一走 AgentCommandSender）；
+			// update_config 会改写 Agent 本地配置（含日志路径），签名失败时跳过下发
+			if err := services.SendSignedAgentCommand(serverID, "update_config", "", configData); err != nil {
 				facades.Log().Warningf("发送Agent配置更新消息失败: %v", err)
 			} else {
 				facades.Log().Infof("成功发送Agent配置更新消息到服务器: %s", serverID)
@@ -1679,63 +1703,13 @@ func (c *ServerController) DeleteServer(ctx http.Context) http.Response {
 		})
 	}
 
-	// 先删除所有关联的数据，避免外键约束错误
-	// 先禁用外键检查（PRAGMA 是 per-connection 的，在连接池中只影响当前连接）
-	if _, err := facades.Orm().Query().Exec("PRAGMA foreign_keys = OFF"); err != nil {
-		facades.Log().Warningf("禁用外键检查失败: %v", err)
-	}
+	// 删除前先断开 WS 连接：否则已连接 Agent 会继续上报，
+	// 为已删除的 server_id 重新写入指标数据（"幽灵服务器"复活）
+	services.GetWebSocketService().Unregister(serverID)
 
-	// 删除所有关联表的数据
-	tables := []string{
-		"server_alert_rules",
-		"server_notification_channels",
-		"server_metrics",
-		"server_disks",
-		"server_status_logs",
-		"server_cpus",
-		"server_memory_history",
-		"server_swap",
-		"server_network_connections",
-		"server_traffic_usage",
-		"server_network_speed",
-		"server_disk_io",
-		"alerts",
-		"service_monitor_rule_servers",
-		"service_monitor_alerts",
-	}
-
-	// 白名单校验：防止 tables 列表被意外修改后产生 SQL 注入风险
-	allowedTables := map[string]bool{
-		"server_alert_rules": true, "server_notification_channels": true,
-		"server_metrics": true, "server_disks": true,
-		"server_status_logs": true, "server_cpus": true,
-		"server_memory_history": true, "server_swap": true,
-		"server_network_connections": true, "server_traffic_usage": true,
-		"server_network_speed": true, "server_disk_io": true,
-		"alerts": true, "service_monitor_rule_servers": true,
-		"service_monitor_alerts": true,
-	}
-
-	for _, table := range tables {
-		if !allowedTables[table] {
-			facades.Log().Warningf("拒绝删除非白名单表: %s", table)
-			continue
-		}
-		_, err := facades.Orm().Query().Exec(fmt.Sprintf("DELETE FROM %s WHERE server_id = ?", table), serverID)
-		if err != nil {
-			facades.Log().Warningf("删除表 %s 中服务器 %s 的数据失败: %v", table, serverID, err)
-		}
-	}
-
-	// 最后删除服务器
-	_, err := facades.Orm().Query().Exec("DELETE FROM servers WHERE id = ?", serverID)
-
-	// 重新启用外键检查
-	if _, err := facades.Orm().Query().Exec("PRAGMA foreign_keys = ON"); err != nil {
-		facades.Log().Warningf("重新启用外键检查失败: %v", err)
-	}
-
-	if err != nil {
+	// 关联数据清理下沉到 repository，事务内完成（含 agent 任务/日志、
+	// 告警状态、server 来源事件、service_monitors.server_ids 移除）
+	if err := repositories.NewServerRepository().DeleteCascade(serverID); err != nil {
 		facades.Log().Errorf("删除服务器失败: %v", err)
 		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "删除服务器失败", err)
 	}
@@ -1759,16 +1733,9 @@ func (c *ServerController) RestartAgent(ctx http.Context) http.Response {
 		})
 	}
 
-	// 通过WebSocket向agent发送重启命令
-	wsService := services.GetWebSocketService()
-	message := map[string]interface{}{
-		"type":    "command",
-		"command": "restart",
-	}
-
-	err := wsService.SendMessage(serverID, message)
-	if err != nil {
-		facades.Log().Errorf("发送重启命令失败: %v", err)
+	// 通过WebSocket向agent发送重启命令（签名 + 加密分派统一走 AgentCommandSender；
+	// 签名失败时拒绝下发）
+	if err := services.SendSignedAgentCommand(serverID, "restart", "", map[string]interface{}{}); err != nil {
 		return ctx.Response().Status(http.StatusInternalServerError).Json(http.Json{
 			"status":  false,
 			"message": "发送重启命令失败: " + err.Error(),
@@ -1814,6 +1781,7 @@ func (c *ServerController) ResetAgentKey(ctx http.Context) http.Response {
 	// 重置 agent_key 并清除指纹和公钥
 	err = serverRepo.Update(serverID, map[string]interface{}{
 		"agent_key":         newAgentKey,
+		"agent_key_hash":    services.HashAgentKey(newAgentKey),
 		"agent_public_key":  nil,
 		"agent_fingerprint": nil,
 	})
