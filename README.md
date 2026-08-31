@@ -1,129 +1,59 @@
-<div align="center">
+# CloudSentinel Backend
 
-<img src="https://www.goravel.dev/logo.png?v=1.14.x" width="300" alt="Logo">
+CloudSentinel 面板后端，负责 API、WebSocket、数据存储、告警、更新和 Agent 通信。
 
-[![Doc](https://pkg.go.dev/badge/github.com/goravel/framework)](https://pkg.go.dev/github.com/goravel/framework)
-[![Go](https://img.shields.io/github/go-mod/go-version/goravel/framework)](https://go.dev/)
-[![Release](https://img.shields.io/github/release/goravel/framework.svg)](https://github.com/goravel/framework/releases)
-[![Test](https://github.com/goravel/framework/actions/workflows/test.yml/badge.svg)](https://github.com/goravel/framework/actions)
-[![Report Card](https://goreportcard.com/badge/github.com/goravel/framework)](https://goreportcard.com/report/github.com/goravel/framework)
-[![Codecov](https://codecov.io/gh/goravel/framework/branch/master/graph/badge.svg)](https://codecov.io/gh/goravel/framework)
-![License](https://img.shields.io/github/license/goravel/framework)
+完整安装入口请看主仓库：[YunTower/CloudSentinel](https://github.com/YunTower/CloudSentinel)。
 
-</div>
+## 一键安装
 
-English | [中文](./README_zh.md)
-
-## About Goravel
-
-Goravel is a web application framework with complete functions and good scalability. As a starting scaffolding to help
-Gopher quickly build their own applications.
-
-The framework style is consistent with [Laravel](https://github.com/laravel/laravel), let Php developer don't need to learn a
-new framework, but also happy to play around Golang! In tribute to Laravel!
-
-Welcome to star, PR and issues！
-
-## Getting started
-
-```
-// Generate APP_KEY
-go run . artisan key:generate
-
-// Route
-facades.Route().Get("/", userController.Show)
-
-// ORM
-facades.Orm().Query().With("Author").First(&user)
-
-// Task Scheduling
-facades.Schedule().Command("send:emails name").EveryMinute()
-
-// Log
-facades.Log().Debug(message)
-
-// Cache
-value := facades.Cache().Get("goravel", "default")
-
-// Queues
-err := facades.Queue().Job(&jobs.Test{}, []queue.Arg{}).Dispatch()
+```bash
+curl -L https://raw.githubusercontent.com/YunTower/CloudSentinel-Scripts/refs/heads/master/backend/install.sh -o cloudsentinel.sh && chmod +x cloudsentinel.sh && sudo ./cloudsentinel.sh
 ```
 
-## Documentation
+安装完成后会输出管理端地址、公开端地址、管理员账号和密码。Backend 在同一个进程中监听两个端口：管理端口提供完整 API、Agent 通信和 Admin SPA，公开端口只提供 Public SPA 与四个只读公开接口。请同时放行脚本输出的两个端口。
 
-Online documentation [https://www.goravel.dev](https://www.goravel.dev)
+手动配置时使用：
 
-Example [https://github.com/goravel/example](https://github.com/goravel/example)
+```env
+APP_HOST=0.0.0.0
+APP_PORT=3000
+PUBLIC_HTTP_ENABLED=true
+PUBLIC_HOST=0.0.0.0
+PUBLIC_PORT=3001
+```
 
-> To optimize the documentation, please submit a PR to the documentation
-> repository [https://github.com/goravel/docs](https://github.com/goravel/docs)
+## 常用命令
 
-## Main Function
+安装脚本会创建 `cloudsentinel` 全局命令：
 
-|                                                                                        |                                                                 |                                                                          |                                                                       |                                                                                |
-|----------------------------------------------------------------------------------------|-----------------------------------------------------------------|--------------------------------------------------------------------------|-----------------------------------------------------------------------|--------------------------------------------------------------------------------|
-| [Config](https://www.goravel.dev/getting-started/configuration.html)                   | [Http](https://www.goravel.dev/the-basics/routing.html)         | [Authentication](https://www.goravel.dev/security/authentication.html)   | [Authorization](https://www.goravel.dev/security/authorization.html)  | [Orm](https://www.goravel.dev/orm/getting-started.html)                        |
-| [Migrate](https://www.goravel.dev/orm/migrations.html)                                 | [Logger](https://www.goravel.dev/the-basics/logging.html)       | [Cache](https://www.goravel.dev/digging-deeper/cache.html)               | [Grpc](https://www.goravel.dev/the-basics/grpc.html)                  | [Artisan Console](https://www.goravel.dev/digging-deeper/artisan-console.html) |
-| [Task Scheduling](https://www.goravel.dev/digging-deeper/task-scheduling.html)         | [Queue](https://www.goravel.dev/digging-deeper/queues.html)     | [Event](https://www.goravel.dev/digging-deeper/event.html)               | [FileStorage](https://www.goravel.dev/digging-deeper/filesystem.html) | [Mail](https://www.goravel.dev/digging-deeper/mail.html)                       |
-| [Validation](https://www.goravel.dev/the-basics/validation.html)                       | [Mock](https://www.goravel.dev/testing/mock.html)               | [Hash](https://www.goravel.dev/security/hashing.html)                    | [Crypt](https://www.goravel.dev/security/encryption.html)             | [Carbon](https://www.goravel.dev/digging-deeper/helpers.html)                  |
-| [Package Development](https://www.goravel.dev/digging-deeper/package-development.html) | [Testing](https://www.goravel.dev/testing/getting-started.html) | [Localization](https://www.goravel.dev/digging-deeper/localization.html) | [Session](https://www.goravel.dev/the-basics/session.html)            |                                                                                |
+```bash
+cloudsentinel start
+cloudsentinel stop
+cloudsentinel restart
+cloudsentinel panel:info
+cloudsentinel update
+cloudsentinel uninstall
+```
 
-## Roadmap
+如全局命令不可用，可进入安装目录执行 `./dashboard <command>`。
 
-[For Detail](https://github.com/goravel/goravel/issues?q=is%3Aissue+is%3Aopen)
+## 开发
 
-## Excellent Extend Packages
+```bash
+go run . migrate
+go run . generate:admin
+go run . start
+```
 
-[For Detail](https://www.goravel.dev/prologue/packages.html)
+## 相关仓库
 
-## Contributors
+- 主仓库/前端：[YunTower/CloudSentinel](https://github.com/YunTower/CloudSentinel)
+- Agent：[YunTower/CloudSentinel-Agent](https://github.com/YunTower/CloudSentinel-Agent)
 
-This project exists thanks to all the people who contribute, to participate in the contribution, please see [Contribution Guide](https://www.goravel.dev/prologue/contributions.html).
+## 部署限制与安全说明
 
-<a href="https://github.com/hwbrzzl" target="_blank"><img src="https://avatars.githubusercontent.com/u/24771476?v=4" width="48" height="48"></a>
-<a href="https://github.com/DevHaoZi" target="_blank"><img src="https://avatars.githubusercontent.com/u/115467771?v=4" width="48" height="48"></a>
-<a href="https://github.com/kkumar-gcc" target="_blank"><img src="https://avatars.githubusercontent.com/u/84431594?v=4" width="48" height="48"></a>
-<a href="https://github.com/almas-x" target="_blank"><img src="https://avatars.githubusercontent.com/u/9382335?v=4" width="48" height="48"></a>
-<a href="https://github.com/merouanekhalili" target="_blank"><img src="https://avatars.githubusercontent.com/u/1122628?v=4" width="48" height="48"></a>
-<a href="https://github.com/hongyukeji" target="_blank"><img src="https://avatars.githubusercontent.com/u/23145983?v=4" width="48" height="48"></a>
-<a href="https://github.com/sidshrivastav" target="_blank"><img src="https://avatars.githubusercontent.com/u/28773690?v=4" width="48" height="48"></a>
-<a href="https://github.com/Juneezee" target="_blank"><img src="https://avatars.githubusercontent.com/u/20135478?v=4" width="48" height="48"></a>
-<a href="https://github.com/dragoonchang" target="_blank"><img src="https://avatars.githubusercontent.com/u/1432336?v=4" width="48" height="48"></a>
-<a href="https://github.com/dhanusaputra" target="_blank"><img src="https://avatars.githubusercontent.com/u/35093673?v=4" width="48" height="48"></a>
-<a href="https://github.com/mauri870" target="_blank"><img src="https://avatars.githubusercontent.com/u/10168637?v=4" width="48" height="48"></a>
-<a href="https://github.com/Marian0" target="_blank"><img src="https://avatars.githubusercontent.com/u/624592?v=4" width="48" height="48"></a>
-<a href="https://github.com/ahmed3mar" target="_blank"><img src="https://avatars.githubusercontent.com/u/12982325?v=4" width="48" height="48"></a>
-<a href="https://github.com/flc1125" target="_blank"><img src="https://avatars.githubusercontent.com/u/14297703?v=4" width="48" height="48"></a>
-<a href="https://github.com/zzpwestlife" target="_blank"><img src="https://avatars.githubusercontent.com/u/12382180?v=4" width="48" height="48"></a>
-<a href="https://github.com/juantarrel" target="_blank"><img src="https://avatars.githubusercontent.com/u/7213379?v=4" width="48" height="48"></a>
-<a href="https://github.com/Kamandlou" target="_blank"><img src="https://avatars.githubusercontent.com/u/77993374?v=4" width="48" height="48"></a>
-<a href="https://github.com/livghit" target="_blank"><img src="https://avatars.githubusercontent.com/u/108449432?v=4" width="48" height="48"></a>
-<a href="https://github.com/jeff87218" target="_blank"><img src="https://avatars.githubusercontent.com/u/29706585?v=4" width="48" height="48"></a>
-<a href="https://github.com/shayan-yousefi" target="_blank"><img src="https://avatars.githubusercontent.com/u/19957980?v=4" width="48" height="48"></a>
-<a href="https://github.com/zxdstyle" target="_blank"><img src="https://avatars.githubusercontent.com/u/38398954?v=4" width="48" height="48"></a>
-<a href="https://github.com/milwad-dev" target="_blank"><img src="https://avatars.githubusercontent.com/u/98118400?v=4" width="48" height="48"></a>
-<a href="https://github.com/mdanialr" target="_blank"><img src="https://avatars.githubusercontent.com/u/48054961?v=4" width="48" height="48"></a>
-<a href="https://github.com/KlassnayaAfrodita" target="_blank"><img src="https://avatars.githubusercontent.com/u/113383200?v=4" width="48" height="48"></a>
-<a href="https://github.com/YlanzinhoY" target="_blank"><img src="https://avatars.githubusercontent.com/u/102574758?v=4" width="48" height="48"></a>
-<a href="https://github.com/gouguoyin" target="_blank"><img src="https://avatars.githubusercontent.com/u/13517412?v=4" width="48" height="48"></a>
-<a href="https://github.com/dzham" target="_blank"><img src="https://avatars.githubusercontent.com/u/10853451?v=4" width="48" height="48"></a>
-<a href="https://github.com/praem90" target="_blank"><img src="https://avatars.githubusercontent.com/u/6235720?v=4" width="48" height="48"></a>
-<a href="https://github.com/vendion" target="_blank"><img src="https://avatars.githubusercontent.com/u/145018?v=4" width="48" height="48"></a>
-<a href="https://github.com/tzsk" target="_blank"><img src="https://avatars.githubusercontent.com/u/13273787?v=4" width="48" height="48"></a>
-<a href="https://github.com/ycb1986" target="_blank"><img src="https://avatars.githubusercontent.com/u/12908032?v=4" width="48" height="48"></a>
-
-## Sponsor
-
-Better development of the project is inseparable from your support, reward us by [Open Collective](https://opencollective.com/goravel).
-
-<p align="left"><img src="https://www.goravel.dev/reward.png" width="200"></p>
-
-## Group
-
-Welcome more discussion in Discord.
-
-[https://discord.gg/cFc5csczzS](https://discord.gg/cFc5csczzS)
-
-## License
-
-The Goravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+- **单实例部署**：服务监测的多探测点轮次聚合状态保存在面板进程内存中，仅支持单实例部署。多实例会导致各实例只能收集到自己下发的探测结果、状态互相覆盖。
+- **JWT 吊销黑名单**：登出/改密后令牌写入缓存黑名单。默认缓存驱动（内存/文件）下面板重启会清空黑名单，已"登出"的令牌在剩余有效期内会复活；需要跨重启吊销时请配置持久化缓存驱动（如 Redis）。
+- **密钥管理**：`.env` 中的 `APP_KEY` 用于加密告警通知配置等敏感字段，`JWT_SECRET` 用于签发管理员会话；请勿随仓库或镜像分发，泄露后应在安全环境轮换（轮换 `APP_KEY` 会使已加密的配置失效，需重新保存）。
+- **Agent 命令签名**：下发到 Agent 的 service_check / restart / update_config / update 命令均附带面板 RSA 签名（密钥对存于 `system_settings` 的 `panel_rsa_keys`）；Agent 会验签后才执行，敏感命令还要求已建立加密会话。
+- **内网探测开关**：服务监测默认禁止探测内网/保留地址（防 SSRF），如需监测内网目标，请在系统设置中显式开启 `monitor_allow_private_targets`。
