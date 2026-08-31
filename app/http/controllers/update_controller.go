@@ -183,10 +183,9 @@ func (r *UpdateController) UpdatePanel(ctx http.Context) http.Response {
 		Progress: 0,
 		Message:  "正在初始化更新任务...",
 	}
-	// 使用较长的缓存时间，确保更新过程中状态不会丢失
-	if err := facades.Cache().Put("update_status", initialStatus, 15*time.Minute); err != nil {
-		facades.Log().Errorf("设置更新状态失败: %v", err)
-		return utils.ErrorResponseWithError(ctx, 500, "设置更新状态失败", err, "CACHE_ERROR")
+	// 原子占位：并发请求只有一个能 Add 成功，消除“检查后写入”的 TOCTOU 竞态
+	if !facades.Cache().Add("update_status", initialStatus, 15*time.Minute) {
+		return utils.ErrorResponse(ctx, 400, "更新已在进行中", "UPDATE_IN_PROGRESS")
 	}
 
 	// 启动异步更新任务
@@ -360,20 +359,13 @@ func (r *UpdateController) UpdateAgent(ctx http.Context) http.Response {
 		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, err.Error(), err, "FETCH_RELEASE_FAILED")
 	}
 
-	// 发送更新命令
-	wsService := services.GetWebSocketService()
-	message := map[string]interface{}{
-		"type":    "command",
-		"command": "update",
-		"data": map[string]interface{}{
-			"version":      releaseInfo.NormalizedTagName,
-			"version_type": releaseInfo.VersionType,
-		},
+	// 发送更新命令（签名 + 加密分派统一走 AgentCommandSender；
+	// 签名失败时拒绝下发，不裸发未签名命令）
+	updateData := map[string]interface{}{
+		"version":      releaseInfo.NormalizedTagName,
+		"version_type": releaseInfo.VersionType,
 	}
-
-	err = wsService.SendMessage(serverID, message)
-	if err != nil {
-		facades.Log().Errorf("发送更新命令失败: %v", err)
+	if err := services.SendSignedAgentCommand(serverID, "update", "", updateData); err != nil {
 		return utils.ErrorResponseWithError(ctx, http.StatusInternalServerError, "发送更新命令失败", err, "SEND_UPDATE_COMMAND_FAILED")
 	}
 
