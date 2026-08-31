@@ -8,6 +8,7 @@ import (
 
 	"goravel/app/cryptoutil"
 	"goravel/app/repositories"
+	"goravel/app/services/websocket/panelkey"
 
 	"goravel/app/facades"
 )
@@ -335,42 +336,9 @@ func (h *agentMessageHandler) HandleAgentLogs(data map[string]interface{}, conn 
 
 // getOrGeneratePanelKeyPair 从 system_settings 获取或生成 panel 密钥对
 func (h *agentMessageHandler) getOrGeneratePanelKeyPair() (privateKey, publicKey string, err error) {
-	settingRepo := repositories.GetSystemSettingRepository()
-
-	// 尝试从 system_settings 读取 panel 密钥对
-	var panelKeys map[string]interface{}
-	err = settingRepo.GetJSON("panel_rsa_keys", &panelKeys)
-
-	if err == nil && panelKeys != nil {
-		if pk, ok := panelKeys["panel_private_key"].(string); ok && pk != "" {
-			if pub, ok := panelKeys["panel_public_key"].(string); ok && pub != "" {
-				// 返回已有的密钥对
-				return pk, pub, nil
-			}
-		}
-	}
-
-	// 如果不存在或无效，生成新的密钥对
-	facades.Log().Channel("websocket").Info("Panel 密钥对不存在，正在生成新的密钥对...")
-
-	privateKey, publicKey, err = cryptoutil.GenerateKeyPair()
-	if err != nil {
-		return "", "", fmt.Errorf("生成密钥对失败: %w", err)
-	}
-
-	// 保存到 system_settings
-	panelKeys = map[string]interface{}{
-		"panel_private_key": privateKey,
-		"panel_public_key":  publicKey,
-	}
-
-	if err := settingRepo.SetJSON("panel_rsa_keys", panelKeys); err != nil {
-		facades.Log().Channel("websocket").Errorf("保存 Panel 密钥对到 system_settings 失败: %v", err)
-		return "", "", fmt.Errorf("保存 Panel 密钥对失败: %w", err)
-	}
-
-	facades.Log().Channel("websocket").Info("Panel 密钥对已生成并保存到 system_settings")
-	return privateKey, publicKey, nil
+	// 密钥对统一由 panelkey 包管理（与命令签名共用，生成路径加锁，
+	// 避免多入口并发生成互相覆盖导致 Agent 验签持续失败）
+	return panelkey.GetOrGenerate()
 }
 
 // getPublicKeyFingerprint 计算公钥指纹（SHA256）

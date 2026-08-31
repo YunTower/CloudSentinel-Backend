@@ -1,12 +1,15 @@
 package controllers
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/goravel/framework/contracts/http"
+	"goravel/app/cryptoutil"
 	"goravel/app/facades"
+	"goravel/app/services/websocket/panelkey"
 )
 
 type CertsController struct{}
@@ -39,12 +42,13 @@ func (c *CertsController) GetCA(ctx http.Context) http.Response {
 
 // Bootstrap 是 Agent 首次启动的统一引导接口（公开、未认证）。
 //
-// 安全边界：公开接口最小化响应——仅返回 Agent 建立 wss 连接所必需的 CA 公钥
-// （CA 本就是需要分发给所有客户端的公开材料，无保密需求）。不返回面板版本号、
-// 服务器时间、TLS 状态等可被攻击者用于漏洞侦察的信息；这类信息后续如有需要，
-// 应在 Agent 完成认证（WS 通道）后下发。
+// 安全边界：CA 虽然是公开材料，但首次下载通道尚未可信。面板用与 Agent 预置
+// 指纹对应的 RSA 私钥签名 CA 文本，Agent 验签成功才会持久化为信任锚。
 func (c *CertsController) Bootstrap(ctx http.Context) http.Response {
 	ca := ""
+	panelPublicKey := ""
+	panelFingerprint := ""
+	caSignature := ""
 	certFile := facades.Config().GetString("http.tls.ssl.cert")
 	if certFile != "" {
 		caFile := filepath.Join(filepath.Dir(certFile), "ca.crt")
@@ -55,12 +59,35 @@ func (c *CertsController) Bootstrap(ctx http.Context) http.Response {
 			}
 		}
 	}
+	if ca != "" {
+		privateKey, publicKey, err := panelkey.GetOrGenerate()
+		if err == nil {
+			fingerprint, fpErr := cryptoutil.GetPublicKeyFingerprint(publicKey)
+			signature, sigErr := cryptoutil.SignData([]byte(bootstrapCASignatureContext+ca), privateKey)
+			if fpErr == nil && sigErr == nil {
+				panelPublicKey = publicKey
+				panelFingerprint = fingerprint
+				caSignature = base64.StdEncoding.EncodeToString(signature)
+			} else {
+				facades.Log().Errorf("签署 Agent 引导 CA 失败: fingerprint=%v signature=%v", fpErr, sigErr)
+				ca = ""
+			}
+		} else {
+			facades.Log().Errorf("读取面板密钥以签署 Agent 引导 CA 失败: %v", err)
+			ca = ""
+		}
+	}
 
 	return ctx.Response().Success().Json(http.Json{
 		"status":  true,
 		"message": "success",
 		"data": map[string]any{
-			"ca": ca, // 面板未启用 TLS 时为空字符串
+			"ca":                ca, // 面板未启用 TLS 或签名不可用时为空字符串
+			"panel_public_key":  panelPublicKey,
+			"panel_fingerprint": panelFingerprint,
+			"ca_signature":      caSignature,
 		},
 	})
 }
+
+const bootstrapCASignatureContext = "CloudSentinel bootstrap CA v1:"
