@@ -8,3 +8,7 @@ public
 *.exe
 *.zip
 *.sha256
+database.db
+_database.db
+*.sqlite
+*.sqlite3
