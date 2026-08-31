@@ -175,19 +175,59 @@ func (s *AlertService) SaveServerRules(serverID *string, rules map[string]Rule) 
 	return nil
 }
 
+// alertNotifyCooldown 告警通知冷却期：持续告警重发与阈值抖动导致的
+// 状态翻转共用，避免通知风暴；恢复通知不受冷却限制。
+const alertNotifyCooldown = 2 * time.Minute
+
+// alertStateRow 读取持久化的告警状态；状态机不再依赖进程内缓存，
+// 重启后不会重复告警、也不会丢失恢复通知。
+func (s *AlertService) alertStateRow(serverID, metric string) *models.AlertState {
+	row, err := repositories.NewAlertStateRepository().Get(serverID, metric)
+	if err != nil || row == nil {
+		return nil
+	}
+	return row
+}
+
+// cooldownActive 判断该维度的告警通知是否仍在冷却期内。
+func (s *AlertService) cooldownActive(row *models.AlertState) bool {
+	return row != nil && row.LastNotifiedAt != nil && time.Since(*row.LastNotifiedAt) < alertNotifyCooldown
+}
+
+// notifyCooldownActive 供带宽/流量/到期/上下线等仅用冷却期的告警使用。
+func (s *AlertService) notifyCooldownActive(serverID, scope string, ttl time.Duration) bool {
+	row := s.alertStateRow(serverID, scope)
+	if row != nil && row.LastNotifiedAt != nil && time.Since(*row.LastNotifiedAt) < ttl {
+		return true
+	}
+	return false
+}
+
+// markNotified 记录最近一次通知时间（冷却期起点）。
+func (s *AlertService) markNotified(serverID, metric, state string) {
+	now := time.Now()
+	if err := repositories.NewAlertStateRepository().Upsert(serverID, metric, state, &now); err != nil {
+		facades.Log().Warningf("写入告警状态失败: server=%s metric=%s error=%v", serverID, metric, err)
+	}
+}
+
+// saveAlertState 仅更新状态，不触碰冷却期。
+func (s *AlertService) saveAlertState(serverID, metric, state string) {
+	if err := repositories.NewAlertStateRepository().Upsert(serverID, metric, state, nil); err != nil {
+		facades.Log().Warningf("写入告警状态失败: server=%s metric=%s error=%v", serverID, metric, err)
+	}
+}
+
 // evaluateRule 评估单个规则
 func (s *AlertService) evaluateRule(serverID, metricName string, value float64, rule Rule) error {
 	if !rule.Enabled {
 		return nil
 	}
 
-	// 获取当前告警状态
-	cacheKey := fmt.Sprintf("alert_state:%s:%s", serverID, metricName)
-	var currentState AlertState
-	if cached := facades.Cache().Get(cacheKey); cached != nil {
-		if stateStr, ok := cached.(string); ok {
-			currentState = AlertState(stateStr)
-		}
+	row := s.alertStateRow(serverID, metricName)
+	currentState := AlertStateNormal
+	if row != nil && row.State != "" {
+		currentState = AlertState(row.State)
 	}
 
 	// 确定新状态
@@ -203,42 +243,34 @@ func (s *AlertService) evaluateRule(serverID, metricName string, value float64, 
 		newState = AlertStateNormal
 	}
 
-	// 如果状态没有变化，且不是从告警状态恢复到正常，则不发送通知
-	if newState == currentState {
-		// 如果当前是告警状态，检查是否需要重新发送（冷却期）
-		if newState != AlertStateNormal {
-			cooldownKey := fmt.Sprintf("alert_cooldown:%s:%s", serverID, metricName)
-			if cooldown := facades.Cache().Get(cooldownKey); cooldown != nil {
-				// 还在冷却期内，不发送
-				return nil
-			}
-			// 设置冷却期（2分钟）
-			err := facades.Cache().Put(cooldownKey, true, 2*time.Minute)
-			if err != nil {
-				return err
-			}
-		} else {
-			return nil
-		}
-	}
-
-	// 更新状态
-	err := facades.Cache().Put(cacheKey, string(newState), 24*time.Hour)
-	if err != nil {
-		return err
-	}
-
-	// 如果恢复到正常状态，发送恢复通知
+	// 恢复通知立即发送，不进入冷却
 	if newState == AlertStateNormal && currentState != AlertStateNormal {
+		s.saveAlertState(serverID, metricName, string(newState))
 		s.sendNotification(serverID, metricName, value, newState, severity, true, rule)
 		return nil
 	}
 
-	// 如果进入告警状态，发送告警通知
-	if newState != AlertStateNormal {
+	// 状态未变化：正常态静默；告警态按冷却期决定是否重发
+	if newState == currentState {
+		if newState == AlertStateNormal {
+			return nil
+		}
+		if s.cooldownActive(row) {
+			return nil
+		}
+		s.markNotified(serverID, metricName, string(newState))
 		s.sendNotification(serverID, metricName, value, newState, severity, false, rule)
+		return nil
 	}
 
+	// 状态变化（如 warning→critical、normal→warning）：同样受冷却期约束，
+	// 防止目标在阈值附近抖动时每次翻转都发通知。
+	if s.cooldownActive(row) {
+		s.saveAlertState(serverID, metricName, string(newState))
+		return nil
+	}
+	s.markNotified(serverID, metricName, string(newState))
+	s.sendNotification(serverID, metricName, value, newState, severity, false, rule)
 	return nil
 }
 
@@ -305,6 +337,11 @@ func (s *AlertService) sendNotification(serverID, metricName string, value float
 	})
 }
 
+// alertDispatchSem 限制并发告警发送 goroutine 数量。默认 QUEUE_CONNECTION=sync
+// 时 Dispatch 会在调用方 goroutine 内同步执行 SMTP/Webhook（可达数十秒），
+// 直接调用会阻塞数据采集 worker；包一层有界异步避免拖垮采集链路。
+var alertDispatchSem = make(chan struct{}, 8)
+
 // dispatchAlert 统一完成模板渲染与渠道任务分发，业务方法只负责构造告警语义。
 func (s *AlertService) dispatchAlert(serverID string, data notification.AlertTemplateData) {
 	rendered := notification.RenderConfiguredAlert(data)
@@ -313,16 +350,34 @@ func (s *AlertService) dispatchAlert(serverID string, data notification.AlertTem
 		facades.Log().Warningf("获取通知配置失败: %v", err)
 		return
 	}
+	type dispatchTask struct {
+		channel string
+		config  string
+		subject string
+		content string
+	}
+	tasks := make([]dispatchTask, 0, 2)
 	if emailConfig.Enabled {
 		configJSON, _ := json.Marshal(emailConfig)
-		if err := facades.Queue().Job(&jobs.SendAlertJob{Channel: "email", Config: string(configJSON), Subject: rendered.EmailSubject, Content: rendered.EmailHTML}).Dispatch(); err != nil {
-			facades.Log().Errorf("分发邮件发送任务失败: %v", err)
-		}
+		tasks = append(tasks, dispatchTask{"email", string(configJSON), rendered.EmailSubject, rendered.EmailHTML})
 	}
 	if webhookConfig.Enabled {
 		configJSON, _ := json.Marshal(webhookConfig)
-		if err := facades.Queue().Job(&jobs.SendAlertJob{Channel: "webhook", Config: string(configJSON), Subject: rendered.EmailSubject, Content: rendered.WebhookText}).Dispatch(); err != nil {
-			facades.Log().Errorf("分发Webhook发送任务失败: %v", err)
+		tasks = append(tasks, dispatchTask{"webhook", string(configJSON), rendered.EmailSubject, rendered.WebhookText})
+	}
+	for _, task := range tasks {
+		task := task
+		select {
+		case alertDispatchSem <- struct{}{}:
+			go func() {
+				defer func() { <-alertDispatchSem }()
+				if err := facades.Queue().Job(&jobs.SendAlertJob{Channel: task.channel, Config: task.config, Subject: task.subject, Content: task.content}).Dispatch(); err != nil {
+					facades.Log().Errorf("分发%s发送任务失败: %v", task.channel, err)
+				}
+			}()
+		default:
+			// 发送通道已饱和：丢弃本次通知并记录，宁可丢通知也不能阻塞采集
+			facades.Log().Warningf("告警发送通道饱和，丢弃通知: channel=%s event=%s", task.channel, data.Event)
 		}
 	}
 }
@@ -453,12 +508,11 @@ func (s *AlertService) CheckBandwidth(serverID string, currentMbps float64) erro
 
 		title := fmt.Sprintf("[告警] %s - 带宽峰值", serverName)
 
-		// 检查冷却期
-		cacheKey := fmt.Sprintf("alert_cooldown:%s:bandwidth", serverID)
-		if cooldown := facades.Cache().Get(cacheKey); cooldown != nil {
+		// 检查冷却期（持久化，重启不丢失）
+		if s.notifyCooldownActive(serverID, "bandwidth", alertNotifyCooldown) {
 			return nil
 		}
-		facades.Cache().Put(cacheKey, true, 2*time.Minute)
+		s.markNotified(serverID, "bandwidth", string(AlertStateWarning))
 
 		s.dispatchAlert(serverID, notification.AlertTemplateData{
 			Event: "bandwidth", Status: "alert", Severity: "warning", Title: title,
@@ -520,12 +574,11 @@ func (s *AlertService) CheckTraffic(serverID string, usedBytes int64, limitBytes
 
 		title := fmt.Sprintf("[告警] %s - 流量耗尽", serverName)
 
-		// 检查冷却期
-		cacheKey := fmt.Sprintf("alert_cooldown:%s:traffic", serverID)
-		if cooldown := facades.Cache().Get(cacheKey); cooldown != nil {
+		// 检查冷却期（持久化，重启不丢失）
+		if s.notifyCooldownActive(serverID, "traffic", alertNotifyCooldown) {
 			return nil
 		}
-		facades.Cache().Put(cacheKey, true, 2*time.Minute)
+		s.markNotified(serverID, "traffic", string(AlertStateWarning))
 
 		s.dispatchAlert(serverID, notification.AlertTemplateData{
 			Event: "traffic", Status: "alert", Severity: "warning", Title: title,
@@ -584,12 +637,11 @@ func (s *AlertService) CheckExpiration(serverID string) error {
 		// 触发告警
 		title := fmt.Sprintf("[告警] %s - 即将到期", server.Name)
 
-		// 检查冷却期（每天只发送一次）
-		cacheKey := fmt.Sprintf("alert_cooldown:%s:expiration", serverID)
-		if cooldown := facades.Cache().Get(cacheKey); cooldown != nil {
+		// 检查冷却期（每天只发送一次，持久化）
+		if s.notifyCooldownActive(serverID, "expiration", 24*time.Hour) {
 			return nil
 		}
-		facades.Cache().Put(cacheKey, true, 24*time.Hour)
+		s.markNotified(serverID, "expiration", string(AlertStateWarning))
 
 		s.dispatchAlert(serverID, notification.AlertTemplateData{
 			Event: "expiration", Status: "alert", Severity: "warning", Title: title,
@@ -607,11 +659,10 @@ func (s *AlertService) NotifyServerOffline(serverID string) {
 	if !utils.GetSettingBool("alert_server_offline_enabled", false) {
 		return
 	}
-	cacheKey := fmt.Sprintf("alert_cooldown:%s:server_offline", serverID)
-	if facades.Cache().Get(cacheKey) != nil {
+	if s.notifyCooldownActive(serverID, "server_offline", 5*time.Minute) {
 		return
 	}
-	_ = facades.Cache().Put(cacheKey, true, 5*time.Minute)
+	s.markNotified(serverID, "server_offline", string(AlertStateCritical))
 
 	serverRepo := repositories.GetServerRepository()
 	server, _ := serverRepo.GetByID(serverID)
@@ -633,11 +684,10 @@ func (s *AlertService) NotifyServerOnline(serverID string) {
 	if !utils.GetSettingBool("alert_server_online_enabled", false) {
 		return
 	}
-	cacheKey := fmt.Sprintf("alert_cooldown:%s:server_online", serverID)
-	if facades.Cache().Get(cacheKey) != nil {
+	if s.notifyCooldownActive(serverID, "server_online", alertNotifyCooldown) {
 		return
 	}
-	_ = facades.Cache().Put(cacheKey, true, 2*time.Minute)
+	s.markNotified(serverID, "server_online", string(AlertStateNormal))
 
 	serverRepo := repositories.GetServerRepository()
 	server, _ := serverRepo.GetByID(serverID)
@@ -656,11 +706,11 @@ func (s *AlertService) NotifyServerOnline(serverID string) {
 
 // NotifyServiceMonitorProblem sends a notification when a service monitor enters a non-up state.
 func (s *AlertService) NotifyServiceMonitorProblem(monitorID uint, status string, responseTime int, cause error) {
-	cacheKey := fmt.Sprintf("alert_cooldown:service_monitor:%d:%s", monitorID, status)
-	if facades.Cache().Get(cacheKey) != nil {
+	scope := fmt.Sprintf("service_monitor:%d:%s", monitorID, status)
+	if s.notifyCooldownActive("", scope, alertNotifyCooldown) {
 		return
 	}
-	_ = facades.Cache().Put(cacheKey, true, 2*time.Minute)
+	s.markNotified("", scope, string(AlertStateCritical))
 
 	monitor, err := repositories.GetServiceMonitorRepository().GetByID(monitorID)
 	if err != nil || monitor == nil {
@@ -691,11 +741,11 @@ func (s *AlertService) NotifyServiceMonitorProblem(monitorID uint, status string
 
 // NotifyServiceMonitorRecovery sends a notification when a service monitor returns to up.
 func (s *AlertService) NotifyServiceMonitorRecovery(monitorID uint, previousStatus string, responseTime int) {
-	cacheKey := fmt.Sprintf("alert_cooldown:service_monitor:%d:recovery", monitorID)
-	if facades.Cache().Get(cacheKey) != nil {
+	scope := fmt.Sprintf("service_monitor:%d:recovery", monitorID)
+	if s.notifyCooldownActive("", scope, alertNotifyCooldown) {
 		return
 	}
-	_ = facades.Cache().Put(cacheKey, true, 2*time.Minute)
+	s.markNotified("", scope, string(AlertStateNormal))
 
 	monitor, err := repositories.GetServiceMonitorRepository().GetByID(monitorID)
 	if err != nil || monitor == nil {
