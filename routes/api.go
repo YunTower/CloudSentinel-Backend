@@ -103,6 +103,7 @@ func Api() {
 
 			// 服务器相关
 			adminRouter.Prefix("/servers").Group(func(serversRoute route.Router) {
+				serversRoute.Get("/panel-fingerprint", serverController.GetPanelFingerprint)
 				serversRoute.Get("", serverController.GetServers)
 				serversRoute.Post("", serverController.CreateServer)
 				serversRoute.Get("/:id", serverController.GetServerDetail)
