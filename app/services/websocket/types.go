@@ -7,6 +7,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const DefaultMaxMessageSize int64 = 8 * 1024 * 1024
+
 // ConnectionState 连接状态
 type ConnectionState int
 
@@ -114,6 +116,8 @@ func DefaultConfig() *Config {
 		WriteTimeout:    10 * time.Second,
 		PongWait:        60 * time.Second,
 		PingPeriod:      30 * time.Second,
-		MaxMessageSize:  512,
+		// 允许 4 MiB 解压上报经 gzip + Base64 封装后的传输开销，
+		// 同时在认证前限制单帧的内存占用。
+		MaxMessageSize: DefaultMaxMessageSize,
 	}
 }

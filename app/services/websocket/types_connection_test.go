@@ -2,8 +2,14 @@ package websocket
 
 import (
 	"bytes"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestConnectionStateStringAndDefaultConfig(t *testing.T) {
@@ -11,11 +17,51 @@ func TestConnectionStateStringAndDefaultConfig(t *testing.T) {
 		t.Fatal("connection state mapping mismatch")
 	}
 	cfg := DefaultConfig()
-	if cfg.ReadBufferSize != 1024 || cfg.WriteBufferSize != 1024 || cfg.ReadTimeout != 90*time.Second || cfg.WriteTimeout != 10*time.Second || cfg.MaxMessageSize != 512 {
+	if cfg.ReadBufferSize != 1024 || cfg.WriteBufferSize != 1024 || cfg.ReadTimeout != 90*time.Second || cfg.WriteTimeout != 10*time.Second || cfg.MaxMessageSize != DefaultMaxMessageSize {
 		t.Fatalf("defaults=%+v", cfg)
 	}
 	if NewUpgrader(nil) == nil || NewUpgrader(cfg).config != cfg {
 		t.Fatal("upgrader config mismatch")
+	}
+}
+
+func TestUpgraderAppliesReadLimitBeforeFirstMessage(t *testing.T) {
+	readOneMessage := func(limit int64, payload []byte) error {
+		result := make(chan error, 1)
+		upgrader := NewUpgrader(&Config{MaxMessageSize: limit})
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				result <- err
+				return
+			}
+			defer conn.Close()
+			_, _, err = conn.ReadMessage()
+			result <- err
+		}))
+		defer server.Close()
+
+		client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+		if err := client.WriteMessage(websocket.TextMessage, payload); err != nil {
+			return err
+		}
+		select {
+		case err := <-result:
+			return err
+		case <-time.After(time.Second):
+			return errors.New("server did not finish reading websocket message")
+		}
+	}
+
+	if err := readOneMessage(64, bytes.Repeat([]byte("a"), 64)); err != nil {
+		t.Fatalf("limit-sized message should be accepted: %v", err)
+	}
+	if err := readOneMessage(64, bytes.Repeat([]byte("a"), 65)); !errors.Is(err, websocket.ErrReadLimit) {
+		t.Fatalf("oversized pre-auth message should be rejected with ErrReadLimit, got %v", err)
 	}
 }
 

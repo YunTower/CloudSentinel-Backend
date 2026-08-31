@@ -41,7 +41,17 @@ func NewUpgrader(config *Config) *Upgrader {
 
 // Upgrade 升级 HTTP 连接为 WebSocket
 func (u *Upgrader) Upgrade(w nethttp.ResponseWriter, r *nethttp.Request, responseHeader nethttp.Header) (*websocket.Conn, error) {
-	return u.upgrader.Upgrade(w, r, responseHeader)
+	conn, err := u.upgrader.Upgrade(w, r, responseHeader)
+	if err != nil {
+		return nil, err
+	}
+	maxMessageSize := u.config.MaxMessageSize
+	if maxMessageSize <= 0 {
+		maxMessageSize = DefaultMaxMessageSize
+	}
+	// 必须在返回连接前设置：认证首帧和 Agent 加密分支都直接读取底层连接。
+	conn.SetReadLimit(maxMessageSize)
+	return conn, nil
 }
 
 // ExtractIPFromAddr 从 net.Addr 中提取IP地址
@@ -117,4 +127,3 @@ func (u *Upgrader) GetClientIPFromConn(conn *websocket.Conn, ctx http.Context) s
 
 	return ctx.Request().Ip()
 }
-

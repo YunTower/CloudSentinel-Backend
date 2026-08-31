@@ -278,6 +278,12 @@ func (m *connectionManager) SendToAgent(serverID string, message interface{}) er
 		return ErrConnectionClosed
 	}
 
+	// Agent 端已建立会话加密时走加密通道：否则命令（含签名后的
+	// service_check/restart/update_config/update）以明文帧下发，
+	// "敏感命令要求加密会话"的 Agent 侧检查形同虚设
+	if conn.IsEncryptionEnabled() {
+		return conn.WriteEncryptedJSON(message)
+	}
 	return conn.WriteJSON(message)
 }
 

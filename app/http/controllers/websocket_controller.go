@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"goravel/app/http/middleware"
 	"goravel/app/models"
@@ -10,6 +11,7 @@ import (
 	ws "goravel/app/services/websocket"
 	nethttp "net/http"
 	neturl "net/url"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -65,6 +67,15 @@ func NewWebSocketController() *WebSocketController {
 	allowedURL := facades.Config().GetString("http.url")
 	appEnv := facades.Config().GetString("app.env", "production")
 
+	// 生产环境的额外放行来源来自配置（逗号分隔的 host:port），默认为空。
+	// 不再硬编码开发端口，避免开发端口意外暴露在生产环境。
+	extraAllowedHosts := map[string]struct{}{}
+	for _, host := range strings.Split(facades.Config().GetString("websocket.allowed_origins", ""), ",") {
+		if host = strings.TrimSpace(host); host != "" {
+			extraAllowedHosts[host] = struct{}{}
+		}
+	}
+
 	config.CheckOrigin = func(r interface{}) bool {
 		req, ok := r.(*nethttp.Request)
 		if !ok || req == nil {
@@ -82,6 +93,7 @@ func NewWebSocketController() *WebSocketController {
 		}
 		allowedHost := u.Host
 		origin := req.Header.Get("Origin")
+		_, extraAllowed := extraAllowedHosts[req.Host]
 		if origin == "" {
 			// 如果没有Origin header，检查Host
 			// 对于localhost/127.0.0.1，两者应该都被接受
@@ -89,18 +101,19 @@ func NewWebSocketController() *WebSocketController {
 			return reqHost == allowedHost ||
 				(allowedHost == "localhost" && reqHost == "127.0.0.1") ||
 				(allowedHost == "127.0.0.1" && reqHost == "localhost") ||
-				reqHost == "localhost:3000" || reqHost == "127.0.0.1:3000"
+				extraAllowed
 		}
 		ou, err := neturl.Parse(origin)
 		if err != nil || ou.Host == "" {
 			return false
 		}
+		_, extraOriginAllowed := extraAllowedHosts[ou.Host]
 		// 对于localhost/127.0.0.1，两者应该都被接受
 		originHost := ou.Host
 		return originHost == allowedHost ||
-			(allowedHost == "localhost" && (originHost == "127.0.0.1" || originHost == "127.0.0.1:5173")) ||
-			(allowedHost == "127.0.0.1" && (originHost == "localhost" || originHost == "localhost:5173")) ||
-			originHost == "localhost:5173" || originHost == "127.0.0.1:5173"
+			(allowedHost == "localhost" && originHost == "127.0.0.1") ||
+			(allowedHost == "127.0.0.1" && originHost == "localhost") ||
+			extraOriginAllowed
 	}
 
 	// 创建升级器
@@ -263,6 +276,11 @@ func (c *WebSocketController) handleAgentMessage(msgType string, data map[string
 		facades.Log().Channel("websocket").Infof("Agent 命令 ACK: server_id=%s command=%s command_id=%s", conn.GetServerID(), command, commandID)
 		return nil
 	case ws.MessageTypeServiceCheckResult:
+		// 监测结果直接影响服务状态、事件与告警，必须来自已认证的 Agent 连接。
+		if conn.GetState() != ws.StateAuthenticated {
+			facades.Log().Channel("websocket").Warning("拒绝未认证连接提交的监测结果")
+			return errors.New("未认证的连接")
+		}
 		if resultData, ok := data["data"].(map[string]interface{}); ok {
 			services.GetServiceMonitorService().HandleAgentResult(resultData, conn.GetServerID())
 		}
