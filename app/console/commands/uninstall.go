@@ -11,6 +11,8 @@ import (
 
 	"github.com/goravel/framework/contracts/console"
 	"github.com/goravel/framework/contracts/console/command"
+
+	"goravel/app/utils/envfile"
 )
 
 type UninstallCommand struct{}
@@ -240,7 +242,7 @@ func (c *UninstallCommand) removeDatabaseFile(installDir string) error {
 
 	if _, err := os.Stat(envFile); err == nil {
 		// 尝试读取 DB_DATABASE 配置
-		if dbValue, err := ReadEnvValue(envFile, "DB_DATABASE"); err == nil {
+		if dbValue, err := envfile.Read(envFile, "DB_DATABASE"); err == nil {
 			dbName = dbValue
 		}
 	}
