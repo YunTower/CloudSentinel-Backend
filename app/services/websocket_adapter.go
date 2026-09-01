@@ -13,14 +13,9 @@ import (
 // agentAuthValidator 实现 websocket.AgentAuthValidator 接口
 type agentAuthValidator struct{}
 
-// NewAgentAuthValidator 创建新的 AgentAuthValidator
-func NewAgentAuthValidator() websocket.AgentAuthValidator {
-	return &agentAuthValidator{}
-}
-
 // GetAgentAuthValidator 获取 AgentAuthValidator 实例
 func GetAgentAuthValidator() websocket.AgentAuthValidator {
-	return NewAgentAuthValidator()
+	return &agentAuthValidator{}
 }
 
 // HashAgentKey 计算 agent_key 的 SHA-256（认证查询走哈希索引）。
@@ -52,14 +47,9 @@ func (v *agentAuthValidator) ValidateAgentAuth(agentKey string, clientIP string)
 // agentDataSaver 实现 websocket.AgentDataSaver 接口
 type agentDataSaver struct{}
 
-// NewAgentDataSaver 创建新的 AgentDataSaver
-func NewAgentDataSaver() websocket.AgentDataSaver {
-	return &agentDataSaver{}
-}
-
 // GetAgentDataSaver 获取 AgentDataSaver 实例
 func GetAgentDataSaver() websocket.AgentDataSaver {
-	return NewAgentDataSaver()
+	return &agentDataSaver{}
 }
 
 func (s *agentDataSaver) SaveSystemInfo(serverID string, data map[string]interface{}) error {
