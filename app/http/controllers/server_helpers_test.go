@@ -3,6 +3,8 @@ package controllers
 import (
 	"testing"
 	"time"
+
+	"goravel/app/services"
 )
 
 func TestParseExpireTimeSupportsDocumentedFormats(t *testing.T) {
@@ -15,7 +17,7 @@ func TestParseExpireTimeSupportsDocumentedFormats(t *testing.T) {
 		t.Fatal("invalid date should return nil")
 	}
 	now := time.Now().Add(-time.Hour)
-	if got := calculateUptime(&now); got == "0分" {
+	if got := services.CalculateUptime(&now); got == "0分" {
 		t.Fatalf("uptime=%q", got)
 	}
 }
