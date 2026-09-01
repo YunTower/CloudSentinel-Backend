@@ -70,11 +70,6 @@ func isBlockedIP(ip net.IP) bool {
 	return false
 }
 
-// IsBlockedIP 判断 IP 是否属于内网/保留地址段。
-func IsBlockedIP(ip net.IP) bool {
-	return isBlockedIP(ip)
-}
-
 // IsBlockedHostname 判断主机名是否在显式禁止列表中（localhost / metadata 等）。
 func IsBlockedHostname(host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))

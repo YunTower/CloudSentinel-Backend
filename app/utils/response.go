@@ -53,3 +53,13 @@ func SuccessResponseWithStatus(ctx http.Context, status int, message string, dat
 	}
 	return ctx.Response().Status(status).Json(response)
 }
+
+// SuccessDataResponse 返回仅含 data 的成功响应（无 message 字段）。
+// 与 SuccessResponse 的差别：data 恒存在（可为 null），且不携带 message，
+// 与公开只读接口的历史响应结构保持一致。
+func SuccessDataResponse(ctx http.Context, data interface{}) http.Response {
+	return ctx.Response().Success().Json(http.Json{
+		"status": true,
+		"data":   data,
+	})
+}

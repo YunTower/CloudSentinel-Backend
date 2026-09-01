@@ -142,61 +142,35 @@ func (w *LogWriter) writeLogEntry(entry LogEntry) error {
 		}
 	}()
 
+	logger := facades.Log()
 	if entry.Channel != "" {
-		logger := facades.Log().Channel(entry.Channel)
-		switch entry.Level {
-		case "debug":
-			if len(entry.Args) > 0 {
-				logger.Debugf(entry.Message, entry.Args...)
-			} else {
-				logger.Debug(entry.Message)
-			}
-		case "info":
-			if len(entry.Args) > 0 {
-				logger.Infof(entry.Message, entry.Args...)
-			} else {
-				logger.Info(entry.Message)
-			}
-		case "warning":
-			if len(entry.Args) > 0 {
-				logger.Warningf(entry.Message, entry.Args...)
-			} else {
-				logger.Warning(entry.Message)
-			}
-		case "error":
-			if len(entry.Args) > 0 {
-				logger.Errorf(entry.Message, entry.Args...)
-			} else {
-				logger.Error(entry.Message)
-			}
+		logger = logger.Channel(entry.Channel)
+	}
+
+	switch entry.Level {
+	case "debug":
+		if len(entry.Args) > 0 {
+			logger.Debugf(entry.Message, entry.Args...)
+		} else {
+			logger.Debug(entry.Message)
 		}
-	} else {
-		logger := facades.Log()
-		switch entry.Level {
-		case "debug":
-			if len(entry.Args) > 0 {
-				logger.Debugf(entry.Message, entry.Args...)
-			} else {
-				logger.Debug(entry.Message)
-			}
-		case "info":
-			if len(entry.Args) > 0 {
-				logger.Infof(entry.Message, entry.Args...)
-			} else {
-				logger.Info(entry.Message)
-			}
-		case "warning":
-			if len(entry.Args) > 0 {
-				logger.Warningf(entry.Message, entry.Args...)
-			} else {
-				logger.Warning(entry.Message)
-			}
-		case "error":
-			if len(entry.Args) > 0 {
-				logger.Errorf(entry.Message, entry.Args...)
-			} else {
-				logger.Error(entry.Message)
-			}
+	case "info":
+		if len(entry.Args) > 0 {
+			logger.Infof(entry.Message, entry.Args...)
+		} else {
+			logger.Info(entry.Message)
+		}
+	case "warning":
+		if len(entry.Args) > 0 {
+			logger.Warningf(entry.Message, entry.Args...)
+		} else {
+			logger.Warning(entry.Message)
+		}
+	case "error":
+		if len(entry.Args) > 0 {
+			logger.Errorf(entry.Message, entry.Args...)
+		} else {
+			logger.Error(entry.Message)
 		}
 	}
 	return nil
