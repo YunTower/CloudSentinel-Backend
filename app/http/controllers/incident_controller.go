@@ -2,13 +2,14 @@ package controllers
 
 import (
 	"encoding/json"
-	"goravel/app/models"
-	"goravel/app/repositories"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/goravel/framework/contracts/http"
+	"goravel/app/models"
+	"goravel/app/repositories"
+	"goravel/app/utils"
 )
 
 type IncidentController struct{}
@@ -24,9 +25,7 @@ func (c *IncidentController) GetAll(ctx http.Context) http.Response {
 
 	incidents, err := repositories.NewIncidentRepository().List(100)
 	if err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{
-			"status": false, "message": err.Error(),
-		})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 
 	data := make([]map[string]interface{}, 0, len(incidents))
@@ -46,10 +45,7 @@ func (c *IncidentController) GetAll(ctx http.Context) http.Response {
 		data = append(data, item)
 	}
 
-	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
-		"status": true,
-		"data":   data,
-	})
+	return utils.SuccessDataResponse(ctx, data)
 }
 
 func (c *IncidentController) CreateMaintenance(ctx http.Context) http.Response {
@@ -64,22 +60,22 @@ func (c *IncidentController) CreateMaintenance(ctx http.Context) http.Response {
 		PageIDs []string `json:"page_ids"`
 	}
 	if err := ctx.Request().Bind(&req); err != nil {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "参数错误"})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "参数错误")
 	}
 	req.Title = strings.TrimSpace(req.Title)
 	req.Message = strings.TrimSpace(req.Message)
 	req.Impact = strings.TrimSpace(req.Impact)
 	if req.Title == "" || req.Message == "" {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "title 和 message 不能为空"})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "title 和 message 不能为空")
 	}
 	if len(req.Title) > 255 || len(req.Message) > 5000 {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "内容过长"})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "内容过长")
 	}
 	if req.Impact == "" {
 		req.Impact = "maintenance"
 	}
 	if req.Impact != "outage" && req.Impact != "degraded" && req.Impact != "maintenance" {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "impact 不合法"})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "impact 不合法")
 	}
 
 	pageIDs := make([]string, 0, len(req.PageIDs))
@@ -96,14 +92,14 @@ func (c *IncidentController) CreateMaintenance(ctx http.Context) http.Response {
 		pageIDs = append(pageIDs, id)
 	}
 	if len(pageIDs) > 50 {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "page_ids 过多（最大 50）"})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "page_ids 过多（最大 50）")
 	}
 
 	var pageIDsRaw *string
 	if len(pageIDs) > 0 {
 		encoded, err := json.Marshal(pageIDs)
 		if err != nil {
-			return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{"status": false, "message": "page_ids 编码失败"})
+			return utils.ErrorResponse(ctx, http.StatusInternalServerError, "page_ids 编码失败")
 		}
 		s := string(encoded)
 		pageIDsRaw = &s
@@ -124,7 +120,7 @@ func (c *IncidentController) CreateMaintenance(ctx http.Context) http.Response {
 		UpdatedAt:   now,
 	}
 	if err := repo.Create(incident); err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{"status": false, "message": err.Error()})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 	if err := repo.AddEvent(&models.IncidentEvent{
 		IncidentID: incident.ID,
@@ -135,10 +131,10 @@ func (c *IncidentController) CreateMaintenance(ctx http.Context) http.Response {
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}); err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{"status": false, "message": err.Error()})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 	created, _ := repo.GetByID(incident.ID)
-	return ctx.Response().Json(http.StatusOK, map[string]interface{}{"status": true, "data": created})
+	return utils.SuccessDataResponse(ctx, created)
 }
 
 func (c *IncidentController) AddMaintenanceUpdate(ctx http.Context) http.Response {
@@ -148,23 +144,23 @@ func (c *IncidentController) AddMaintenanceUpdate(ctx http.Context) http.Respons
 
 	id, err := parseIncidentRouteID(ctx)
 	if err != nil {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "无效ID"})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "无效ID")
 	}
 	var req struct {
 		Message string `json:"message"`
 	}
 	if err := ctx.Request().Bind(&req); err != nil {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "参数错误"})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "参数错误")
 	}
 	req.Message = strings.TrimSpace(req.Message)
 	if req.Message == "" || len(req.Message) > 5000 {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "message 不能为空且不能超过 5000 字"})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "message 不能为空且不能超过 5000 字")
 	}
 
 	repo := repositories.NewIncidentRepository()
 	incident, err := repo.GetByID(id)
 	if err != nil || incident.SourceType != "maintenance" || incident.Status != "active" {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "只能更新进行中的手动事件"})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "只能更新进行中的手动事件")
 	}
 	now := time.Now()
 	if err := repo.AddEvent(&models.IncidentEvent{
@@ -176,11 +172,11 @@ func (c *IncidentController) AddMaintenanceUpdate(ctx http.Context) http.Respons
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}); err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{"status": false, "message": err.Error()})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 	_ = repo.Update(id, map[string]interface{}{"last_event_at": now, "updated_at": now})
 	updated, _ := repo.GetByID(id)
-	return ctx.Response().Json(http.StatusOK, map[string]interface{}{"status": true, "data": updated})
+	return utils.SuccessDataResponse(ctx, updated)
 }
 
 func (c *IncidentController) ResolveMaintenance(ctx http.Context) http.Response {
@@ -190,7 +186,7 @@ func (c *IncidentController) ResolveMaintenance(ctx http.Context) http.Response 
 
 	id, err := parseIncidentRouteID(ctx)
 	if err != nil {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "无效ID"})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "无效ID")
 	}
 	var req struct {
 		Message string `json:"message"`
@@ -201,13 +197,13 @@ func (c *IncidentController) ResolveMaintenance(ctx http.Context) http.Response 
 		req.Message = "事件已结束。"
 	}
 	if len(req.Message) > 5000 {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "message 不能超过 5000 字"})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "message 不能超过 5000 字")
 	}
 
 	repo := repositories.NewIncidentRepository()
 	incident, err := repo.GetByID(id)
 	if err != nil || incident.SourceType != "maintenance" || incident.Status != "active" {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "只能关闭进行中的手动事件"})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "只能关闭进行中的手动事件")
 	}
 	now := time.Now()
 	if err := repo.AddEvent(&models.IncidentEvent{
@@ -219,7 +215,7 @@ func (c *IncidentController) ResolveMaintenance(ctx http.Context) http.Response 
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}); err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{"status": false, "message": err.Error()})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 	if err := repo.Update(id, map[string]interface{}{
 		"status":        "resolved",
@@ -227,10 +223,10 @@ func (c *IncidentController) ResolveMaintenance(ctx http.Context) http.Response 
 		"last_event_at": now,
 		"updated_at":    now,
 	}); err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{"status": false, "message": err.Error()})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 	updated, _ := repo.GetByID(id)
-	return ctx.Response().Json(http.StatusOK, map[string]interface{}{"status": true, "data": updated})
+	return utils.SuccessDataResponse(ctx, updated)
 }
 
 func parseIncidentRouteID(ctx http.Context) (uint, error) {
@@ -282,38 +278,26 @@ func parseIncidentPageIDs(raw *string) []string {
 func (c *IncidentController) GetPublic(ctx http.Context) http.Response {
 	// 公开展示总开关关闭时不暴露事件时间线（与 /api/public/servers 一致）
 	if !loadPublicDisplayConfigV1().Enabled {
-		return ctx.Response().Json(http.StatusOK, map[string]interface{}{
-			"status": true,
-			"data":   []publicIncident{},
-		})
+		return utils.SuccessDataResponse(ctx, []publicIncident{})
 	}
 
 	path := strings.TrimSpace(ctx.Request().Query("path", ""))
 	if path == "" {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
-			"status": false, "message": "path 参数必填",
-		})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "path 参数必填")
 	}
 
 	resolution, err := getPublicPagePolicy().Resolve(path)
 	if err != nil {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
-			"status": false, "message": err.Error(),
-		})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, err.Error())
 	}
 	filter := resolution.IncidentFilter
 	if filter.Empty {
-		return ctx.Response().Json(http.StatusOK, map[string]interface{}{
-			"status": true,
-			"data":   []publicIncident{},
-		})
+		return utils.SuccessDataResponse(ctx, []publicIncident{})
 	}
 
 	incidents, err := repositories.NewIncidentRepository().List(200)
 	if err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{
-			"status": false, "message": err.Error(),
-		})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 
 	data := make([]publicIncident, 0, filter.Limit)
@@ -352,8 +336,5 @@ func (c *IncidentController) GetPublic(ctx http.Context) http.Response {
 		}
 	}
 
-	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
-		"status": true,
-		"data":   data,
-	})
+	return utils.SuccessDataResponse(ctx, data)
 }

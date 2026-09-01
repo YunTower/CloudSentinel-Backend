@@ -224,20 +224,16 @@ func (r *SettingsController) GetAlertsSettings(ctx http.Context) http.Response {
 	alertServerOfflineEnabled := settingRepo.GetBool("alert_server_offline_enabled", false)
 	alertServerOnlineEnabled := settingRepo.GetBool("alert_server_online_enabled", false)
 
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "success",
-		"data": map[string]any{
-			"notifications": map[string]any{
-				"email":   emailData,
-				"webhook": webhookData,
-			},
-			"templates":                 notification.LoadAlertTemplates(),
-			"defaultTemplates":          notification.DefaultAlertTemplates(),
-			"hasNotificationChannel":    hasNotificationChannel,
-			"alertServerOfflineEnabled": alertServerOfflineEnabled,
-			"alertServerOnlineEnabled":  alertServerOnlineEnabled,
+	return utils.SuccessResponse(ctx, "success", map[string]any{
+		"notifications": map[string]any{
+			"email":   emailData,
+			"webhook": webhookData,
 		},
+		"templates":                 notification.LoadAlertTemplates(),
+		"defaultTemplates":          notification.DefaultAlertTemplates(),
+		"hasNotificationChannel":    hasNotificationChannel,
+		"alertServerOfflineEnabled": alertServerOfflineEnabled,
+		"alertServerOnlineEnabled":  alertServerOnlineEnabled,
 	})
 }
 
@@ -383,10 +379,7 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 
 		// 验证当前密码
 		if !facades.Hash().Check(currentPassword, userPasswordHash) {
-			return ctx.Response().Status(401).Json(http.Json{
-				"status":  false,
-				"message": "当前密码错误",
-			})
+			return utils.ErrorResponse(ctx, 401, "当前密码错误")
 		}
 
 		// 查询当前用户名
@@ -407,18 +400,12 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 	if newPassword != "" && confirmPassword != "" && currentPassword != "" {
 		// 验证新密码长度
 		if len(newPassword) < 6 {
-			return ctx.Response().Status(422).Json(http.Json{
-				"status":  false,
-				"message": "新密码长度至少为6位",
-			})
+			return utils.ErrorResponse(ctx, 422, "新密码长度至少为6位")
 		}
 
 		// 验证新密码与确认密码是否一致
 		if newPassword != confirmPassword {
-			return ctx.Response().Status(422).Json(http.Json{
-				"status":  false,
-				"message": "新密码与确认密码不一致",
-			})
+			return utils.ErrorResponse(ctx, 422, "新密码与确认密码不一致")
 		}
 
 		// 验证当前密码
@@ -432,10 +419,7 @@ func (r *SettingsController) UpdatePermissionsSettings(ctx http.Context) http.Re
 		}
 
 		if userPasswordHash == "" {
-			return ctx.Response().Status(500).Json(http.Json{
-				"status":  false,
-				"message": "密码配置不存在",
-			})
+			return utils.ErrorResponse(ctx, 500, "密码配置不存在")
 		}
 
 		// 验证当前密码

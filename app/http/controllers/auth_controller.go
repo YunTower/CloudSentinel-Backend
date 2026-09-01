@@ -166,11 +166,7 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 		// 如果检查锁定失败，记录错误但不阻止登录
 		facades.Log().Errorf("检查IP锁定状态失败: %v", err)
 	} else if isLocked {
-		return ctx.Response().Status(429).Json(http.Json{
-			"status":  false,
-			"message": "IP已被锁定，请稍后再试",
-			"code":    "IP_LOCKED",
-		})
+		return utils.ErrorResponse(ctx, 429, "IP已被锁定，请稍后再试", "IP_LOCKED")
 	}
 
 	// 查询用户名
@@ -187,10 +183,7 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 	// 查询密码哈希
 	userPasswordHash := settingRepo.GetValue("admin_password_hash", "")
 	if userPasswordHash == "" {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  false,
-			"message": "密码配置不存在",
-		})
+		return utils.ErrorResponse(ctx, 500, "密码配置不存在")
 	}
 
 	// 验证用户名（与密码错误返回相同响应，防止用户名枚举）
@@ -198,10 +191,7 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 		if err := lockoutService.IncrementFailedAttempts(ip); err != nil {
 			facades.Log().Errorf("增加登录失败计数失败: %v", err)
 		}
-		return ctx.Response().Status(401).Json(http.Json{
-			"status":  false,
-			"message": "用户名或密码错误",
-		})
+		return utils.ErrorResponse(ctx, 401, "用户名或密码错误")
 	}
 
 	// 验证密码哈希
@@ -209,10 +199,7 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 		if err := lockoutService.IncrementFailedAttempts(ip); err != nil {
 			facades.Log().Errorf("增加登录失败计数失败: %v", err)
 		}
-		return ctx.Response().Status(401).Json(http.Json{
-			"status":  false,
-			"message": "用户名或密码错误",
-		})
+		return utils.ErrorResponse(ctx, 401, "用户名或密码错误")
 	}
 
 	// 创建用户模型用于认证
@@ -244,13 +231,9 @@ func (r *AuthController) Login(ctx http.Context) http.Response {
 		return utils.ErrorResponseWithError(ctx, 500, "设置认证 Cookie 失败", err)
 	}
 
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "登录成功",
-		"data": map[string]any{
-			"username": loginPost.Username,
-			"type":     "admin",
-		},
+	return utils.SuccessResponse(ctx, "登录成功", map[string]any{
+		"username": loginPost.Username,
+		"type":     "admin",
 	})
 }
 
@@ -260,10 +243,7 @@ func (r *AuthController) Refresh(ctx http.Context) http.Response {
 
 	token := ctx.Request().Cookie(middleware.AuthTokenCookieName)
 	if token == "" {
-		return ctx.Response().Status(401).Json(http.Json{
-			"status":  false,
-			"message": "缺少认证令牌",
-		})
+		return utils.ErrorResponse(ctx, 401, "缺少认证令牌")
 	}
 
 	// 解析 Token
@@ -300,14 +280,10 @@ func (r *AuthController) Refresh(ctx http.Context) http.Response {
 		return utils.ErrorResponseWithError(ctx, 500, "设置认证 Cookie 失败", err)
 	}
 
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "Token刷新成功",
-		"data": map[string]any{
-			"user_id":    payload.Key,
-			"guard":      payload.Guard,
-			"expires_at": payload.ExpireAt.Unix(),
-		},
+	return utils.SuccessResponse(ctx, "Token刷新成功", map[string]any{
+		"user_id":    payload.Key,
+		"guard":      payload.Guard,
+		"expires_at": payload.ExpireAt.Unix(),
 	})
 }
 
@@ -318,15 +294,11 @@ func (r *AuthController) Check(ctx http.Context) http.Response {
 		return errResponse
 	}
 
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "用户已认证",
-		"data": map[string]any{
-			"user_id":   userInfo.ID,
-			"guard":     userInfo.Guard,
-			"user_type": userInfo.Type,
-			"is_valid":  true,
-		},
+	return utils.SuccessResponse(ctx, "用户已认证", map[string]any{
+		"user_id":   userInfo.ID,
+		"guard":     userInfo.Guard,
+		"user_type": userInfo.Type,
+		"is_valid":  true,
 	})
 }
 
