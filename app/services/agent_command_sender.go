@@ -25,7 +25,7 @@ func SendSignedAgentCommand(serverID, command, commandID string, data map[string
 	if commandID != "" {
 		message["command_id"] = commandID
 	}
-	if err := GetWebSocketService().SendMessage(serverID, message); err != nil {
+	if err := GetWebSocketService().GetManager().SendToAgent(serverID, message); err != nil {
 		facades.Log().Errorf("发送 Agent 命令失败: server_id=%s command=%s error=%v", serverID, command, err)
 		return err
 	}

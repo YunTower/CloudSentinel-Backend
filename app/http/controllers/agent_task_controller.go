@@ -1,11 +1,11 @@
 package controllers
 
 import (
+	"github.com/goravel/framework/contracts/http"
 	"goravel/app/facades"
 	"goravel/app/repositories"
 	"goravel/app/services"
-
-	"github.com/goravel/framework/contracts/http"
+	"goravel/app/utils"
 )
 
 type AgentTaskController struct{}
@@ -20,28 +20,20 @@ func (c *AgentTaskController) Pull(ctx http.Context) http.Response {
 		Limit    int    `json:"limit"`
 	}
 	if err := ctx.Request().Bind(&req); err != nil {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
-			"status": false, "message": "参数错误",
-		})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "参数错误")
 	}
 	if req.AgentKey == "" {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
-			"status": false, "message": "agent_key 不能为空",
-		})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "agent_key 不能为空")
 	}
 
 	serverID, err := services.GetAgentAuthValidator().ValidateAgentAuth(req.AgentKey, ctx.Request().Ip())
 	if err != nil {
-		return ctx.Response().Json(http.StatusUnauthorized, map[string]interface{}{
-			"status": false, "message": "认证失败",
-		})
+		return utils.ErrorResponse(ctx, http.StatusUnauthorized, "认证失败")
 	}
 
 	tasks, err := repositories.NewAgentTaskRepository().ClaimPending(serverID, req.Limit)
 	if err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{
-			"status": false, "message": err.Error(),
-		})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 
 	// HTTP 任务通道没有 WS 加密保护，任务载荷附带面板签名供 Agent 验签；
@@ -65,10 +57,7 @@ func (c *AgentTaskController) Pull(ctx http.Context) http.Response {
 		}
 		taskPayloads = append(taskPayloads, payload)
 	}
-	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
-		"status": true,
-		"data":   taskPayloads,
-	})
+	return utils.SuccessDataResponse(ctx, taskPayloads)
 }
 
 func (c *AgentTaskController) Complete(ctx http.Context) http.Response {
@@ -80,14 +69,10 @@ func (c *AgentTaskController) Complete(ctx http.Context) http.Response {
 		Error      string `json:"error"`
 	}
 	if err := ctx.Request().Bind(&req); err != nil {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
-			"status": false, "message": "参数错误",
-		})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "参数错误")
 	}
 	if req.AgentKey == "" || req.TaskID == "" || req.LeaseToken == "" {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
-			"status": false, "message": "agent_key、task_id 和 lease_token 不能为空",
-		})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "agent_key、task_id 和 lease_token 不能为空")
 	}
 	if req.Status != "failed" && req.Status != "cancelled" {
 		req.Status = "succeeded"
@@ -95,21 +80,15 @@ func (c *AgentTaskController) Complete(ctx http.Context) http.Response {
 
 	serverID, err := services.GetAgentAuthValidator().ValidateAgentAuth(req.AgentKey, ctx.Request().Ip())
 	if err != nil {
-		return ctx.Response().Json(http.StatusUnauthorized, map[string]interface{}{
-			"status": false, "message": "认证失败",
-		})
+		return utils.ErrorResponse(ctx, http.StatusUnauthorized, "认证失败")
 	}
 
 	completed, err := repositories.NewAgentTaskRepository().Complete(serverID, req.TaskID, req.LeaseToken, req.Status, req.Error)
 	if err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{
-			"status": false, "message": err.Error(),
-		})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 	if !completed {
-		return ctx.Response().Json(http.StatusConflict, map[string]interface{}{
-			"status": false, "message": "任务租约无效、已过期或不属于当前 Agent",
-		})
+		return utils.ErrorResponse(ctx, http.StatusConflict, "任务租约无效、已过期或不属于当前 Agent")
 	}
 	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
 		"status": true,
