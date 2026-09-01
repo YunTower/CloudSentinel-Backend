@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"goravel/app/facades"
+	"goravel/app/utils/envfile"
 )
 
 // 面板 HTTPS/WSS 自签证书管理（P2-03）。
@@ -320,34 +321,15 @@ func updateEnvTLS(outDir string) {
 	}
 }
 
+// updateEnvValue 内部包装：更新 .env 的 TLS 配置并记录日志。
+// .env 不可读或已是最新值时返回 false（沿用旧行为：静默跳过写入）。
 func updateEnvValue(key, value string) bool {
-	envPath := ".env"
-	data, err := os.ReadFile(envPath)
+	envPath, err := envfile.Path()
 	if err != nil {
 		return false
 	}
-	lines := strings.Split(string(data), "\n")
-	found, updated := false, false
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, key+"=") {
-			if trimmed == key+"="+value {
-				return false // 已是最新值
-			}
-			lines[i] = key + "=" + value
-			found, updated = true, true
-			break
-		}
-	}
-	if !found {
-		lines = append(lines, key+"="+value)
-		updated = true
-	}
-	if !updated {
-		return false
-	}
-	_ = os.WriteFile(envPath, []byte(strings.Join(lines, "\n")), 0600)
-	return true
+	changed, err := envfile.Update(envPath, key, value)
+	return err == nil && changed
 }
 
 func parseCertExpiry(certFile string) (time.Time, error) {
