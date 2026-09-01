@@ -12,6 +12,7 @@ import (
 	"goravel/app/models"
 	"goravel/app/monitorprobe"
 	"goravel/app/services"
+	"goravel/app/utils"
 	"goravel/app/utils/secret"
 )
 
@@ -156,7 +157,7 @@ func (c *ServiceMonitorController) CreateAIModels(ctx http.Context) http.Respons
 		RecoveryThreshold int      `json:"recovery_threshold"`
 	}
 	if err := ctx.Request().Bind(&req); err != nil {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "参数错误"})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "参数错误")
 	}
 	modelsList := make([]string, 0, len(req.AIModels))
 	seen := make(map[string]struct{}, len(req.AIModels))
@@ -172,7 +173,7 @@ func (c *ServiceMonitorController) CreateAIModels(ctx http.Context) http.Respons
 		modelsList = append(modelsList, model)
 	}
 	if len(modelsList) == 0 || len(modelsList) > 50 {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "模型数量必须在 1 到 50 之间"})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "模型数量必须在 1 到 50 之间")
 	}
 	if req.Interval <= 0 {
 		req.Interval = 60
@@ -201,7 +202,7 @@ func (c *ServiceMonitorController) CreateAIModels(ctx http.Context) http.Respons
 			AIAPIFormat: strings.TrimSpace(req.AIAPIFormat), AIModel: modelName,
 		}
 		if err := prepareProtocolMonitor(monitor, req.AIAPIKey); err != nil {
-			return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": err.Error()})
+			return utils.ErrorResponse(ctx, http.StatusBadRequest, err.Error())
 		}
 		created = append(created, monitor)
 	}
@@ -213,7 +214,7 @@ func (c *ServiceMonitorController) CreateAIModels(ctx http.Context) http.Respons
 		}
 		return nil
 	}); err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{"status": false, "message": err.Error()})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 	for _, monitor := range created {
 		monitor.HasAIAPIKey = true

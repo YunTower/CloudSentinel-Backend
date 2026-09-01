@@ -2,16 +2,17 @@ package controllers
 
 import (
 	"fmt"
-	"goravel/app/facades"
-	"goravel/app/models"
-	"goravel/app/repositories"
-	"goravel/app/services"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/goravel/framework/contracts/http"
+	"goravel/app/facades"
+	"goravel/app/models"
+	"goravel/app/repositories"
+	"goravel/app/services"
+	"goravel/app/utils"
 )
 
 type ServiceMonitorController struct{}
@@ -28,9 +29,7 @@ func (c *ServiceMonitorController) GetAll(ctx http.Context) http.Response {
 	repo := repositories.GetServiceMonitorRepository()
 	monitors, err := repo.GetAll()
 	if err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{
-			"status": false, "message": err.Error(),
-		})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 
 	// 附加最近的历史记录到每个监测器，用于状态条展示。
@@ -60,9 +59,7 @@ func (c *ServiceMonitorController) GetAll(ctx http.Context) http.Response {
 		}
 	}
 
-	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
-		"status": true, "data": monitors,
-	})
+	return utils.SuccessDataResponse(ctx, monitors)
 }
 
 func (c *ServiceMonitorController) GetResults(ctx http.Context) http.Response {
@@ -73,9 +70,7 @@ func (c *ServiceMonitorController) GetResults(ctx http.Context) http.Response {
 	idStr := ctx.Request().Route("id")
 	id, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
-			"status": false, "message": "无效ID",
-		})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "无效ID")
 	}
 
 	limit := 100
@@ -87,15 +82,10 @@ func (c *ServiceMonitorController) GetResults(ctx http.Context) http.Response {
 
 	results, err := repositories.NewServiceMonitorResultRepository().GetLast(uint(id), limit)
 	if err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{
-			"status": false, "message": err.Error(),
-		})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 
-	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
-		"status": true,
-		"data":   results,
-	})
+	return utils.SuccessDataResponse(ctx, results)
 }
 
 type publicServiceMonitor struct {
@@ -121,18 +111,13 @@ func (c *ServiceMonitorController) GetPublic(ctx http.Context) http.Response {
 	// 公开展示总开关关闭时与 /api/public/servers 行为一致：返回空列表，
 	// 避免开关关闭后监测名称/状态/90 天 uptime/错误信息仍全量暴露
 	if !loadPublicDisplayConfigV1().Enabled {
-		return ctx.Response().Json(http.StatusOK, map[string]interface{}{
-			"status": true,
-			"data":   []publicServiceMonitor{},
-		})
+		return utils.SuccessDataResponse(ctx, []publicServiceMonitor{})
 	}
 
 	repo := repositories.GetServiceMonitorRepository()
 	monitors, err := repo.GetAll()
 	if err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{
-			"status": false, "message": err.Error(),
-		})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 
 	enabled := make([]*models.ServiceMonitor, 0, len(monitors))
@@ -247,14 +232,10 @@ func (c *ServiceMonitorController) Create(ctx http.Context) http.Response {
 		AIAPIKey          string   `json:"ai_api_key"`
 	}
 	if err := ctx.Request().Bind(&req); err != nil {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
-			"status": false, "message": "参数错误",
-		})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "参数错误")
 	}
 	if req.Name == "" || req.Type == "" || req.Target == "" {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
-			"status": false, "message": "name, type, target 不能为空",
-		})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "name, type, target 不能为空")
 	}
 	if req.Interval <= 0 {
 		req.Interval = 60
@@ -292,16 +273,12 @@ func (c *ServiceMonitorController) Create(ctx http.Context) http.Response {
 		AIModel:           strings.TrimSpace(req.AIModel),
 	}
 	if err := prepareProtocolMonitor(m, req.AIAPIKey); err != nil {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
-			"status": false, "message": err.Error(),
-		})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, err.Error())
 	}
 
 	repo := repositories.GetServiceMonitorRepository()
 	if err := repo.Create(m); err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{
-			"status": false, "message": err.Error(),
-		})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 
 	if m.Enabled {
@@ -309,9 +286,7 @@ func (c *ServiceMonitorController) Create(ctx http.Context) http.Response {
 	}
 	m.HasAIAPIKey = m.AIAPIKeyEncrypted != ""
 
-	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
-		"status": true, "data": m,
-	})
+	return utils.SuccessDataResponse(ctx, m)
 }
 
 func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
@@ -322,9 +297,7 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 	idStr := ctx.Request().Route("id")
 	id, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
-			"status": false, "message": "无效ID",
-		})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "无效ID")
 	}
 
 	var req struct {
@@ -351,17 +324,13 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 		ClearAIAPIKey     *bool    `json:"clear_ai_api_key"`
 	}
 	if err := ctx.Request().Bind(&req); err != nil {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
-			"status": false, "message": "参数错误",
-		})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "参数错误")
 	}
 
 	repo := repositories.GetServiceMonitorRepository()
 	existing, existingErr := repo.GetByID(uint(id))
 	if existingErr != nil || existing == nil {
-		return ctx.Response().Json(http.StatusNotFound, map[string]interface{}{
-			"status": false, "message": "监测任务不存在",
-		})
+		return utils.ErrorResponse(ctx, http.StatusNotFound, "监测任务不存在")
 	}
 	monitorType := req.Type
 	if monitorType == "" {
@@ -407,9 +376,7 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 	}
 	if req.ServerIDs != nil {
 		if isPanelOnlyMonitorType(monitorType) && len(req.ServerIDs) > 0 {
-			return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
-				"status": false, "message": "Minecraft 与 AI 模型监测当前仅支持面板直接检测",
-			})
+			return utils.ErrorResponse(ctx, http.StatusBadRequest, "Minecraft 与 AI 模型监测当前仅支持面板直接检测")
 		}
 		data["server_ids"] = req.ServerIDs
 	}
@@ -438,19 +405,19 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 		data["recovery_threshold"] = *req.RecoveryThreshold
 	}
 	if err := validateProtocolMonitorUpdate(existing, req.Type, req.Target, req.AIAPIFormat, req.AIModel, req.AIAPIKey, req.ClearAIAPIKey); err != nil {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": err.Error()})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, err.Error())
 	}
 	if req.AIAPIFormat != nil {
 		format := strings.TrimSpace(*req.AIAPIFormat)
 		if monitorType == "ai_model" && !isSupportedAIAPIFormat(format) {
-			return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "不支持的 AI 接口格式"})
+			return utils.ErrorResponse(ctx, http.StatusBadRequest, "不支持的 AI 接口格式")
 		}
 		data["ai_api_format"] = format
 	}
 	if req.AIModel != nil {
 		model := strings.TrimSpace(*req.AIModel)
 		if monitorType == "ai_model" && model == "" {
-			return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": "AI 模型不能为空"})
+			return utils.ErrorResponse(ctx, http.StatusBadRequest, "AI 模型不能为空")
 		}
 		data["ai_model"] = model
 	}
@@ -459,7 +426,7 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 	} else if req.AIAPIKey != nil && strings.TrimSpace(*req.AIAPIKey) != "" {
 		encrypted, encryptErr := encryptAIAPIKey(*req.AIAPIKey)
 		if encryptErr != nil {
-			return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{"status": false, "message": encryptErr.Error()})
+			return utils.ErrorResponse(ctx, http.StatusBadRequest, encryptErr.Error())
 		}
 		data["ai_api_key_encrypted"] = encrypted
 	}
@@ -476,9 +443,7 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 	}
 
 	if err := repo.Update(uint(id), data); err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{
-			"status": false, "message": err.Error(),
-		})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 
 	// 重新启动监测器并使用新的配置
@@ -492,9 +457,7 @@ func (c *ServiceMonitorController) Update(ctx http.Context) http.Response {
 		svc.Start(m)
 	}
 
-	return ctx.Response().Json(http.StatusOK, map[string]interface{}{
-		"status": true, "data": m,
-	})
+	return utils.SuccessDataResponse(ctx, m)
 }
 
 func (c *ServiceMonitorController) Delete(ctx http.Context) http.Response {
@@ -505,18 +468,14 @@ func (c *ServiceMonitorController) Delete(ctx http.Context) http.Response {
 	idStr := ctx.Request().Route("id")
 	id, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil {
-		return ctx.Response().Json(http.StatusBadRequest, map[string]interface{}{
-			"status": false, "message": "无效ID",
-		})
+		return utils.ErrorResponse(ctx, http.StatusBadRequest, "无效ID")
 	}
 
 	services.GetServiceMonitorService().Stop(uint(id))
 
 	repo := repositories.GetServiceMonitorRepository()
 	if err := repo.Delete(uint(id)); err != nil {
-		return ctx.Response().Json(http.StatusInternalServerError, map[string]interface{}{
-			"status": false, "message": err.Error(),
-		})
+		return utils.ErrorResponse(ctx, http.StatusInternalServerError, err.Error())
 	}
 
 	// 关闭该监测项的未决事件并清理告警状态，避免孤儿数据
