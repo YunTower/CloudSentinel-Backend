@@ -7,6 +7,7 @@ import (
 
 	"github.com/goravel/framework/contracts/http"
 	"goravel/app/facades"
+	"goravel/app/utils"
 )
 
 const rateLimitGlobalKey = "__global__"
@@ -76,18 +77,14 @@ func (m *rateLimitMiddleware) Handle(ctx http.Context) {
 	}
 	if err != nil {
 		facades.Log().Warningf("限流计数失败，拒绝请求: %v", err)
-		ctx.Response().Json(503, map[string]interface{}{
-			"status": false, "message": "服务繁忙，请稍后再试",
-		})
+		utils.ErrorResponse(ctx, 503, "服务繁忙，请稍后再试")
 		return
 	}
 
 	pruneRateLimitBuckets(now, m.window)
 
 	if !allowed {
-		ctx.Response().Json(429, map[string]interface{}{
-			"status": false, "message": "请求过于频繁，请稍后再试",
-		})
+		utils.ErrorResponse(ctx, 429, "请求过于频繁，请稍后再试")
 		return
 	}
 	ctx.Request().Next()

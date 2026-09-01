@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/goravel/framework/contracts/http"
+	"goravel/app/utils"
 )
 
 const CSRFTokenCookieName = "cloudsentinel_csrf"
@@ -34,7 +35,7 @@ func (m *csrfMiddleware) Handle(ctx http.Context) {
 	cookie := ctx.Request().Cookie(CSRFTokenCookieName)
 	header := ctx.Request().Header("X-CSRF-Token")
 	if cookie == "" || header == "" || subtle.ConstantTimeCompare([]byte(cookie), []byte(header)) != 1 {
-		_ = ctx.Response().Status(403).Json(http.Json{"status": false, "message": "CSRF 校验失败"})
+		_ = utils.ErrorResponse(ctx, 403, "CSRF 校验失败")
 		return
 	}
 	ctx.Request().Next()
