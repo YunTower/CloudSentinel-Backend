@@ -127,7 +127,7 @@ func (r *ApplicationServicesRunner) Run() error {
 	services.CheckTLSCertificateExpiry()
 
 	r.dataWorker = services.GetGlobalDataWorker()
-	r.logWriter = services.GetLogWriter()
+	r.logWriter = utils.GetLogWriter()
 	r.metricBuffer = services.GetMetricBuffer()
 	r.monitorService = services.GetServiceMonitorService()
 
